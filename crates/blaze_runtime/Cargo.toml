@@ -19,6 +19,7 @@ blaze_optdefs = { path = "../blaze_optdefs" }
 blaze_events = { path = "../blaze_events" }
 blaze_vfs = { path = "../blaze_vfs" }
 blaze_starlark = { path = "../blaze_starlark" }
+blaze_starlarkdebug = { path = "../blaze_starlarkdebug" }
 # The top-level configuration of `info` (W4).
 blaze_build_config = { path = "../blaze_build_config" }
 blaze_protos = { path = "../blaze_protos" }

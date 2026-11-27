@@ -50,6 +50,7 @@ use crate::target::PackageSpecification;
 // Java: com/google/devtools/build/lib/cmdline/BazelModuleContext.java:188 BazelModuleContext.create
 // PORT: skipped, the doc comments are computed from the file by `starlark_doc_extract`, their one reader (blaze_rules starlarkdocextract `compute_doc_comments`): BazelModuleContext.getDocCommentsMap, BazelModuleContext.getUnusedDocCommentLines
 #[derive(Debug)]
+// PORT: skipped, the module key is the .bzl label and `is_builtins` (no SkyKey object); the fake key is for tests: BazelModuleKey.functionName, BazelModuleKey.createFakeModuleKeyForTesting, BazelModuleKey.FakeModuleKey.<init>, BazelModuleKey.FakeModuleKey.getLabel, BazelModuleKey.FakeModuleKey.functionName
 pub struct BazelModuleContext {
     /// Java `key().getLabel()`. `is_builtins` tells `@_builtins` keys apart.
     // Java: com/google/devtools/build/lib/cmdline/BazelModuleContext.java:50 BazelModuleContext.key

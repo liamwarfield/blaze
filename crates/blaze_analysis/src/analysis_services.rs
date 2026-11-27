@@ -53,6 +53,9 @@ impl AnalysisDirectories {
 /// Services shared by every analysis SkyFunction of one command.
 pub struct AnalysisServices {
     pub rule_class_provider: Arc<ConfiguredRuleClassProvider>,
+    /// The `conflictFinder` supplier `SkyframeBuildView` hands its `ConfiguredTargetFactory`.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:181 SkyframeBuildView.<init>
+    pub conflict_finder: crate::rule::action_conflict_exception::ConflictFinderSupplier,
     /// Java `ruleClassProvider.getBazelStarlarkEnvironment()` (the analysis-capable one).
     pub bazel_starlark_environment: Arc<BazelStarlarkEnvironment>,
     /// Java `SkyframeBuildView.artifactFactory` (shared across configured targets).
@@ -83,7 +86,21 @@ pub struct AnalysisServices {
     pub base_target_prerequisites_supplier: std::sync::OnceLock<
         crate::base_target_prerequisites_supplier::BaseTargetPrerequisitesSupplier,
     >,
+    /// Java `PrerequisitePackageFunction` (`SkyframeExecutor::getExistingPackage`): a package
+    /// already loaded in the graph, read without a dependency edge; set by `blaze_sky_top` once
+    /// its evaluator exists.
+    pub prerequisite_packages: std::sync::OnceLock<PrerequisitePackageFunction>,
 }
+
+/// Java `PrerequisitePackageFunction.getExistingPackage`: the done package of the graph, if any.
+// Java: com/google/devtools/build/lib/skyframe/PrerequisitePackageFunction.java:29 PrerequisitePackageFunction.getExistingPackage
+pub type PrerequisitePackageFunction = Arc<
+    dyn Fn(
+            &blaze_cmdline::PackageIdentifier,
+        ) -> Option<Arc<blaze_packages::package::package::Package>>
+        + Send
+        + Sync,
+>;
 
 /// `WorkspaceStatusValue.BUILD_INFO_KEY` as a Skyframe key: the node of the workspace status
 /// action (`WorkspaceStatusFunction`), requested by analysis when a rule reads the workspace

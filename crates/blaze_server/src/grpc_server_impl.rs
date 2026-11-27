@@ -617,7 +617,11 @@ impl GrpcServerImpl {
                 .map(|a| platform_bytes_to_internal_string(a))
                 .collect();
 
-            // PORT: skipped, logging (SafeRequestLogging.getRequestLogString(args)).
+            blaze_util::server_logger::info(
+                "com.google.devtools.build.lib.server.GrpcServerImpl",
+                "executeCommand",
+                &blaze_util::server_logger::safe_request_log_string(&args),
+            );
             let command_manager = self.command_manager.clone();
             let idle_task_results_supplier: IdleTaskResultsSupplier =
                 Arc::new(move || command_manager.get_idle_task_results());
@@ -743,7 +747,11 @@ impl GrpcServerImpl {
 
     // Java: com/google/devtools/build/lib/server/GrpcServerImpl.java:702 GrpcServerImpl.cancel
     async fn cancel(self: &Arc<Self>, request: CancelRequest) -> Result<CancelResponse, Status> {
-        // PORT: skipped, logging ("Got CancelRequest for command id %s").
+        blaze_util::server_logger::info(
+            "com.google.devtools.build.lib.server.GrpcServerImpl",
+            "cancel",
+            &format!("Got CancelRequest for command id {}", request.command_id),
+        );
         if !self.is_valid_request_cookie(&request.cookie) {
             return Err(completed_without_response());
         }
@@ -774,7 +782,14 @@ impl GrpcServerImpl {
         self: &Arc<Self>,
         request: TerminalSizeRequest,
     ) -> Result<TerminalSizeResponse, Status> {
-        // PORT: skipped, logging ("Got TerminalSizeRequest for command id %s").
+        blaze_util::server_logger::info(
+            "com.google.devtools.build.lib.server.GrpcServerImpl",
+            "updateTerminalSize",
+            &format!(
+                "Got TerminalSizeRequest for command id {}",
+                request.command_id
+            ),
+        );
         if !self.is_valid_request_cookie(&request.cookie) {
             return Err(completed_without_response());
         }

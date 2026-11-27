@@ -16,7 +16,7 @@ use starlark::eval::Evaluator;
 
 use crate::event_helper;
 use crate::thread_handler::{DebugRequestException, ThreadHandler};
-use crate::transport::{DebugServerTransport, ListenPortCallback};
+use crate::transport::DebugServerTransport;
 
 /// Callbacks at the debugging lifecycle's steps.
 // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:262 StarlarkDebugServer.DebugCallback
@@ -59,14 +59,15 @@ impl StarlarkDebugServer {
         verbose_logging: bool,
         callback: Arc<dyn DebugCallback>,
     ) -> io::Result<Arc<StarlarkDebugServer>> {
-        // new ServerSocket(port, /* backlog */ 1): the wildcard address.
-        let server_socket = TcpListener::bind(("0.0.0.0", port))?;
+        // new ServerSocket(port): the wildcard address (IPv6 and IPv4 where the JVM prefers the
+        // dual stack, else IPv4 only).
+        let server_socket =
+            TcpListener::bind(("::", port)).or_else(|_| TcpListener::bind(("0.0.0.0", port)))?;
         Self::create_and_wait_for_connection_on(
             event_handler,
             server_socket,
             verbose_logging,
             callback,
-            None,
         )
     }
 
@@ -76,13 +77,11 @@ impl StarlarkDebugServer {
         server_socket: TcpListener,
         verbose_logging: bool,
         callback: Arc<dyn DebugCallback>,
-        on_listen_port: Option<&ListenPortCallback>,
     ) -> io::Result<Arc<StarlarkDebugServer>> {
         let transport = DebugServerTransport::create_and_wait_for_client(
             event_handler.clone(),
             server_socket,
             verbose_logging,
-            on_listen_port,
         )?;
         let server = Arc::new(StarlarkDebugServer {
             event_handler,

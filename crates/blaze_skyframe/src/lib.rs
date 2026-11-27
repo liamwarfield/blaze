@@ -171,17 +171,19 @@ macro_rules! check_not_null {
 }
 
 /// Test hook: tells the graph's injected listeners (`graph_listener`, Java's `NotifyingHelper`)
-/// about a call on a node entry. Expands to nothing outside `cfg(test)`. Use it as a statement:
+/// about a call on a node entry. Without an injected listener it reads one flag and does not
+/// evaluate `context`. Use it as a statement:
 /// `notify_graph_listener!(graph, key, EventType, Order, context)`.
 macro_rules! notify_graph_listener {
     ($graph:expr, $key:expr, $event_type:ident, $order:ident, $context:expr) => {
-        #[cfg(test)]
-        $graph.listeners_for_testing.notify(
-            $key,
-            crate::graph_listener::EventType::$event_type,
-            crate::graph_listener::Order::$order,
-            $context,
-        );
+        if $graph.listeners_for_testing.is_installed() {
+            $graph.listeners_for_testing.notify(
+                $key,
+                crate::graph_listener::EventType::$event_type,
+                crate::graph_listener::Order::$order,
+                $context,
+            );
+        }
     };
 }
 
@@ -198,8 +200,7 @@ mod evaluator;
 mod event_filter;
 mod function_hermeticity;
 pub mod graph_inconsistency_receiver;
-#[cfg(test)]
-mod graph_listener;
+pub mod graph_listener;
 mod grouped_deps;
 mod in_memory_graph;
 mod in_memory_node_entry;
@@ -243,6 +244,15 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 // Java: com/google/devtools/build/skyframe/SkyFunctionName.java:23 SkyFunctionName
+// PORT: a function name is a `&'static str` constant whose hermeticity is the key type's
+// `Key::HERMETICITY`; the create* factories are the constants and their Key impls.
+// Java: com/google/devtools/build/skyframe/SkyFunctionName.java:40 SkyFunctionName.createNonHermetic
+// Java: com/google/devtools/build/skyframe/SkyFunctionName.java:48 SkyFunctionName.createSemiHermetic
+// Java: com/google/devtools/build/skyframe/SkyFunctionName.java:56 SkyFunctionName.createHermetic
+// Java: com/google/devtools/build/skyframe/SkyFunctionName.java:60 SkyFunctionName.create
+// Java: com/google/devtools/build/skyframe/SkyFunctionName.java:93 SkyFunctionName.equals
+// Java: com/google/devtools/build/skyframe/SkyFunctionName.java:104 SkyFunctionName.hashCode
+// PORT: skipped, predicates over keys; Rust callers compare `key.function_name()`: SkyFunctionName.functionIs, SkyFunctionName.functionIsIn
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct SkyFunctionName(pub &'static str);
 
@@ -259,6 +269,7 @@ impl fmt::Debug for SkyFunctionName {
     }
 }
 
+// Java: com/google/devtools/build/skyframe/SkyFunctionName.java:88 SkyFunctionName.toString
 impl fmt::Display for SkyFunctionName {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.0)
@@ -335,6 +346,10 @@ impl<K: Key> DynKey for K {
     }
 }
 
+// PORT: skipped, only the parallel evaluator and its graph use them (canonical names for logging, shareability for remote caching, batch prefetch and partial reevaluation flags): SkyKey.getCanonicalName, SkyKey.valueIsShareable, SkyKey.skipsBatchPrefetch, SkyKey.supportsPartialReevaluation
+// PORT: skipped, keys are not interned (Arc keys compared by value): SkyKey.getSkyKeyInterner, SkyKey.newInterner, SkyKey.SkyKeyInterner.setGlobalPool, SkyKey.SkyKeyInterner.getPool, SkyKey.SkyKeyInterner.weakInternUnchecked
+// PORT: skipped, each key type is a struct with derived equality and hashing (Key impls), not an argument wrapper: AbstractSkyKey.<init>, AbstractSkyKey.argument, AbstractSkyKey.hashCode, AbstractSkyKey.equals, AbstractSkyKey.WithCachedHashCode.<init>, AbstractSkyKey.WithCachedHashCode.hashCode
+// PORT: skipped, values are never cleared (no `isCleared` state) and debug printing uses Debug: SkyValue.isCleared, SkyValue.debugPrint
 /// A type-erased, cheaply clonable key. Java: `SkyKey`.
 #[derive(Clone)]
 pub struct SkyKey(Arc<dyn DynKey>);
@@ -414,6 +429,11 @@ pub struct SkyFunctionException {
 }
 
 impl SkyFunctionException {
+    // PORT: skipped, Rust's types check the cause (any Error) at compile time: SkyFunctionException.validateExceptionType
+    // PORT: the reified exception is this struct (the cause, transience and catastrophe).
+    // Java: com/google/devtools/build/skyframe/SkyFunctionException.java:136 SkyFunctionException.ReifiedSkyFunctionException.<init>
+    // Java: com/google/devtools/build/skyframe/SkyFunctionException.java:147 SkyFunctionException.ReifiedSkyFunctionException.isCatastrophic
+    // Java: com/google/devtools/build/skyframe/SkyFunctionException.java:152 SkyFunctionException.ReifiedSkyFunctionException.getOriginalException
     // Java: com/google/devtools/build/skyframe/SkyFunctionException.java:64 SkyFunctionException.<init>
     pub fn new<E: std::error::Error + Send + Sync + 'static>(
         cause: E,

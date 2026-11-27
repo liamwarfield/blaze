@@ -255,8 +255,8 @@ pub(crate) struct InMemoryGraphImpl {
     shards: Vec<Mutex<HashMap<SkyKey, Arc<Node>>>>,
     hasher: std::collections::hash_map::RandomState,
     keep_edges: bool,
-    /// Test hook: Java's `NotifyingHelper` graph transformers (`graph_listener`).
-    #[cfg(test)]
+    /// Test hook: Java's `NotifyingHelper` graph transformers (`graph_listener`); a new graph
+    /// starts with the listeners pending for new graphs.
     pub(crate) listeners_for_testing: crate::graph_listener::GraphListeners,
 }
 
@@ -268,7 +268,6 @@ impl InMemoryGraphImpl {
             shards: (0..SHARDS).map(|_| Mutex::new(HashMap::new())).collect(),
             hasher: Default::default(),
             keep_edges,
-            #[cfg(test)]
             listeners_for_testing: Default::default(),
         }
     }

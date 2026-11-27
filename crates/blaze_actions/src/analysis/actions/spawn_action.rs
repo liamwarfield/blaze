@@ -873,6 +873,30 @@ impl SpawnActionBuilder {
         }
     }
 
+    /// A builder with the settings of `other` (Java's copy constructor; the exec group and the
+    /// `StarlarkAction.Builder` fields are not copied).
+    // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:642 SpawnAction.Builder.<init>
+    pub fn from_builder(other: &SpawnActionBuilder) -> SpawnActionBuilder {
+        let mut b = SpawnActionBuilder::new();
+        b.tools_builder.add_transitive(&other.tools_builder.build());
+        b.inputs_builder
+            .add_transitive(&other.inputs_builder.build());
+        b.outputs.extend(other.outputs.iter().cloned());
+        b.resource_set = other.resource_set.clone();
+        b.resource_set_builder = other.resource_set_builder.clone();
+        b.environment = other.environment.clone();
+        b.action_environment = other.action_environment.clone();
+        b.output_paths_mode = other.output_paths_mode;
+        b.execution_info = other.execution_info.clone();
+        b.use_default_shell_environment = other.use_default_shell_environment;
+        b.executable_arg = other.executable_arg.clone();
+        b.executable_args = other.executable_args.clone();
+        b.command_lines = other.command_lines.clone();
+        b.progress_message = other.progress_message.clone();
+        b.mnemonic = other.mnemonic.clone();
+        b
+    }
+
     /// The exec group whose action owner `build(context)` uses.
     pub fn get_exec_group(&self) -> &str {
         &self.exec_group

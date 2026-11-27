@@ -1429,7 +1429,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +} // BLAZE PATCH 0045
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/module.rs starlark/src/eval/compiler/module.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/compiler/module.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/compiler/module.rs	2026-11-25 10:17:27.436220987 -0700
++++ starlark/src/eval/compiler/module.rs	2026-11-27 01:25:13.975196422 -0700
 @@ -61,6 +61,13 @@
  
          let span = FrameSpan::new(FrozenFileSpan::new(self.codemap, load.span));
@@ -1987,7 +1987,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          self.stack[1..self.count].map(|x| x.function)
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/evaluator.rs starlark/src/eval/runtime/evaluator.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/eval/runtime/evaluator.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/eval/runtime/evaluator.rs	2026-11-26 15:25:00.572243070 -0700
++++ starlark/src/eval/runtime/evaluator.rs	2026-11-27 01:25:13.962579252 -0700
 @@ -47,6 +47,7 @@
  use crate::eval::compiler::def::CopySlotFromParent;
  use crate::eval::compiler::def::Def;
@@ -4225,7 +4225,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict/value.rs starlark/src/values/types/dict/value.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict/value.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/dict/value.rs	2026-11-26 20:38:34.528873903 -0700
++++ starlark/src/values/types/dict/value.rs	2026-11-26 23:36:32.123909197 -0700
 @@ -16,6 +16,7 @@
   */
  
@@ -4234,7 +4234,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  use std::cell::Ref;
  use std::cell::RefCell;
  use std::cell::RefMut;
-@@ -117,7 +118,158 @@
+@@ -117,7 +118,196 @@
  /// Alias is used in `StarlarkDocs` derive.
  pub(crate) type FrozenDict = DictGen<FrozenDictData>;
  
@@ -4326,6 +4326,44 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +    anyhow::anyhow!("trying to mutate a frozen dict value")
 +}
 +
++/// BLAZE PATCH 0069: Java `AbstractMap.equals(map)` of a dict's `content` against a native value // BLAZE PATCH 0069
++/// that Java implements as a `Map` (`StarlarkValue::java_map_entries`): the same size, and each // BLAZE PATCH 0069
++/// key's value equal to the map's value for that key. `None` if `other` is not such a map. The // BLAZE PATCH 0069
++/// map's entries are made on `heap`, a temporary heap (`dict.equals` has none). // BLAZE PATCH 0069
++fn java_map_equals<'v, 't>( // BLAZE PATCH 0069
++    content: &SmallMap<Value<'v>, Value<'v>>, // BLAZE PATCH 0069
++    other: Value<'v>, // BLAZE PATCH 0069
++    heap: Heap<'t>, // BLAZE PATCH 0069
++) -> crate::Result<Option<bool>> { // BLAZE PATCH 0069
++    // SAFETY: only the lifetime changes. `content` and `other` are borrowed by the caller for the // BLAZE PATCH 0069
++    // whole call, the temporary heap's values die with it, and comparing values stores none. // BLAZE PATCH 0069
++    let (content, other) = unsafe { // BLAZE PATCH 0069
++        ( // BLAZE PATCH 0069
++            transmute!(&SmallMap<Value<'v>, Value<'v>>, &SmallMap<Value<'t>, Value<'t>>, content), // BLAZE PATCH 0069
++            transmute!(Value<'v>, Value<'t>, other), // BLAZE PATCH 0069
++        ) // BLAZE PATCH 0069
++    }; // BLAZE PATCH 0069
++    let Some(entries) = other.get_ref().java_map_entries(heap) else { // BLAZE PATCH 0069
++        return Ok(None); // BLAZE PATCH 0069
++    }; // BLAZE PATCH 0069
++    let mut map = SmallMap::new(); // BLAZE PATCH 0069
++    for (k, v) in entries? { // BLAZE PATCH 0069
++        map.insert_hashed(k.get_hashed()?, v); // BLAZE PATCH 0069
++    } // BLAZE PATCH 0069
++    Ok(Some(equals_small_map(content, &map, |x, y| x.equals(*y))?)) // BLAZE PATCH 0069
++} // BLAZE PATCH 0069
++
++/// BLAZE PATCH 0069: the entries of a native value that Java implements as a `Map` without being // BLAZE PATCH 0069
++/// a `Dict` (`StarlarkValue::java_map_entries`, patch 0068), for code outside this crate that // BLAZE PATCH 0069
++/// handles any Java `Map` (Bazel's `json.encode`, attribute conversion). `None` for a dict and // BLAZE PATCH 0069
++/// for any other value. // BLAZE PATCH 0069
++pub fn java_map_entries<'v>( // BLAZE PATCH 0069
++    x: Value<'v>, // BLAZE PATCH 0069
++    heap: Heap<'v>, // BLAZE PATCH 0069
++) -> Option<crate::Result<Vec<(Value<'v>, Value<'v>)>>> { // BLAZE PATCH 0069
++    x.get_ref().java_map_entries(heap) // BLAZE PATCH 0069
++} // BLAZE PATCH 0069
++
 +/// BLAZE PATCH 0018: an immutable dict with the given entries (Java
 +/// net/starlark/java/eval/Dict.java:495 `Dict.immutableCopyOf`, via `copyOf(null, ..)`). The
 +/// empty dict is the shared frozen empty dict (Java `Dict.empty()`). Otherwise the dict lives on
@@ -4394,7 +4432,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
  
  static_starlark_value!(
      pub(crate) VALUE_EMPTY_FROZEN_DICT: DictGen<FrozenDictData> = DictGen(FrozenDictData {
-@@ -129,7 +281,7 @@
+@@ -129,7 +319,7 @@
  
  impl<'v> AllocValue<'v> for Dict<'v> {
      fn alloc_value(self, heap: Heap<'v>) -> Value<'v> {
@@ -4403,7 +4441,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  }
  
-@@ -154,13 +306,14 @@
+@@ -154,13 +344,14 @@
  impl<'v> Dict<'v> {
      pub(crate) fn is_dict_type(x: TypeId) -> bool {
          x == TypeId::of::<DictGen<FrozenDictData>>()
@@ -4421,7 +4459,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          }
      }
  }
-@@ -316,10 +469,10 @@
+@@ -316,10 +507,10 @@
      }
  }
  
@@ -4434,7 +4472,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          Ok(DictGen(FrozenDictData { content }))
      }
  }
-@@ -336,9 +489,20 @@
+@@ -336,9 +527,20 @@
      unsafe fn content_unchecked(&self) -> &SmallMap<Value<'v>, Value<'v>>;
      unsafe fn iter_stop(&self);
      fn set_at(&self, index: Hashed<Value<'v>>, value: Value<'v>) -> crate::Result<()>;
@@ -4456,7 +4494,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      type ContentRef<'a>
          = Ref<'a, SmallMap<Value<'v>, Value<'v>>>
      where
-@@ -346,18 +510,18 @@
+@@ -346,18 +548,18 @@
          'v: 'a;
  
      fn content<'a>(&'a self) -> Ref<'a, SmallMap<Value<'v>, Value<'v>>> {
@@ -4478,7 +4516,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          }
      }
  
-@@ -365,17 +529,40 @@
+@@ -365,17 +567,40 @@
      unsafe fn content_unchecked(&self) -> &SmallMap<Value<'v>, Value<'v>> {
          unsafe {
              // SAFETY: this function contract is, caller must ensure that the value is borrowed.
@@ -4522,7 +4560,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          }
      }
  }
-@@ -400,9 +587,8 @@
+@@ -400,9 +625,8 @@
      }
  
      fn set_at(&self, _index: Hashed<Value<'v>>, _value: Value<'v>) -> crate::Result<()> {
@@ -4534,7 +4572,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  }
  
-@@ -423,6 +609,7 @@
+@@ -423,6 +647,7 @@
      }
  
      fn collect_repr(&self, r: &mut String) {
@@ -4542,7 +4580,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          // Fast path as repr() for dicts is quite hot
          r.push('{');
          for (i, (name, value)) in self.0.content().iter().enumerate() {
-@@ -437,7 +624,7 @@
+@@ -437,7 +662,7 @@
      }
  
      fn collect_repr_cycle(&self, collector: &mut String) {
@@ -4551,12 +4589,20 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
      }
  
      fn to_bool(&self) -> bool {
-@@ -447,18 +634,38 @@
+@@ -446,19 +671,45 @@
+ 
      fn equals(&self, other: Value<'v>) -> crate::Result<bool> {
          match DictRef::from_value(other) {
-             None => Ok(false),
+-            None => Ok(false),
 -            Some(other) => {
 -                equals_small_map(&*self.0.content(), &other.content, |x, y| x.equals(*y))
++            // BLAZE PATCH 0069: Java Dict.equals is `contents.equals(o)` (AbstractMap.equals), // BLAZE PATCH 0069
++            // true for any Map with the same entries, such as Bazel's `existing_rule` views. // BLAZE PATCH 0069
++            None => { // BLAZE PATCH 0069
++                let content = self.0.content(); // BLAZE PATCH 0069
++                Heap::temp(|heap| java_map_equals(&content, other, heap)) // BLAZE PATCH 0069
++                    .map(|equal| equal.unwrap_or(false)) // BLAZE PATCH 0069
++            } // BLAZE PATCH 0069
 +            Some(other_ref) => {
 +                // BLAZE PATCH 0063 (round 2): the reads of Java's `x.equals(y)` on a key-tracking `y`.
 +                if let Some(tracking) = other.downcast_ref::<MutableDict>() {
@@ -4597,7 +4643,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          }
      }
  
-@@ -467,13 +674,22 @@
+@@ -467,13 +718,22 @@
      }
  
      fn is_in(&self, other: Value<'v>) -> crate::Result<bool> {
@@ -4622,7 +4668,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          unsafe {
              self.0.iter_start();
              Ok(me)
-@@ -502,8 +718,17 @@
+@@ -502,8 +762,17 @@
      }
  
      fn bit_or(&self, rhs: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
@@ -4642,8 +4688,8 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
          }
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict.rs starlark/src/values/types/dict.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/dict.rs	2006-07-23 19:21:28.000000000 -0600
-+++ starlark/src/values/types/dict.rs	2026-11-26 14:40:23.269748542 -0700
-@@ -34,3 +34,8 @@
++++ starlark/src/values/types/dict.rs	2026-11-26 23:36:32.160165844 -0700
+@@ -34,3 +34,9 @@
  pub use crate::values::dict::refs::FrozenDictRef;
  pub use crate::values::dict::unpack::UnpackDictEntries;
  pub use crate::values::dict::value::Dict;
@@ -4652,6 +4698,7 @@ diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.cra
 +pub use crate::values::dict::value::alloc_immutable_key_tracking_dict; // BLAZE PATCH 0063
 +pub use crate::values::dict::value::dict_accessed_keys; // BLAZE PATCH 0063
 +pub use crate::values::dict::value::dict_record_all_keys_accessed; // BLAZE PATCH 0063
++pub use crate::values::dict::value::java_map_entries; // BLAZE PATCH 0069
 diff -ru '--exclude=Cargo.lock' /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/float/float.rs starlark/src/values/types/float/float.rs
 --- /home/liamwarfield/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/starlark-0.14.2/src/values/types/float/float.rs	2006-07-23 19:21:28.000000000 -0600
 +++ starlark/src/values/types/float/float.rs	2026-11-18 16:05:57.072278347 -0700

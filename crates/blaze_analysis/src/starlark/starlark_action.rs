@@ -101,12 +101,15 @@ impl StarlarkAction {
             // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java getMnemonic
             MNEMONIC => heap.alloc_str(&action.get_mnemonic()).to_value(),
             // Java: com/google/devtools/build/lib/actions/AbstractAction.java:613 AbstractAction.getStarlarkInputs
-            INPUTS => depset_value(&artifacts_to_depset(&action.get_inputs())),
+            INPUTS => depset_value(heap, &artifacts_to_depset(&action.get_inputs())),
             // Java: com/google/devtools/build/lib/actions/AbstractAction.java:618 AbstractAction.getStarlarkOutputs
-            OUTPUTS => depset_value(&artifacts_to_depset(&NestedSetBuilder::<Artifact>::wrap(
-                Order::STABLE_ORDER,
-                action.get_outputs(),
-            ))),
+            OUTPUTS => depset_value(
+                heap,
+                &artifacts_to_depset(&NestedSetBuilder::<Artifact>::wrap(
+                    Order::STABLE_ORDER,
+                    action.get_outputs(),
+                )),
+            ),
             // `allowReturnNones = true`: null is None.
             ARGV => match action.get_starlark_argv().map_err(api_error)? {
                 Some(argv) => alloc_immutable_list(

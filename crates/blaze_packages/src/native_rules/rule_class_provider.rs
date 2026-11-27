@@ -330,6 +330,9 @@ pub fn bazel_rule_class_provider_setup(builder: &mut RuleClassProviderBuilder) {
     // PORT: skipped, the requirements are earlier in RULE_SETS (see above): CcRules.requires
     // PORT: skipped, the requirements are earlier in RULE_SETS (see above): GenericRules.requires
     // PORT: skipped, the requirements are earlier in RULE_SETS (see above): ToolchainRules.requires
+    // PORT: skipped, the requirements are earlier in RULE_SETS (see above): ObjcRules.requires
+    // The rule sets are functions here; their singleton constructors have no state:
+    // PORT: skipped, a stateless singleton (INSTANCE): CoreRules.<init>, ObjcRules.<init>
     bazel_setup(builder);
     core_rules(builder);
     generic_rules(builder);

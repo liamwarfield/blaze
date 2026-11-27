@@ -30,3 +30,4 @@ pub mod semantics_fingerprint;
 pub mod services;
 pub mod setup;
 pub mod starlark;
+pub mod workspace_rule_event;

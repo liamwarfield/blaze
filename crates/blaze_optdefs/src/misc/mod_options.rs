@@ -183,6 +183,8 @@ options! {
     }
 }
 
+// PORT: `option_enum!` gives each value its lower-case name (Java `Ascii.toLowerCase(name())`).
+// Java: com/google/devtools/build/lib/bazel/bzlmod/modcommand/ModOptions.java:219 ModOptions.ModSubcommand.toString
 // Java: com/google/devtools/build/lib/bazel/bzlmod/modcommand/ModOptions.java:201 ModOptions.ModSubcommand
 option_enum! {
     /// Possible subcommands that can be specified for the `mod` command.
@@ -248,6 +250,7 @@ option_enum! {
 // Java: com/google/devtools/build/lib/bazel/bzlmod/modcommand/ModOptions.java:261 ModOptions.CharsetConverter
 enum_converter!(pub CharsetConverter, Charset, "output charset");
 
+// Java: com/google/devtools/build/lib/bazel/bzlmod/modcommand/ModOptions.java:280 ModOptions.OutputFormat.toString
 // Java: com/google/devtools/build/lib/bazel/bzlmod/modcommand/ModOptions.java:268 ModOptions.OutputFormat
 option_enum! {
     /// Possible formats of the `mod` command result.

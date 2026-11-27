@@ -150,8 +150,10 @@ pub fn get_children<'v>(
         }
         DebugObject::Value(v) => v,
     };
+    // getChildren(objectMap, map.entrySet()): an Iterable of entries. The entry set of a
+    // key-tracking dict (`ctx.var`) records every key.
+    starlark::values::dict::dict_record_all_keys_accessed(v);
     if let Some(d) = DictRef::from_value(v) {
-        // getChildren(objectMap, map.entrySet()): an Iterable of entries.
         let entries: Vec<(Value<'v>, Value<'v>)> = d.iter().collect();
         drop(d);
         return entries

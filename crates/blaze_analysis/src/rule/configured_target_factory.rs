@@ -88,13 +88,27 @@ impl From<RuleConfiguredTargetBuildError> for ConfiguredTargetFactoryError {
 // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:92 ConfiguredTargetFactory
 pub struct ConfiguredTargetFactory {
     rule_class_provider: Arc<ConfiguredRuleClassProvider>,
+    conflict_finder: crate::rule::action_conflict_exception::ConflictFinderSupplier,
 }
 
 impl ConfiguredTargetFactory {
     // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:100 ConfiguredTargetFactory.<init>
     pub fn new(rule_class_provider: Arc<ConfiguredRuleClassProvider>) -> ConfiguredTargetFactory {
+        Self::with_conflict_finder(
+            rule_class_provider,
+            crate::rule::action_conflict_exception::no_conflict_finder(),
+        )
+    }
+
+    /// `new ConfiguredTargetFactory(ruleClassProvider, conflictFinder)`.
+    // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:100 ConfiguredTargetFactory.<init>
+    pub fn with_conflict_finder(
+        rule_class_provider: Arc<ConfiguredRuleClassProvider>,
+        conflict_finder: crate::rule::action_conflict_exception::ConflictFinderSupplier,
+    ) -> ConfiguredTargetFactory {
         ConfiguredTargetFactory {
             rule_class_provider,
+            conflict_finder,
         }
     }
 
@@ -432,6 +446,7 @@ impl ConfiguredTargetFactory {
         );
         builder
             .set_rule_class_provider(self.rule_class_provider.clone())
+            .set_conflict_finder(self.conflict_finder.clone())
             .set_configuration_fragment_policy(configuration_fragment_policy.clone())
             .set_action_owner_symbol(ActionLookupKeyRef::new(configured_target_key.clone()))
             .set_mutability("configured target")
@@ -765,6 +780,7 @@ impl ConfiguredTargetFactory {
         );
         builder
             .set_rule_class_provider(self.rule_class_provider.clone())
+            .set_conflict_finder(self.conflict_finder.clone())
             .set_configuration_fragment_policy(
                 aspect
                     .get_definition()
@@ -824,7 +840,23 @@ impl ConfiguredTargetFactory {
             &blaze_cmdline::repository_name::BAZEL_TOOLS,
         )?;
 
-        // PORT: the conflict finder (getConflictFinder() != null) is not ported.
+        // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:741 ConfiguredTargetFactory.createAspect
+        if let (Some(conflict_finder), Some(configured_aspect)) =
+            (rule_context.get_conflict_finder(), &configured_aspect)
+        {
+            for action in configured_aspect.get_actions() {
+                conflict_finder
+                    .conflict_check_per_action(action)
+                    .map_err(|e| match e {
+                        crate::rule::action_conflict_exception::ConflictCheckPerActionError::ActionConflict(e) => {
+                            ConfiguredTargetFactoryError::Create(CreateConfiguredTargetError::ActionConflict(e))
+                        }
+                        crate::rule::action_conflict_exception::ConflictCheckPerActionError::Interrupted => {
+                            ConfiguredTargetFactoryError::Create(CreateConfiguredTargetError::Interrupted)
+                        }
+                    })?;
+            }
+        }
         let Some(configured_aspect) = configured_aspect else {
             return Self::errored_configured_aspect(&rule_context, None);
         };
@@ -939,11 +971,27 @@ impl ConfiguredTargetFactory {
     // Java: com/google/devtools/build/lib/analysis/ConfiguredTargetFactory.java:857 ConfiguredTargetFactory.createFailConfiguredTargetForMissingFragmentClass
     fn create_fail_configured_target_for_missing_fragment_class(
         rule_context: &RuleContext,
-        _missing_fragment_class: &str,
+        missing_fragment_class: &str,
     ) -> Result<Option<ConfiguredTarget>, ConfiguredTargetFactoryError> {
         if !rule_context.get_output_artifacts().is_empty() {
-            // PORT: FailAction is not ported in blaze_actions.
-            blaze_util::unported!("FailAction (missing fragment class)");
+            // missingFragmentClass.getName(): the policy holds a fragment by the name its rule
+            // class declared, which is the binary class name only when it has a package.
+            // PORT: no rule class at the pin sets MissingFragmentPolicy.CREATE_FAIL_ACTIONS
+            // (only IGNORE: TestSuiteRule, StarlarkRuleClassFunctions), so this is unreachable.
+            if !missing_fragment_class.contains('.') {
+                blaze_util::unported!(
+                    "Class.getName",
+                    "binary name of the fragment class {missing_fragment_class}"
+                );
+            }
+            rule_context.register_action(Arc::new(
+                blaze_actions::actions::fail_action::FailAction::new(
+                    rule_context.get_action_owner(),
+                    rule_context.get_output_artifacts(),
+                    &format!("Missing fragment class: {missing_fragment_class}"),
+                    blaze_protos::failure_details::fail_action::Code::FragmentClassMissing,
+                ),
+            ));
         }
         let mut builder = RuleConfiguredTargetBuilder::new(rule_context);
         builder.add_provider(RunfilesProvider::simple(Runfiles::empty()));

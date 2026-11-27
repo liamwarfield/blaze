@@ -48,6 +48,12 @@ use crate::package::TargetDefinitionContext;
 pub struct BuildFileInterrupted;
 
 /// Creates packages (Java `PackageFactory`).
+// PORT: skipped, test-only: PackageFactory.BuilderForTesting.disableChecks, PackageFactory.BuilderForTesting.setPackageValidator, PackageFactory.BuilderForTesting.setPackageOverheadEstimator, PackageFactory.BuilderForTesting.build
+// PORT: skipped, a cache of file system calls (performance only; Blaze stats the file system): PackageFactory.setSyscallCache
+// PORT: skipped, the fork-join pool of legacy globbing (parallelism only; Bazel globs through the GLOBS function, SINGLE_GLOBS_HYBRID): PackageFactory.setGlobbingThreads, PackageFactory.makeDefaultSizedForkJoinPoolForGlobbing, PackageFactory.makeForkJoinPool
+// PORT: skipped, no caller in Bazel 9.3.2: RelativePackageNameResolver.<init>, RelativePackageNameResolver.resolve
+// PORT: skipped, no caller in Bazel 9.3.2: RuleFormatter.serializeRule, RuleFormatter.evaluateStarlarkComputedDefault
+// PORT: skipped, no caller in Bazel 9.3.2: LoadedPackageProvider.<init>, LoadedPackageProvider.getEventHandler, LoadedPackageProvider.getLoadedTarget
 // Java: com/google/devtools/build/lib/packages/PackageFactory.java:84 PackageFactory
 pub struct PackageFactory {
     rule_class_provider: Arc<RuleClassProvider>,

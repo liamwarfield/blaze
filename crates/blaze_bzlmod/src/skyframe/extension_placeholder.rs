@@ -194,6 +194,15 @@ pub fn compute_single_extension(
 /// The body of `SingleExtensionFunction.compute` after its two lookups: reports the fixup
 /// warning and checks the imports and repo overrides of the usages.
 // Java: com/google/devtools/build/lib/bazel/bzlmod/SingleExtensionFunction.java:51 SingleExtensionFunction.compute
+/// `new SingleExtensionFunctionException(cause, transience)`.
+// Java: com/google/devtools/build/lib/bazel/bzlmod/SingleExtensionFunction.java:113 SingleExtensionFunction.SingleExtensionFunctionException.<init>
+fn single_extension_function_exception(
+    cause: ExternalDepsException,
+    transience: Transience,
+) -> ComputeError {
+    throw(cause, transience)
+}
+
 pub fn check_single_extension(
     extension_id: &ModuleExtensionId,
     eval_only_value: &SingleExtensionValue,
@@ -216,7 +225,7 @@ pub fn check_single_extension(
                     .contains_key(exported_name)
                     && !repo_overrides.contains_key(exported_name)
                 {
-                    return Err(throw(
+                    return Err(single_extension_function_exception(
                         ExternalDepsException::with_message(
                             ExternalDepsCode::InvalidExtensionImport,
                             format!(
@@ -244,7 +253,7 @@ pub fn check_single_extension(
         for (name, override_) in &usage.repo_overrides {
             let repo_exists = eval_only_value.generated_repo_specs.contains_key(name);
             if repo_exists && !override_.must_exist {
-                return Err(throw(
+                return Err(single_extension_function_exception(
                     ExternalDepsException::with_message(
                         ExternalDepsCode::InvalidExtensionImport,
                         format!(
@@ -257,7 +266,7 @@ pub fn check_single_extension(
                     Transience::Persistent,
                 ));
             } else if !repo_exists && override_.must_exist {
-                return Err(throw(
+                return Err(single_extension_function_exception(
                     ExternalDepsException::with_message(
                         ExternalDepsCode::InvalidExtensionImport,
                         format!(

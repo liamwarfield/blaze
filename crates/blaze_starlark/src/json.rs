@@ -107,9 +107,18 @@ impl<'v> Encoder<'v> {
         // e.g. dict (must have string keys)
         // A key-tracking dict (`ctx.var`) records every key: Java Json.Encoder.encode of a Map: `keySet()`.
         starlark::values::dict::dict_record_all_keys_accessed(x);
-        if let Some(d) = DictRef::from_value(x) {
-            let entries: Vec<(Value<'v>, Value<'v>)> = d.iter().collect();
-            drop(d);
+        // Java `x instanceof Map`: a dict, or a native value Java implements as a `Map` (Bazel's
+        // `existing_rule` views; starlark-rust patch 0069), whose `m.get(key)` are its entries.
+        let map_entries: Option<Vec<(Value<'v>, Value<'v>)>> = match DictRef::from_value(x) {
+            Some(d) => Some(d.iter().collect()),
+            None => match starlark::values::dict::java_map_entries(x, self.heap) {
+                Some(entries) => {
+                    Some(entries.map_err(|e| EncErr::Msg(crate::error::bare_message(&e)))?)
+                }
+                None => None,
+            },
+        };
+        if let Some(entries) = map_entries {
             let mut keyed: Vec<(&str, Value<'v>)> = Vec::with_capacity(entries.len());
             for (k, _) in &entries {
                 if k.unpack_str().is_none() {
@@ -123,9 +132,8 @@ impl<'v> Encoder<'v> {
             for (k, v) in &entries {
                 keyed.push((k.unpack_str().unwrap(), *v));
             }
-            // Sort keys for determinism (Java: Arrays.sort on Strings, UTF-16 order; equal to
-            // code point order for BMP characters).
-            keyed.sort_by(|a, b| a.0.cmp(b.0));
+            // Sort keys for determinism (Java: Arrays.sort on Strings, UTF-16 order).
+            keyed.sort_by(|a, b| a.0.encode_utf16().cmp(b.0.encode_utf16()));
             self.out.push('{');
             for (i, (k, v)) in keyed.iter().enumerate() {
                 if i > 0 {

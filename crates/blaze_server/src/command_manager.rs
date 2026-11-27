@@ -20,6 +20,8 @@ use crate::terminal_size_monitor::TerminalSizeMonitor;
 struct RunningCommandEntry {
     /// `thread`: the interrupt status of the thread that created the command.
     thread: ThreadInterrupt,
+    /// `thread.getName()`.
+    thread_name: String,
     id: String,
     preemptible: bool,
     terminal_size_monitor: Arc<TerminalSizeMonitor>,
@@ -114,12 +116,21 @@ impl CommandManager {
         let map = self.running_commands_map.lock();
         match map.get(&request.command_id) {
             Some(pending_command) => {
-                // PORT: skipped, logging ("Interrupting command %s on thread %s").
+                log_info(
+                    "doCancel",
+                    &format!(
+                        "Interrupting command {} on thread {}",
+                        request.command_id, pending_command.thread_name
+                    ),
+                );
                 pending_command.thread.interrupt();
                 self.start_slow_interrupt_watcher(HashSet::from([request.command_id.clone()]));
             }
             None => {
-                // PORT: skipped, logging ("Cannot find command %s to interrupt").
+                log_info(
+                    "doCancel",
+                    &format!("Cannot find command {} to interrupt", request.command_id),
+                );
             }
         }
         drop(map);
@@ -135,7 +146,13 @@ impl CommandManager {
                     .update_terminal_size(request.columns, request.rows);
             }
             None => {
-                // PORT: skipped, logging ("Cannot find command %s to update terminal size").
+                log_info(
+                    "doUpdateTerminalSize",
+                    &format!(
+                        "Cannot find command {} to update terminal size",
+                        request.command_id
+                    ),
+                );
             }
         }
     }
@@ -164,7 +181,13 @@ impl CommandManager {
             map.insert(command.entry.id.clone(), command.entry.clone());
             self.running_commands_map.notify_all();
         }
-        // PORT: skipped, logging ("Starting command %s on thread %s").
+        log_info(
+            "registerCommand",
+            &format!(
+                "Starting command {} on thread {}",
+                command.entry.id, command.entry.thread_name
+            ),
+        );
     }
 
     /// Enters an idle period.
@@ -231,6 +254,26 @@ impl CommandManager {
     pub fn get_idle_task_results(&self) -> Option<Vec<IdleTaskResult>> {
         self.idle_state.lock().idle_task_results.take()
     }
+}
+
+/// `logger.atInfo().log(message)` of `CommandManager.<method>`.
+fn log_info(method: &str, message: &str) {
+    blaze_util::server_logger::info(
+        "com.google.devtools.build.lib.server.CommandManager",
+        method,
+        message,
+    );
+}
+
+/// `Thread.currentThread().getName()`.
+///
+/// PORT: a Rust thread started without a name has none; Java names such a thread `Thread-<n>`.
+/// Every thread Blaze runs commands on is named (`main`, `grpc-command-<n>`, the gRPC workers).
+pub fn current_thread_name() -> String {
+    std::thread::current()
+        .name()
+        .unwrap_or("<unnamed>")
+        .to_string()
 }
 
 /// `ThreadUtils.warnAboutSlowInterrupt`.
@@ -305,6 +348,7 @@ impl RunningCommand {
             manager,
             entry: Arc::new(RunningCommandEntry {
                 thread: ThreadInterrupt::current(),
+                thread_name: current_thread_name(),
                 id: uuid::Uuid::new_v4().to_string(),
                 preemptible,
                 terminal_size_monitor: Arc::new(TerminalSizeMonitor::new()),
@@ -348,7 +392,14 @@ impl Drop for RunningCommand {
             self.manager.running_commands_map.notify_all();
         }
 
-        // PORT: skipped, logging ("Finished command %s on thread %s").
+        blaze_util::server_logger::info(
+            "com.google.devtools.build.lib.server.CommandManager$RunningCommand",
+            "close",
+            &format!(
+                "Finished command {} on thread {}",
+                self.entry.id, self.entry.thread_name
+            ),
+        );
     }
 }
 

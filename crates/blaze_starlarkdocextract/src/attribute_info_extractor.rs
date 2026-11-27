@@ -64,7 +64,8 @@ pub fn build_attribute_info(context: &ExtractorContext, attribute: &Attribute) -
                             "StarlarkValue.repr",
                             "the Java class name of the native LateBoundDefault {:?} (a \
                              SimpleLateBoundDefault subclass that LateBoundDefaultKind::Other \
-                             does not name)",
+                             does not name; no native rule of Bazel 9.3.2 defines one: every \
+                             native late-bound default is a Label, LabelList or always-null kind)",
                             late_bound.get_resolver_name()
                         )
                     }
@@ -84,7 +85,9 @@ pub fn build_attribute_info(context: &ExtractorContext, attribute: &Attribute) -
                             None => blaze_util::unported!(
                                 "StarlarkValue.repr",
                                 "the Java class name of a native ComputedDefault of attribute {} \
-                                 (set ComputedDefault::with_java_class_name at its definition)",
+                                 (set ComputedDefault::with_java_class_name at its definition; \
+                                 every native rule's computed default has it, so only a test \
+                                 definition reaches this)",
                                 attribute.get_name()
                             ),
                         },

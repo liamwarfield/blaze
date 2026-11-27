@@ -22,9 +22,9 @@ use crate::buildtool::build_result::{
 ///
 /// PORT: a trait so that tests can stand in for a configuration, as Java's tests mock it.
 pub trait ConfigurationView: Send + Sync + fmt::Debug {
-    // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:621 BuildConfigurationValue.checksum
+    // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:814 BuildConfigurationValue.checksum
     fn checksum(&self) -> String;
-    // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:518 BuildConfigurationValue.getMnemonic
+    // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:500 BuildConfigurationValue.getMnemonic
     fn get_mnemonic(&self) -> String;
 }
 
@@ -55,14 +55,14 @@ pub fn get_test_params(target: &ConfiguredTargetRef) -> TestParams {
 }
 
 /// Builder class responsible for creating and altering TestSummary objects.
-// Java: com/google/devtools/build/lib/runtime/TestSummary.java:69 TestSummary.Builder
+// Java: com/google/devtools/build/lib/runtime/TestSummary.java:68 TestSummary.Builder
 pub struct TestSummaryBuilder {
     summary: Arc<TestSummary>,
     built: bool,
 }
 
 impl TestSummaryBuilder {
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:73 Builder.<init>
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:72 Builder.<init>
     fn new(target: ConfiguredTargetRef) -> TestSummaryBuilder {
         TestSummaryBuilder {
             summary: Arc::new(TestSummary::new(target)),
@@ -76,7 +76,7 @@ impl TestSummaryBuilder {
         Arc::get_mut(&mut self.summary).expect("TestSummary mutated after build()")
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:78 Builder.mergeFrom
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:77 Builder.mergeFrom
     pub fn merge_from(&mut self, existing_summary: &TestSummary) -> &mut Self {
         self.check_mutation();
         // Yuck, manually fill in fields.
@@ -133,28 +133,28 @@ impl TestSummaryBuilder {
         }
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:134 Builder.setConfiguration
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:127 Builder.setConfiguration
     pub fn set_configuration(&mut self, configuration: Arc<dyn ConfigurationView>) -> &mut Self {
         self.check_mutation();
         self.summary_mut().configuration = Some(configuration);
         self
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:141 Builder.setStatus
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:134 Builder.setStatus
     pub fn set_status(&mut self, status: BlazeTestStatus) -> &mut Self {
         self.check_mutation();
         self.summary_mut().status = Some(status);
         self
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:148 Builder.setSkipped
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:141 Builder.setSkipped
     pub fn set_skipped(&mut self, skipped: bool) -> &mut Self {
         self.check_mutation();
         self.summary_mut().skipped = skipped;
         self
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:155 Builder.addCoverageFiles
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:148 Builder.addCoverageFiles
     pub fn add_coverage_files(&mut self, coverage_files: &[Path]) -> &mut Self {
         self.check_mutation();
         self.summary_mut()
@@ -163,7 +163,7 @@ impl TestSummaryBuilder {
         self
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:162 Builder.addPassedLogs
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:155 Builder.addPassedLogs
     pub fn add_passed_logs(&mut self, passed_logs: &[Path]) -> &mut Self {
         self.check_mutation();
         self.summary_mut()
@@ -172,14 +172,14 @@ impl TestSummaryBuilder {
         self
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:169 Builder.addPassedLog
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:162 Builder.addPassedLog
     pub fn add_passed_log(&mut self, passed_log: Path) -> &mut Self {
         self.check_mutation();
         self.summary_mut().passed_logs.push(passed_log);
         self
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:176 Builder.addFailedLogs
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:169 Builder.addFailedLogs
     pub fn add_failed_logs(&mut self, failed_logs: &[Path]) -> &mut Self {
         self.check_mutation();
         self.summary_mut()
@@ -188,7 +188,7 @@ impl TestSummaryBuilder {
         self
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:183 Builder.addFailedLog
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:176 Builder.addFailedLog
     pub fn add_failed_log(&mut self, failed_log: Path) -> &mut Self {
         self.check_mutation();
         self.summary_mut().failed_logs.push(failed_log);
@@ -198,7 +198,7 @@ impl TestSummaryBuilder {
     /// PORT: Java mutates the summary without `checkMutation()`, which would also change a
     /// summary already returned by `build()`; a built summary is immutable here, so this copies
     /// it first.
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:190 Builder.collectTestCases
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:183 Builder.collectTestCases
     pub fn collect_test_cases(&mut self, test_case: Option<&TestCase>) -> &mut Self {
         self.check_mutation();
         // Maintain the invariant: failedTestCases + totalUnknownTestCases <= totalTestCases
@@ -220,7 +220,7 @@ impl TestSummaryBuilder {
         self
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:205 Builder.traverseTestCases
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:197 Builder.traverseTestCases
     fn traverse_test_cases(&mut self, test_case: &TestCase) -> i32 {
         if !test_case.child.is_empty() {
             // This is a non-leaf result. Traverse its children, but do not add its
@@ -252,7 +252,7 @@ impl TestSummaryBuilder {
         1
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:233 Builder.addPassedTestCases
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:227 Builder.addPassedTestCases
     pub fn add_passed_test_cases(&mut self, test_cases: &[TestCase]) -> &mut Self {
         self.check_mutation();
         self.summary_mut()
@@ -261,7 +261,7 @@ impl TestSummaryBuilder {
         self
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:240 Builder.addFailedTestCases
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:234 Builder.addFailedTestCases
     pub fn add_failed_test_cases(
         &mut self,
         test_cases: &[TestCase],
@@ -303,14 +303,14 @@ impl TestSummaryBuilder {
         self
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:271 Builder.addTestTimes
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:264 Builder.addTestTimes
     pub fn add_test_times(&mut self, test_times: &[i64]) -> &mut Self {
         self.check_mutation();
         self.summary_mut().test_times.extend_from_slice(test_times);
         self
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:278 Builder.mergeTiming
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:271 Builder.mergeTiming
     pub fn merge_timing(&mut self, start_time_millis: i64, run_duration_millis: i64) -> &mut Self {
         self.check_mutation();
         let summary = self.summary_mut();
@@ -324,14 +324,14 @@ impl TestSummaryBuilder {
         self
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:288 Builder.addWarnings
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:281 Builder.addWarnings
     pub fn add_warnings(&mut self, warnings: &[String]) -> &mut Self {
         self.check_mutation();
         self.summary_mut().warnings.extend(warnings.iter().cloned());
         self
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:295 Builder.setActionRan
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:288 Builder.setActionRan
     pub fn set_action_ran(&mut self, action_ran: bool) -> &mut Self {
         self.check_mutation();
         self.summary_mut().action_ran = action_ran;
@@ -339,35 +339,35 @@ impl TestSummaryBuilder {
     }
 
     /// Set the number of results cached, locally or remotely.
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:308 Builder.setNumCached
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:301 Builder.setNumCached
     pub fn set_num_cached(&mut self, num_cached: i32) -> &mut Self {
         self.check_mutation();
         self.summary_mut().num_cached = num_cached;
         self
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:315 Builder.setNumLocalActionCached
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:308 Builder.setNumLocalActionCached
     pub fn set_num_local_action_cached(&mut self, num_local_action_cached: i32) -> &mut Self {
         self.check_mutation();
         self.summary_mut().num_local_action_cached = num_local_action_cached;
         self
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:322 Builder.setRanRemotely
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:315 Builder.setRanRemotely
     pub fn set_ran_remotely(&mut self, ran_remotely: bool) -> &mut Self {
         self.check_mutation();
         self.summary_mut().ran_remotely = ran_remotely;
         self
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:329 Builder.setWasUnreportedWrongSize
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:322 Builder.setWasUnreportedWrongSize
     pub fn set_was_unreported_wrong_size(&mut self, was_unreported_wrong_size: bool) -> &mut Self {
         self.check_mutation();
         self.summary_mut().was_unreported_wrong_size = was_unreported_wrong_size;
         self
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:336 Builder.mergeSystemFailure
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:329 Builder.mergeSystemFailure
     pub fn merge_system_failure(
         &mut self,
         system_failure: Option<DetailedExitCodeRef>,
@@ -384,7 +384,7 @@ impl TestSummaryBuilder {
     /// Returns an immutable view of the statuses associated with the shard, with the new element.
     ///
     /// PORT: copies a built summary first (see [`Self::collect_test_cases`]).
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:349 Builder.addShardStatus
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:342 Builder.addShardStatus
     pub fn add_shard_status(
         &mut self,
         shard_number: i32,
@@ -397,7 +397,7 @@ impl TestSummaryBuilder {
     }
 
     /// Records new attempts for the given shard of the target.
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:357 Builder.addShardAttempts
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:350 Builder.addShardAttempts
     pub fn add_shard_attempts(&mut self, shard_number: i32, new_atttempts: i32) -> &mut Self {
         self.check_mutation();
         let summary = self.summary_mut();
@@ -408,7 +408,7 @@ impl TestSummaryBuilder {
     /// Returns the created TestSummary object. Any actions following a build() will create
     /// another copy of the same values. Since no mutators are provided directly by TestSummary, a
     /// copy will not be produced if two builds are invoked in a row without calling a setter.
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:370 Builder.build
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:362 Builder.build
     pub fn build(&mut self) -> Arc<TestSummary> {
         self.peek();
         if !self.built {
@@ -421,7 +421,7 @@ impl TestSummaryBuilder {
 
     /// Within-package, it is possible to read directly from an incompletely-built TestSummary.
     /// Used to pass Builders around directly.
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:384 Builder.peek
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:376 Builder.peek
     pub fn peek(&self) -> &TestSummary {
         if self.summary.status.is_none() {
             panic!("NullPointerException: Status cannot be null");
@@ -429,7 +429,7 @@ impl TestSummaryBuilder {
         &self.summary
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:390 Builder.makeSummaryImmutable
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:382 Builder.makeSummaryImmutable
     fn make_summary_immutable(&mut self) {
         // Once finalized, the list types are immutable.
         self.built = true;
@@ -444,7 +444,7 @@ impl TestSummaryBuilder {
 ///
 /// PORT: the `BuildEventWithOrderConstraint` side (`getEventId`, `postedAfter`,
 /// `referencedLocalFiles`, `asStreamProto`) waits for the BEP port.
-// Java: com/google/devtools/build/lib/runtime/TestSummary.java:63 TestSummary
+// Java: com/google/devtools/build/lib/runtime/TestSummary.java:64 TestSummary
 #[derive(Clone)]
 pub struct TestSummary {
     target: ConfiguredTargetRef,
@@ -689,43 +689,43 @@ impl TestSummary {
             })
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:589 TestSummary.getTestTimes
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:587 TestSummary.getTestTimes
     pub fn get_test_times(&self) -> &[i64] {
         // The return result is unmodifiable (UnmodifiableList instance)
         &self.test_times
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:594 TestSummary.getNumAttempts
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:592 TestSummary.getNumAttempts
     pub fn get_num_attempts(&self) -> i32 {
         *self.shard_attempts.iter().max().unwrap()
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:598 TestSummary.getNumCached
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:596 TestSummary.getNumCached
     pub fn get_num_cached(&self) -> i32 {
         self.num_cached
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:602 TestSummary.totalRuns
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:600 TestSummary.totalRuns
     pub fn total_runs(&self) -> i32 {
         self.test_times.len() as i32
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:606 TestSummary.getTotalRunDurationMillis
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:604 TestSummary.getTotalRunDurationMillis
     pub fn get_total_run_duration_millis(&self) -> i64 {
         self.total_run_duration_millis
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:610 TestSummary.getFirstStartTimeMillis
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:608 TestSummary.getFirstStartTimeMillis
     pub fn get_first_start_time_millis(&self) -> i64 {
         self.first_start_time_millis
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:614 TestSummary.getLastStopTimeMillis
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:612 TestSummary.getLastStopTimeMillis
     pub fn get_last_stop_time_millis(&self) -> i64 {
         self.last_stop_time_millis
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:618 TestSummary.getStatusMode
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:616 TestSummary.getStatusMode
     pub fn get_status_mode(&self) -> Mode {
         if self.skipped {
             return Mode::Warning;
@@ -739,7 +739,7 @@ impl TestSummary {
         }
     }
 
-    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:665 TestSummary.asStreamProto
+    // Java: com/google/devtools/build/lib/runtime/TestSummary.java:661 TestSummary.asStreamProto
     pub fn as_stream_proto(&self) -> ! {
         unported!("TestSummary.asStreamProto")
     }

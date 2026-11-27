@@ -21,6 +21,8 @@ use crate::sky_functions;
 /// the entry, if any, for a given basename.
 ///
 /// PORT: Java packs the types into a `BitSet` for memory; Blaze keeps a sorted `Vec<Dirent>`.
+// PORT: skipped, the dirents are a sorted Vec, not names and packed types in arrays: CompactSortedDirents.unpackType, CompactSortedDirents.packType, CompactSortedDirents.pack, CompactSortedDirents.direntAt
+// Java: com/google/devtools/build/lib/skyframe/CompactSortedDirents.java:66 CompactSortedDirents.hashCode
 // Java: com/google/devtools/build/lib/skyframe/CompactSortedDirents.java:31 CompactSortedDirents
 // Java: com/google/devtools/build/lib/skyframe/Dirents.java:24 Dirents
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -45,6 +47,7 @@ impl Dirents {
             .map(|pos| &self.dirents[pos])
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/CompactSortedDirents.java:78 CompactSortedDirents.iterator
     pub fn iter(&self) -> std::slice::Iter<'_, Dirent> {
         self.dirents.iter()
     }
@@ -226,6 +229,7 @@ impl DirectoryListingValue {
 
 /// Key for [`directory_listing_function`]. The path is assumed to be an existing directory (e.g.
 /// via `FileValue.is_directory` or from a directory listing on its parent directory).
+// PORT: skipped, a newtype key (Key::FUNCTION; no interning): DirectoryListingKey.create, DirectoryListingKey.intern, DirectoryListingKey.functionName, DirectoryListingKey.getSkyKeyInterner
 // Java: com/google/devtools/build/lib/skyframe/DirectoryListingKey.java:25 DirectoryListingKey
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct DirectoryListingKey(pub RootedPath);
@@ -268,6 +272,7 @@ pub fn directory_listing_function(
     let real_dir_rooted_path = dir_file_value.real_rooted_path(dir_rooted_path);
     if !dir_file_value.is_directory() {
         // Recall that the directory is assumed to exist (see DirectoryListingValue#key).
+        // Java: com/google/devtools/build/lib/skyframe/DirectoryListingFunction.java:64 DirectoryListingFunction.DirectoryListingFunctionException.<init>
         // Java: DirectoryListingFunctionException(InconsistentFilesystemException): TRANSIENT.
         return Err(
             SkyFunctionException::transient(IOException::inconsistent_filesystem(format!(

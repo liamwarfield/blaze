@@ -9,7 +9,7 @@ use blaze_protos::build_event_stream::build_metrics::network_metrics::SystemNetw
 use parking_lot::Mutex;
 
 /// Value class for network IO counters.
-// Java: com/google/devtools/build/lib/profiler/SystemNetworkStats.java:43 SystemNetworkStats.NetIoCounter
+// Java: com/google/devtools/build/lib/profiler/SystemNetworkStats.java:46 SystemNetworkStats.NetIoCounter
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NetIoCounter {
     pub bytes_sent: i64,
@@ -19,6 +19,7 @@ pub struct NetIoCounter {
 }
 
 impl NetIoCounter {
+    // Java: com/google/devtools/build/lib/profiler/SystemNetworkStats.java:47 SystemNetworkStats.NetIoCounter.create
     pub fn create(bytes_sent: i64, bytes_recv: i64, packets_sent: i64, packets_recv: i64) -> Self {
         NetIoCounter {
             bytes_sent,
@@ -29,8 +30,11 @@ impl NetIoCounter {
     }
 }
 
+// PORT: skipped, a static utility class with no state (module functions here): SystemNetworkStats.<init>
+// PORT: skipped, Linux x86-64 only (the OS.LINUX branch of getNetIoCounters); the JNI path serves other systems: SystemNetworkStats.getNetIoCountersNative
+
 /// Returns a map from network interface name to the respective I/O counters.
-// Java: com/google/devtools/build/lib/profiler/SystemNetworkStats.java:51 SystemNetworkStats.getNetIoCounters
+// Java: com/google/devtools/build/lib/profiler/SystemNetworkStats.java:54 SystemNetworkStats.getNetIoCounters
 pub fn get_net_io_counters() -> io::Result<HashMap<String, NetIoCounter>> {
     let mut counters_map = HashMap::new();
     get_net_io_counters_linux(&mut counters_map, "/proc/net/dev")?;
@@ -38,7 +42,7 @@ pub fn get_net_io_counters() -> io::Result<HashMap<String, NetIoCounter>> {
 }
 
 /// `getNetIoCountersLinux`, reading `file` (Java: `/proc/net/dev`).
-// Java: com/google/devtools/build/lib/profiler/SystemNetworkStats.java:64 SystemNetworkStats.getNetIoCountersLinux
+// Java: com/google/devtools/build/lib/profiler/SystemNetworkStats.java:67 SystemNetworkStats.getNetIoCountersLinux
 pub fn get_net_io_counters_linux(
     counters_map: &mut HashMap<String, NetIoCounter>,
     file: &str,
@@ -104,7 +108,7 @@ fn split_lines(text: &str) -> Vec<&str> {
 }
 
 /// Aggregated system network usages over all interfaces except local loopback.
-// Java: com/google/devtools/build/lib/profiler/NetworkMetricsCollector.java:140 NetworkMetricsCollector.SystemNetworkUsages
+// Java: com/google/devtools/build/lib/profiler/NetworkMetricsCollector.java:127 NetworkMetricsCollector.SystemNetworkUsages
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SystemNetworkUsages {
     pub bytes_sent_per_sec: f64,
@@ -131,7 +135,7 @@ struct State {
 }
 
 /// Collects and populates network metrics during an invocation.
-// Java: com/google/devtools/build/lib/profiler/NetworkMetricsCollector.java:29 NetworkMetricsCollector
+// Java: com/google/devtools/build/lib/profiler/NetworkMetricsCollector.java:27 NetworkMetricsCollector
 pub struct NetworkMetricsCollector {
     state: Mutex<State>,
 }
@@ -146,7 +150,7 @@ impl NetworkMetricsCollector {
         })
     }
 
-    // Java: com/google/devtools/build/lib/profiler/NetworkMetricsCollector.java:47 NetworkMetricsCollector.collectMetrics
+    // Java: com/google/devtools/build/lib/profiler/NetworkMetricsCollector.java:45 NetworkMetricsCollector.collectMetrics
     pub fn collect_metrics(&self) -> Option<NetworkMetrics> {
         let state = self.state.lock();
         if state.system_network_stats.bytes_recv == 0 || state.system_network_stats.bytes_sent == 0
@@ -159,7 +163,7 @@ impl NetworkMetricsCollector {
         })
     }
 
-    // Java: com/google/devtools/build/lib/profiler/NetworkMetricsCollector.java:56 NetworkMetricsCollector.collectSystemNetworkUsages
+    // Java: com/google/devtools/build/lib/profiler/NetworkMetricsCollector.java:54 NetworkMetricsCollector.collectSystemNetworkUsages
     pub fn collect_system_network_usages(&self, delta_nanos: f64) -> Option<SystemNetworkUsages> {
         let mut state = self.state.lock();
         if state.loopback_interface_names.is_none() {
@@ -237,7 +241,7 @@ impl NetworkMetricsCollector {
 /// `NetworkInterface.getNetworkInterfaces()` filtered by `isLoopback()`.
 ///
 /// PORT: getifaddrs(3) and `IFF_LOOPBACK`, which is what the JDK reads on Linux.
-// Java: com/google/devtools/build/lib/profiler/NetworkMetricsCollector.java:162 NetworkMetricsCollector.getLoopbackInterfaceNames
+// Java: com/google/devtools/build/lib/profiler/NetworkMetricsCollector.java:150 NetworkMetricsCollector.getLoopbackInterfaceNames
 fn get_loopback_interface_names() -> io::Result<HashSet<String>> {
     let mut result = HashSet::new();
     let mut ifap: *mut libc::ifaddrs = std::ptr::null_mut();
@@ -261,7 +265,7 @@ fn get_loopback_interface_names() -> io::Result<HashSet<String>> {
     Ok(result)
 }
 
-// Java: com/google/devtools/build/lib/profiler/NetworkMetricsCollector.java:174 NetworkMetricsCollector.calcDelta
+// Java: com/google/devtools/build/lib/profiler/NetworkMetricsCollector.java:162 NetworkMetricsCollector.calcDelta
 fn calc_delta(prev: i64, next: i64) -> i64 {
     if (next as u64) < (prev as u64) {
         return next;
@@ -269,12 +273,12 @@ fn calc_delta(prev: i64, next: i64) -> i64 {
     next.wrapping_sub(prev)
 }
 
-// Java: com/google/devtools/build/lib/profiler/NetworkMetricsCollector.java:181 NetworkMetricsCollector.calcValuePerSec
+// Java: com/google/devtools/build/lib/profiler/NetworkMetricsCollector.java:169 NetworkMetricsCollector.calcValuePerSec
 fn calc_value_per_sec(delta_value: i64, delta_nanos: f64) -> f64 {
     delta_value as f64 / delta_nanos * 1e9
 }
 
-// Java: com/google/devtools/build/lib/profiler/NetworkMetricsCollector.java:185 NetworkMetricsCollector.bytesPerSecToMegabitsPerSec
+// Java: com/google/devtools/build/lib/profiler/NetworkMetricsCollector.java:173 NetworkMetricsCollector.bytesPerSecToMegabitsPerSec
 fn bytes_per_sec_to_megabits_per_sec(bytes_per_sec: f64) -> f64 {
     bytes_per_sec / 1e6 * 8.0
 }

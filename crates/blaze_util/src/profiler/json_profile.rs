@@ -15,7 +15,7 @@ use super::profile_phase::ProfilePhase;
 use super::profiler_task::ProfilerTask;
 
 /// Represents a single trace event in a JSON profile.
-// Java: com/google/devtools/build/lib/profiler/TraceEvent.java:31 TraceEvent
+// Java: com/google/devtools/build/lib/profiler/TraceEvent.java:35 TraceEvent
 #[derive(Clone, Debug, PartialEq)]
 pub struct TraceEvent {
     pub category: Option<String>,
@@ -78,7 +78,7 @@ impl TraceEvent {
         self.configuration.as_deref()
     }
 
-    // Java: com/google/devtools/build/lib/profiler/TraceEvent.java:86 TraceEvent.createFromJsonReader
+    // Java: com/google/devtools/build/lib/profiler/TraceEvent.java:82 TraceEvent.createFromJsonReader
     fn create_from_json(value: &Value) -> io::Result<TraceEvent> {
         let obj = value
             .as_object()
@@ -130,6 +130,8 @@ impl TraceEvent {
                 _ => {}
             }
         }
+        // Java: com/google/devtools/build/lib/profiler/TraceEvent.java:52 TraceEvent.create
+        // Java: com/google/devtools/build/lib/profiler/TraceEvent.java:48 TraceEvent.<init>
         Ok(TraceEvent {
             category,
             name: name.ok_or_else(|| io::Error::other("NullPointerException: name"))?,
@@ -146,7 +148,9 @@ impl TraceEvent {
         })
     }
 
-    // Java: com/google/devtools/build/lib/profiler/TraceEvent.java:184 TraceEvent.parseTraceEvents
+    // PORT: skipped, `args` keeps serde_json's parsed values (see the module doc): TraceEvent.parseMap, TraceEvent.parseArray, TraceEvent.parseSingleValueRecursively
+
+    // Java: com/google/devtools/build/lib/profiler/TraceEvent.java:183 TraceEvent.parseTraceEvents
     pub fn parse_trace_events(value: &Value) -> io::Result<Vec<TraceEvent>> {
         let array = value
             .as_array()
@@ -178,7 +182,7 @@ fn next_long(v: &Value) -> io::Result<i64> {
 
 /// Extracts and keeps summary statistics from all [`ProfilePhase`]s for formatting to various
 /// outputs.
-// Java: com/google/devtools/build/lib/profiler/statistics/PhaseSummaryStatistics.java:27 PhaseSummaryStatistics
+// Java: com/google/devtools/build/lib/profiler/statistics/PhaseSummaryStatistics.java:26 PhaseSummaryStatistics
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PhaseSummaryStatistics {
     total_duration_nanos: i64,
@@ -188,7 +192,7 @@ pub struct PhaseSummaryStatistics {
 
 impl PhaseSummaryStatistics {
     /// Add a single profile phase.
-    // Java: com/google/devtools/build/lib/profiler/statistics/PhaseSummaryStatistics.java:38 PhaseSummaryStatistics.addProfilePhase
+    // Java: com/google/devtools/build/lib/profiler/statistics/PhaseSummaryStatistics.java:37 PhaseSummaryStatistics.addProfilePhase
     pub fn add_profile_phase(&mut self, phase: ProfilePhase, duration_nanos: i64) {
         self.total_duration_nanos += duration_nanos;
         match self.durations.iter_mut().find(|(p, _)| *p == phase) {
@@ -201,7 +205,7 @@ impl PhaseSummaryStatistics {
         }
     }
 
-    // Java: com/google/devtools/build/lib/profiler/statistics/PhaseSummaryStatistics.java:52 PhaseSummaryStatistics.getDurationNanos
+    // Java: com/google/devtools/build/lib/profiler/statistics/PhaseSummaryStatistics.java:51 PhaseSummaryStatistics.getDurationNanos
     pub fn get_duration_nanos(&self, phase: ProfilePhase) -> i64 {
         match self.durations.iter().find(|(p, _)| *p == phase) {
             Some((_, d)) => *d,
@@ -209,7 +213,7 @@ impl PhaseSummaryStatistics {
         }
     }
 
-    // Java: com/google/devtools/build/lib/profiler/statistics/PhaseSummaryStatistics.java:61 PhaseSummaryStatistics.getRelativeDuration
+    // Java: com/google/devtools/build/lib/profiler/statistics/PhaseSummaryStatistics.java:60 PhaseSummaryStatistics.getRelativeDuration
     pub fn get_relative_duration(&self, phase: ProfilePhase) -> f64 {
         self.get_duration_nanos(phase) as f64 / self.total_duration_nanos as f64
     }
@@ -220,14 +224,14 @@ impl PhaseSummaryStatistics {
     }
 
     /// The executed phases, in declaration order.
-    // Java: com/google/devtools/build/lib/profiler/statistics/PhaseSummaryStatistics.java:69 PhaseSummaryStatistics.iterator
+    // Java: com/google/devtools/build/lib/profiler/statistics/PhaseSummaryStatistics.java:70 PhaseSummaryStatistics.iterator
     pub fn phases(&self) -> impl Iterator<Item = ProfilePhase> + '_ {
         self.durations.iter().map(|(p, _)| *p)
     }
 }
 
 /// Value class to hold build metadata (id, date, output base) if available.
-// Java: com/google/devtools/build/lib/profiler/JsonProfile.java:136 JsonProfile.BuildMetadata
+// Java: com/google/devtools/build/lib/profiler/JsonProfile.java:137 JsonProfile.BuildMetadata
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BuildMetadata {
     pub build_id: Option<String>,
@@ -236,7 +240,7 @@ pub struct BuildMetadata {
 }
 
 /// Utility class to handle parsing the JSON trace profiles.
-// Java: com/google/devtools/build/lib/profiler/JsonProfile.java:38 JsonProfile
+// Java: com/google/devtools/build/lib/profiler/JsonProfile.java:39 JsonProfile
 #[derive(Clone, Debug, PartialEq)]
 pub struct JsonProfile {
     build_metadata: Option<BuildMetadata>,
@@ -246,7 +250,7 @@ pub struct JsonProfile {
 
 impl JsonProfile {
     /// `new JsonProfile(File)`: gunzips files whose name ends in `.gz`.
-    // Java: com/google/devtools/build/lib/profiler/JsonProfile.java:43 JsonProfile.<init>
+    // Java: com/google/devtools/build/lib/profiler/JsonProfile.java:44 JsonProfile.<init>
     pub fn from_file(profile_file: &Path) -> io::Result<JsonProfile> {
         let file = std::fs::File::open(profile_file)?;
         let is_gz = profile_file
@@ -259,7 +263,7 @@ impl JsonProfile {
         }
     }
 
-    // Java: com/google/devtools/build/lib/profiler/JsonProfile.java:47 JsonProfile.<init>
+    // Java: com/google/devtools/build/lib/profiler/JsonProfile.java:48 JsonProfile.<init>
     pub fn from_reader(mut input_stream: impl Read) -> io::Result<JsonProfile> {
         let mut bytes = Vec::new();
         input_stream.read_to_end(&mut bytes)?;
@@ -333,13 +337,13 @@ impl JsonProfile {
         &self.trace_events
     }
 
-    // Java: com/google/devtools/build/lib/profiler/JsonProfile.java:131 JsonProfile.getBuildMetadata
+    // Java: com/google/devtools/build/lib/profiler/JsonProfile.java:132 JsonProfile.getBuildMetadata
     pub fn get_build_metadata(&self) -> Option<&BuildMetadata> {
         self.build_metadata.as_ref()
     }
 }
 
-// Java: com/google/devtools/build/lib/profiler/JsonProfile.java:110 JsonProfile.parseBuildMetadata
+// Java: com/google/devtools/build/lib/profiler/JsonProfile.java:105 JsonProfile.parseBuildMetadata
 fn parse_build_metadata(value: &Value) -> io::Result<BuildMetadata> {
     let obj = value
         .as_object()

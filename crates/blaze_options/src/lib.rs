@@ -15,11 +15,12 @@
 // PORT: skipped, no user in Bazel at the pin (params files of other tools): ParamsFilePreProcessor.parse
 // PORT: skipped, no user in Bazel at the pin (params files of other tools): ShellQuotedParamsFilePreProcessor.parse
 // PORT: skipped, no user in Bazel at the pin (params files of other tools): UnquotedParamsFilePreProcessor.parse
-// PORT: skipped, no user in Bazel at the pin (params files of other tools): ShellQuotedReader.read
-// PORT: skipped, no user in Bazel at the pin (params files of other tools): ShellQuotedReader.unread
-// PORT: skipped, no user in Bazel at the pin (params files of other tools): ShellQuotedReader.hasNext
-// PORT: skipped, no user in Bazel at the pin (params files of other tools): ShellQuotedReader.close
-// PORT: skipped, no user in Bazel at the pin (params files of other tools): ShellQuotedReader.readArg
+// PORT: skipped, no user in Bazel at the pin (params files of other tools): ShellQuotedParamsFilePreProcessor.<init>, ShellQuotedParamsFilePreProcessor.ShellQuotedReader.<init>, UnquotedParamsFilePreProcessor.<init>
+// PORT: skipped, no user in Bazel at the pin (params files of other tools): ShellQuotedParamsFilePreProcessor.ShellQuotedReader.read
+// PORT: skipped, no user in Bazel at the pin (params files of other tools): ShellQuotedParamsFilePreProcessor.ShellQuotedReader.unread
+// PORT: skipped, no user in Bazel at the pin (params files of other tools): ShellQuotedParamsFilePreProcessor.ShellQuotedReader.hasNext
+// PORT: skipped, no user in Bazel at the pin (params files of other tools): ShellQuotedParamsFilePreProcessor.ShellQuotedReader.close
+// PORT: skipped, no user in Bazel at the pin (params files of other tools): ShellQuotedParamsFilePreProcessor.ShellQuotedReader.readArg
 // PORT: skipped, an annotation attribute; the options! macro attribute of the same name carries it: Option.name
 // PORT: skipped, an annotation attribute; the options! macro attribute of the same name carries it: Option.abbrev
 // PORT: skipped, an annotation attribute; the options! macro attribute of the same name carries it: Option.help

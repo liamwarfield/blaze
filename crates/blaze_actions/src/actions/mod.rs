@@ -8,6 +8,7 @@ pub mod action_owner;
 pub mod artifact;
 pub mod artifact_factory;
 pub mod artifact_root;
+pub mod fail_action;
 pub mod command_line;
 pub mod command_line_limits;
 pub mod command_lines;

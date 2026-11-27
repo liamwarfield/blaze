@@ -22,11 +22,16 @@ pub enum IOExceptionKind {
     Plain,
     /// `InconsistentFilesystemException`.
     InconsistentFilesystem,
+    // Java: com/google/devtools/build/lib/io/FileSymlinkException.java:20 FileSymlinkException.<init>
+    // Java: com/google/devtools/build/lib/io/FileSymlinkCycleException.java:42 FileSymlinkCycleException.getPathToCycle
+    // Java: com/google/devtools/build/lib/io/FileSymlinkCycleException.java:50 FileSymlinkCycleException.getCycle
     /// `FileSymlinkCycleException` (a `FileSymlinkException`).
     FileSymlinkCycle {
         path_to_cycle: Vec<RootedPath>,
         cycle: Vec<RootedPath>,
     },
+    // Java: com/google/devtools/build/lib/io/FileSymlinkInfiniteExpansionException.java:42 FileSymlinkInfiniteExpansionException.getPathToChain
+    // Java: com/google/devtools/build/lib/io/FileSymlinkInfiniteExpansionException.java:51 FileSymlinkInfiniteExpansionException.getChain
     /// `FileSymlinkInfiniteExpansionException` (a `FileSymlinkException`).
     FileSymlinkInfiniteExpansion {
         path_to_chain: Vec<RootedPath>,

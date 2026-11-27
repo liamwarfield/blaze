@@ -155,25 +155,28 @@ impl CppIncludeScanningContextImpl {
     /// We take an ad-hoc approach, which consults Skyframe to retrieve the tree expansions. This
     /// is necessary because include scanning may include tree artifacts which are not inputs of
     /// the original action.
-    // Java: com/google/devtools/build/lib/includescanning/CppIncludeScanningContextImpl.java:98 CppIncludeScanningContextImpl.expandTreeArtifacts
+    // Java: com/google/devtools/build/lib/includescanning/CppIncludeScanningContextImpl.java:149 CppIncludeScanningContextImpl.expandTreeArtifacts
     fn expand_tree_artifacts(
         artifacts: Vec<Artifact>,
         env: &dyn ActionExecutionContext,
-    ) -> Option<Vec<Artifact>> {
+    ) -> Result<Option<Vec<Artifact>>, ExecException> {
         let trees: Vec<Artifact> = artifacts
             .iter()
             .filter(|a| a.is_tree_artifact())
             .cloned()
             .collect();
         if trees.is_empty() {
-            return Some(artifacts);
+            return Ok(Some(artifacts));
         }
 
-        let mut expansions = None;
+        let mut expansions = Ok(None);
         env.with_environment_for_discovering_inputs(&mut |env| {
             expansions = env.get_tree_artifact_values(&trees);
         });
-        let expansions = expansions?;
+        // Java: InterruptedException propagates (review round 3, IS-3); a missing value is null.
+        let Some(expansions) = expansions? else {
+            return Ok(None);
+        };
         let mut expansions = expansions.into_iter();
         let mut expanded = Vec::new();
         for artifact in artifacts {
@@ -182,7 +185,9 @@ impl CppIncludeScanningContextImpl {
                 continue;
             }
 
-            let tree_artifact_value = expansions.next()?;
+            let Some(tree_artifact_value) = expansions.next() else {
+                return Ok(None);
+            };
             for child in tree_artifact_value.get_children() {
                 expanded.push(
                     blaze_exec::actions::action_adapters::as_blaze_artifact(&child)
@@ -193,7 +198,7 @@ impl CppIncludeScanningContextImpl {
                 );
             }
         }
-        Some(expanded)
+        Ok(Some(expanded))
     }
 
     // Java: com/google/devtools/build/lib/includescanning/CppIncludeScanningContextImpl.java:174 CppIncludeScanningContextImpl.collect
@@ -291,7 +296,8 @@ impl CppIncludeScanningContext for CppIncludeScanningContextImpl {
         let Some(sources) = Self::expand_tree_artifacts(
             action.get_include_scanner_sources(),
             action_execution_context,
-        ) else {
+        )?
+        else {
             return Ok(None);
         };
 
@@ -344,7 +350,7 @@ fn starts_with_any(path: &PathFragment, prefixes: &[PathFragment]) -> bool {
     prefixes.iter().any(|prefix| path.starts_with(prefix))
 }
 
-// Java: com/google/devtools/build/lib/includescanning/CppIncludeScanningContextImpl.java:125 CppIncludeScanningContextImpl.createFailureDetail
+// Java: com/google/devtools/build/lib/includescanning/CppIncludeScanningContextImpl.java:218 CppIncludeScanningContextImpl.createFailureDetail
 fn create_failure_detail(
     message: &str,
     detailed_code: failure_details::include_scanning::Code,

@@ -163,7 +163,7 @@ pub struct SkyframeExecutor {
     lockfile_mode: blaze_bzlmod_model::LockfileMode,
     execution: Option<crate::execution_phase::ExecutionState>,
     /// `cyclesReporter` (`createCyclesReporter()`).
-    cycles_reporter: CyclesReporter,
+    cycles_reporter: Arc<CyclesReporter>,
     /// `topLevelArtifactContextForConflictPruning` of the request being analyzed: the requested
     /// output groups (see `skyframe_build_view::configure_targets`).
     top_level_artifact_context_for_conflict_pruning: parking_lot::Mutex<Option<Vec<String>>>,
@@ -450,6 +450,15 @@ impl SkyframeExecutor {
                 product_name: inputs.product_name.clone(),
             };
             let services = Arc::new(AnalysisServices {
+                // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:184 SkyframeBuildView.<init>
+                conflict_finder: Arc::new(|| {
+                    crate::execution_seam::get_checker_for_conflict_checking_mode(
+                        crate::execution_seam::ConflictCheckingMode::UPON_CONFIGURED_OBJECT_CREATION,
+                    )
+                    .map(|finder| {
+                        finder as Arc<dyn blaze_analysis::rule::action_conflict_exception::ConflictFinder>
+                    })
+                }),
                 rule_class_provider: Arc::new(
                     blaze_rules::register::create_bazel_rule_class_provider(),
                 ),
@@ -478,6 +487,7 @@ impl SkyframeExecutor {
                 workspace_status_host_name: short_host_name(),
                 extra_action_filter: parking_lot::RwLock::new(None),
                 base_target_prerequisites_supplier: std::sync::OnceLock::new(),
+                prerequisite_packages: std::sync::OnceLock::new(),
             });
             let platforms: SharedPlatformValueProvider = Arc::new(
                 blaze_sky_analysis::platform::PlatformFunction::new(services.clone()),
@@ -572,6 +582,7 @@ impl SkyframeExecutor {
                     move |_, _env| Ok(Some(status_services.compute_workspace_status_value())),
                 );
             // Java: CoverageReportFunction (SkyFunctions.COVERAGE_REPORT).
+            // Java: com/google/devtools/build/lib/skyframe/CoverageReportFunction.java:38 CoverageReportFunction.<init>
             // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:932 SkyframeExecutor.skyFunctions
             let coverage_services = services.clone();
             builder = builder
@@ -680,6 +691,20 @@ impl SkyframeExecutor {
             // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:4598 SkyframeExecutor.BaseTargetPrerequisitesSupplierImpl
             // (`memoizingEvaluator.getExistingValue(key)`). The functions of the evaluator hold
             // the services, so the services hold the evaluator weakly.
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:855 SkyframeExecutor.skyFunctions
+            // (`this::getExistingPackage` as the `PrerequisitePackageFunction`).
+            let weak_for_packages = Arc::downgrade(&evaluator);
+            let _ = services.prerequisite_packages.set(Arc::new(move |id| {
+                let evaluator = weak_for_packages.upgrade()?;
+                evaluator
+                    .get_existing_value(&SkyKey::new(PackageKey::key(id.clone())))
+                    .map(|v| {
+                        v.downcast::<PackageValue>()
+                            .unwrap_or_else(|_| panic!("PACKAGE value of {}", id))
+                            .get_package()
+                            .clone()
+                    })
+            }));
             let weak_evaluator = Arc::downgrade(&evaluator);
             let _ = services.base_target_prerequisites_supplier.set(
                 blaze_analysis::base_target_prerequisites_supplier::BaseTargetPrerequisitesSupplier::new(
@@ -717,7 +742,13 @@ impl SkyframeExecutor {
             Box::new(crate::bzlmod_cycle_reporters::BzlLoadCycleReporter),
             Box::new(crate::bzlmod_cycle_reporters::BzlmodRepoCycleReporter),
         ];
-        let cycles_reporter = CyclesReporter::new(cycle_reporters);
+        let cycles_reporter = Arc::new(CyclesReporter::new(cycle_reporters));
+        // Java: the package loader, the main repository mapping and the target pattern evaluator
+        // use the executor's cyclesReporter.
+        let weak_cycles_reporter: std::sync::Weak<
+            dyn blaze_sky_loading::package_manager::CyclesReporterHandle,
+        > = Arc::downgrade(&cycles_reporter) as _;
+        package_manager.set_cycles_reporter(weak_cycles_reporter);
         Ok(SkyframeExecutor {
             progress_receiver,
             cycles_reporter,
@@ -1266,6 +1297,7 @@ impl SkyframeExecutor {
                 &blaze_sky_loading::package_progress_receiver::PACKAGE_PROGRESS,
             ),
         ));
+        // PORT: skipped, posted with no subscriber in Bazel 9.3.2: TargetParsingPhaseTimeEvent.<init>, TargetParsingPhaseTimeEvent.getTimeInMs
         // PORT: TargetParsingPhaseTimeEvent feeds the build metrics; the command measures the
         // phase itself (blaze_runtime).
         let sky_key = SkyKey::new(key.clone());

@@ -21,6 +21,7 @@ pub enum DigestHashFunction {
     // Java: com/google/devtools/build/lib/vfs/DigestHashFunction.java:69 DigestHashFunction.SHA256
     Sha256,
     /// BLAKE3 (`BazelHashFunctions.BLAKE3`, name "BLAKE3").
+    // PORT: skipped, the private constructor of a static-only class: BazelHashFunctions.<init>
     // Java: com/google/devtools/build/lib/vfs/bazel/BazelHashFunctions.java:25 BazelHashFunctions.BLAKE3
     Blake3,
     /// The SHA-1 of the Git blob of the content (`BazelHashFunctions.GITSHA1`, name "GITSHA1").

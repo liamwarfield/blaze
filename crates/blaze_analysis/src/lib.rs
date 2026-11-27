@@ -21,6 +21,7 @@
 )]
 
 // Lead-owned contract files.
+pub mod actions;
 pub mod analysis_services;
 pub mod base_target_prerequisites_supplier;
 pub mod configured_rule_class_provider;
@@ -30,6 +31,7 @@ pub mod configured_target_key;
 pub mod configured_target_value;
 pub mod coverage_report_value;
 pub mod dependency_kind;
+pub mod dormant_dependency;
 pub mod info;
 pub mod provider_map;
 pub mod required_fragments_util;

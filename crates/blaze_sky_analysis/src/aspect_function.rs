@@ -225,6 +225,9 @@ impl AspectFunction {
     ) -> Result<Option<Arc<AspectValue>>, ComputeError> {
         // PORT: remote analysis caching is not ported (`isRetrievalEnabled()` is false).
         let mut state = DependencyResolverState::new(self.store_transitive_packages);
+        state
+            .transitive_state
+            .set_prerequisite_packages(self.services.prerequisite_packages.get().cloned());
         let Some(initial_values) =
             get_initial_values(&mut state, key, env, &self.services.rule_class_provider)?
         else {
@@ -797,7 +800,10 @@ impl AspectFunction {
         }
         {
             // PORT: CurrentRuleTracker (memory instrumentation) is skipped.
-            let factory = ConfiguredTargetFactory::new(services.rule_class_provider.clone());
+            let factory = ConfiguredTargetFactory::with_conflict_finder(
+                services.rule_class_provider.clone(),
+                services.conflict_finder.clone(),
+            );
             // Java: RequiredFragmentsUtil.getAspectRequiredFragmentsIfEnabled (called by
             // ConfiguredTargetFactory.createAspect): null unless
             // --include_config_fragments_provider.
@@ -1215,7 +1221,10 @@ fn get_initial_values(
                 starlark_aspect_data.get_definition(key.get_parameters()),
                 key.get_parameters().clone(),
             );
-            aspect_factory = Arc::new(StarlarkAspectFactory::new(starlark_aspect_data));
+            aspect_factory = Arc::new(StarlarkAspectFactory::new(
+                starlark_aspect_data,
+                starlark_aspect.owner().clone(),
+            ));
         }
     }
 

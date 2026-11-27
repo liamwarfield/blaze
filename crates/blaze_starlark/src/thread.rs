@@ -358,6 +358,8 @@ impl ThreadContext {
         ))
     }
 
+    // Java: com/google/devtools/build/lib/cmdline/StarlarkThreadContext.java:61 StarlarkThreadContext.<init>
+    // Java: com/google/devtools/build/lib/cmdline/StarlarkThreadContext.java:70 StarlarkThreadContext.getMainRepoMapping
     pub fn with_main_repo_mapping(mut self, mapping: RepositoryMapping) -> Self {
         self.main_repo_mapping = Some(mapping);
         self

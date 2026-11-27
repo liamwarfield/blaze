@@ -294,12 +294,13 @@ impl fmt::Display for StarlarkFileProvider {
 
 #[starlark_value(type = "file_provider")]
 impl<'v> StarlarkValue<'v> for StarlarkFileProvider {
-    fn get_attr(&self, attribute: &str, _heap: Heap<'v>) -> Option<Value<'v>> {
+    fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         match attribute {
             // Java: com/google/devtools/build/lib/analysis/FileProvider.java:50 FileProvider.getFilesToBuildForStarlark
-            "files_to_build" => Some(depset_value(&artifacts_to_depset(
-                self.0.get_files_to_build(),
-            ))),
+            "files_to_build" => Some(depset_value(
+                heap,
+                &artifacts_to_depset(self.0.get_files_to_build()),
+            )),
             _ => None,
         }
     }

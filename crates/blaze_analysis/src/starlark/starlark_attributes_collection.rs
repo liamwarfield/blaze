@@ -38,6 +38,7 @@ use super::util::{alloc_immutable_dict, alloc_immutable_list};
 
 use crate::configured_target::ConfiguredTarget;
 use crate::configuredtargets::target_to_starlark;
+use crate::dormant_dependency::DormantDependency;
 use crate::providers::alias_provider::AliasProvider;
 use crate::providers::file_provider::FilesToRunProvider;
 use crate::rule::prerequisite_artifacts::PrerequisiteArtifacts;
@@ -222,14 +223,25 @@ fn maybe_direct_val<'v>(
     let type_ = a.get_type();
 
     if type_ == Type::DormantLabel {
-        return match val {
-            None => Some(Value::new_none()),
-            Some(_) => blaze_util::unported!("DormantDependency"),
-        };
+        return Some(match val {
+            None => Value::new_none(),
+            Some(AttrValue::Label(l)) => heap.alloc(DormantDependency::new(l.clone())),
+            Some(other) => panic!("ClassCastException: DORMANT_LABEL value {other:?}"),
+        });
     }
 
     if type_ == Type::DormantLabelList {
-        blaze_util::unported!("DormantDependency");
+        let labels: &[Label] = match val {
+            Some(AttrValue::LabelList(l)) => l,
+            // BuildType.DORMANT_LABEL_LIST.cast(null): ImmutableList.copyOf of null throws.
+            None => panic!("NullPointerException: DORMANT_LABEL_LIST value null"),
+            Some(other) => panic!("ClassCastException: DORMANT_LABEL_LIST value {other:?}"),
+        };
+        let dormant_deps = labels
+            .iter()
+            .map(|l| heap.alloc(DormantDependency::new(l.clone())))
+            .collect();
+        return Some(alloc_immutable_list(heap, dormant_deps));
     }
 
     if type_.get_label_class() != LabelClass::Dependency {

@@ -140,6 +140,17 @@ impl CyclesReporter {
     }
 }
 
+impl blaze_sky_loading::package_manager::CyclesReporterHandle for CyclesReporter {
+    fn report_cycles(
+        &self,
+        cycles: &[CycleInfo],
+        top_level_key: &SkyKey,
+        event_handler: &Arc<dyn ExtendedEventHandler>,
+    ) {
+        CyclesReporter::report_cycles(self, cycles, top_level_key, event_handler);
+    }
+}
+
 // Java: com/google/devtools/build/skyframe/CyclesReporter.java:124 CyclesReporter.printArbitraryCycle
 fn print_arbitrary_cycle(
     top_level_key: &SkyKey,

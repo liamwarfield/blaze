@@ -40,6 +40,7 @@ impl RequestRepositoryInformationEvent {
         RequestRepositoryInformationEvent { name }
     }
 
+    // Java: com/google/devtools/build/lib/repository/RequestRepositoryInformationEvent.java:29 RequestRepositoryInformationEvent.getName
     pub fn get_name(&self) -> &str {
         &self.name
     }
@@ -48,6 +49,7 @@ impl RequestRepositoryInformationEvent {
 impl Postable for RequestRepositoryInformationEvent {}
 
 /// `requestRepoDefinitions` of both reporters.
+// Java: com/google/devtools/build/lib/skyframe/BzlLoadCycleReporter.java:53 BzlLoadCycleReporter.requestRepoDefinitions
 // Java: com/google/devtools/build/lib/skyframe/BzlmodRepoCycleReporter.java:83 BzlmodRepoCycleReporter.requestRepoDefinitions
 fn request_repo_definitions(event_handler: &Arc<dyn ExtendedEventHandler>, repos: &[SkyKey]) {
     for repo in repos {

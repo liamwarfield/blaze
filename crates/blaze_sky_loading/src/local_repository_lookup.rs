@@ -193,6 +193,7 @@ impl Key for LocalRepositoryLookupKey {
 pub use crate::exceptions::ErrorDeterminingRepositoryException;
 
 /// SkyFunction for [`LocalRepositoryLookupValue`]s.
+// PORT: skipped, a stateless function: LocalRepositoryLookupFunction.<init>
 // Java: com/google/devtools/build/lib/skyframe/LocalRepositoryLookupFunction.java:28 LocalRepositoryLookupFunction.compute
 pub fn local_repository_lookup_function(
     _sky_key: &LocalRepositoryLookupKey,

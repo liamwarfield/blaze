@@ -13,6 +13,11 @@ blaze_protos = { path = "../blaze_protos" }
 blaze_server = { path = "../blaze_server" }
 blaze_skyframe = { path = "../blaze_skyframe" }
 blaze_sky_top = { path = "../blaze_sky_top" }
+blaze_actions = { path = "../blaze_actions" }
+blaze_exec = { path = "../blaze_exec" }
+blaze_sky_exec = { path = "../blaze_sky_exec" }
+blaze_shell = { path = "../blaze_shell" }
+indexmap.workspace = true
 parking_lot.workspace = true
 tempfile.workspace = true
 

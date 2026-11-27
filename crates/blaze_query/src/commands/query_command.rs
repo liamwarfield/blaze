@@ -298,7 +298,8 @@ fn get_universe_scope(query_options: &QueryOptions) -> UniverseScope {
 /// Java `QueryEnvironmentBasedCommand.newQueryEnvironment` with
 /// `QueryEnvironmentFactory.create`.
 // Java: com/google/devtools/build/lib/runtime/commands/QueryEnvironmentBasedCommand.java:239 QueryEnvironmentBasedCommand.newQueryEnvironment
-fn new_query_environment(
+#[allow(clippy::too_many_arguments)]
+pub fn new_query_environment(
     env: &QueryCommandEnvironment,
     keep_going: bool,
     ordered_results: bool,

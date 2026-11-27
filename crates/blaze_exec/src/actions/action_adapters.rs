@@ -88,9 +88,9 @@ pub fn as_blaze_artifact(input: &ActionInputRef) -> Option<&BlazeArtifact> {
 /// action inputs are `blaze_actions` artifacts: `TreeFileArtifact.createTreeOutput` and
 /// `TreeArtifactValue.Builder`.
 ///
-/// PORT: archived tree artifacts (`--experimental_archived_tree_artifact_mnemonics_filter`) and
-/// proxy metadata (only a non-default `ProxyMetadataFactory` creates proxies; `LocalOutputService`
-/// and `RemoteOutputService` both give `NO_PROXIES`) are not ported and fail loudly.
+/// PORT: proxy metadata (only a non-default `ProxyMetadataFactory` creates proxies;
+/// `LocalOutputService` and `RemoteOutputService` both give `NO_PROXIES`) is not ported and fails
+/// loudly.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct ArtifactTreeArtifactFactory;
 
@@ -109,8 +109,13 @@ impl super::action_cache_checker::TreeArtifactFactory for ArtifactTreeArtifactFa
         ))
     }
 
-    fn create_archived_tree_artifact(&self, _parent: &ActionInputRef) -> ActionInputRef {
-        blaze_util::unported!("ArchivedTreeArtifact.createForTree")
+    // Java: com/google/devtools/build/lib/actions/Artifact.java:966 ArchivedTreeArtifact.createForTree
+    fn create_archived_tree_artifact(&self, parent: &ActionInputRef) -> ActionInputRef {
+        let parent = as_blaze_artifact(parent)
+            .unwrap_or_else(|| panic!("ClassCastException: {parent} is not a SpecialArtifact"));
+        artifact_input(&BlazeArtifact::create_archived_tree_artifact_for_tree(
+            parent,
+        ))
     }
 
     fn build_tree_artifact_value(

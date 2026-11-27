@@ -87,9 +87,9 @@ pub fn bazel_modules() -> Vec<Arc<dyn BlazeModule>> {
         Arc::new(RemoteModule),
         Arc::new(BazelRepositoryModule::default()),
         Arc::new(StarlarkRepositoryDebugModule),
-        Arc::new(WorkspaceRuleModule),
+        Arc::new(WorkspaceRuleModule::default()),
         Arc::new(BazelCoverageReportModule),
-        Arc::new(StarlarkDebuggerModule),
+        Arc::new(StarlarkDebuggerModule::default()),
         Arc::new(CacheHitReportingModule),
         Arc::new(SpawnLogModule),
         Arc::new(BazelLockFileModule),
@@ -142,6 +142,7 @@ impl BlazeModule for BazelStartupOptionsModule {
 
 /// Bazel module to record pprof-compatible profiles for single invocations.
 /// PORT: skipped, profiling (beforeCommand, afterCommand: `--experimental_command_profile`).
+// PORT: skipped, --experimental_command_profile profiles the server's JVM with async-profiler (no JVM here): CommandProfilerModule.ProfileType.toString, CommandProfilerModule.beforeCommand, CommandProfilerModule.afterCommand, CommandProfilerModule.getProfiler, CommandProfilerModule.getProfilerOutputPath, CommandProfilerModule.getProfilerCommand
 // Java: com/google/devtools/build/lib/profiler/CommandProfilerModule.java:34 CommandProfilerModule
 pub struct CommandProfilerModule;
 
@@ -392,8 +393,8 @@ impl BlazeModule for SystemSuspensionModule {
 
 /// Module to provide a `FileSystem` instance that uses `SHA256` as the default hash function, or
 /// else what's specified by `-Dbazel.DigestFunction`.
-/// PORT: getFileSystem is in `BlazeRuntime::new_runtime` (the Unix file system with SHA-256;
-/// `--unix_digest_hash_attribute_name` fails loudly there).
+/// PORT: getFileSystem is in `BlazeRuntime::new_runtime` (the Unix file system with the hash
+/// function of `--digest_function` and `--unix_digest_hash_attribute_name`).
 // Java: com/google/devtools/build/lib/bazel/BazelFileSystemModule.java:46 BazelFileSystemModule
 pub struct BazelFileSystemModule;
 
@@ -694,14 +695,108 @@ impl BlazeModule for StarlarkRepositoryDebugModule {
 }
 
 /// A module for logging workspace rule events.
-/// PORT: beforeCommand, afterCommand are not ported;
-/// `--experimental_workspace_rules_log_file` fails loudly (`crate::unported_options`).
 // Java: com/google/devtools/build/lib/bazel/debug/WorkspaceRuleModule.java:35 WorkspaceRuleModule
-pub struct WorkspaceRuleModule;
+#[derive(Default)]
+pub struct WorkspaceRuleModule {
+    /// `outFileStream`.
+    out_file_stream: parking_lot::Mutex<Option<Arc<WorkspaceLogStream>>>,
+}
+
+type WorkspaceLogStream =
+    blaze_exec::exec::io::asynchronous_message_output_stream::AsynchronousMessageOutputStream<
+        blaze_protos::workspace_log::WorkspaceEvent,
+    >;
+
+/// The `@Subscribe` half of [`WorkspaceRuleModule`].
+struct WorkspaceRuleSubscriber {
+    out_file_stream: Arc<WorkspaceLogStream>,
+}
+
+impl blaze_events::EventBus for WorkspaceRuleSubscriber {
+    // Java: com/google/devtools/build/lib/bazel/debug/WorkspaceRuleModule.java:91 WorkspaceRuleModule.workspaceRuleEventReceived
+    fn post(&self, event: Arc<dyn blaze_events::Postable>) {
+        let event: &dyn std::any::Any = event.as_ref();
+        if let Some(event) =
+            event.downcast_ref::<blaze_repo_rules::workspace_rule_event::WorkspaceRuleEvent>()
+        {
+            self.out_file_stream.write(event.get_log_event());
+        }
+    }
+}
+
+// Java: com/google/devtools/build/lib/bazel/debug/WorkspaceRuleModule.java:98 WorkspaceRuleModule.createDetailedExitCode
+fn workspace_rule_log_exit(
+    message: &str,
+    code: blaze_protos::failure_details::workspaces::Code,
+) -> AbruptExitException {
+    use blaze_protos::failure_details::{self, FailureDetail, failure_detail::Category};
+    AbruptExitException::new(crate::exit_code::DetailedExitCode::of(FailureDetail {
+        message: message.to_string(),
+        category: Some(Category::Workspaces(failure_details::Workspaces {
+            code: code as i32,
+        })),
+    }))
+}
 
 impl BlazeModule for WorkspaceRuleModule {
     fn name(&self) -> &'static str {
         "WorkspaceRuleModule"
+    }
+
+    // Java: com/google/devtools/build/lib/bazel/debug/WorkspaceRuleModule.java:40 WorkspaceRuleModule.beforeCommand
+    fn before_command(&self, env: &mut CommandEnvironment) -> Result<(), AbruptExitException> {
+        use blaze_events::EventHandler as _;
+        let Some(debugging_options) = env.get_options().get_options::<DebuggingOptions>() else {
+            env.get_reporter().handle(&blaze_events::Event::error(
+                "Installation is corrupt: could not retrieve debugging options",
+            ));
+            return Ok(());
+        };
+        let Some(log_file) = debugging_options.workspace_rules_log_file.clone() else {
+            return Ok(());
+        };
+        let path = env.get_working_directory().get_relative(&log_file.0);
+        match WorkspaceLogStream::new_for_path(&path) {
+            Ok(stream) => {
+                let stream = Arc::new(stream);
+                *self.out_file_stream.lock() = Some(stream.clone());
+                env.get_event_bus()
+                    .register(Arc::new(WorkspaceRuleSubscriber {
+                        out_file_stream: stream,
+                    }));
+            }
+            Err(e) => {
+                env.get_reporter()
+                    .handle(&blaze_events::Event::error(e.to_string()));
+                env.get_blaze_module_environment()
+                    .exit(workspace_rule_log_exit(
+                        "Error initializing workspace rule log file.",
+                        blaze_protos::failure_details::workspaces::Code::WorkspacesLogInitializationFailure,
+                    ));
+                // Java registers the module on the event bus anyway; with no stream, it writes
+                // nothing.
+            }
+        }
+        Ok(())
+    }
+
+    // Java: com/google/devtools/build/lib/bazel/debug/WorkspaceRuleModule.java:68 WorkspaceRuleModule.afterCommand
+    fn after_command(&self) -> Result<(), AbruptExitException> {
+        let Some(stream) = self.out_file_stream.lock().take() else {
+            return Ok(());
+        };
+        // Any AsynchronousMessageOutputStream write failures get rethrown here.
+        stream.close().map_err(|e| {
+            let message = e.to_string();
+            workspace_rule_log_exit(
+                if message.is_empty() {
+                    "Error writing workspace rule log file."
+                } else {
+                    &message
+                },
+                blaze_protos::failure_details::workspaces::Code::WorkspacesLogWriteFailure,
+            )
+        })
     }
 
     // Java: com/google/devtools/build/lib/bazel/debug/WorkspaceRuleModule.java:86 WorkspaceRuleModule.getCommonCommandOptions
@@ -732,14 +827,43 @@ impl BlazeModule for BazelCoverageReportModule {
 }
 
 /// Blaze module for setting up Starlark debugging.
-/// PORT: beforeCommand, afterCommand, blazeShutdown, blazeShutdownOnCrash are not ported;
-/// `--experimental_skylark_debug` fails loudly (`crate::unported_options`).
+///
+/// Ruling of 2026-11-26 (option b): starlark-rust instruments a statement for the debugger only
+/// when it is compiled with the hook in place (`blaze_starlark::debug`). A kept graph whose .bzl
+/// values were compiled with the flag in the other state is discarded when the flag turns on,
+/// and again when it turns off, with a line in the server log.
 // Java: com/google/devtools/build/lib/starlarkdebug/module/StarlarkDebuggerModule.java:34 StarlarkDebuggerModule
-pub struct StarlarkDebuggerModule;
+#[derive(Default)]
+pub struct StarlarkDebuggerModule {
+    /// Whether the code of the kept graph was compiled with the debugger's hook (the flag's
+    /// value at the last command that ran with the module).
+    graph_instrumented: std::sync::atomic::AtomicBool,
+}
 
 impl BlazeModule for StarlarkDebuggerModule {
     fn name(&self) -> &'static str {
         "StarlarkDebuggerModule"
+    }
+
+    // Java: com/google/devtools/build/lib/starlarkdebug/module/StarlarkDebuggerModule.java:36 StarlarkDebuggerModule.beforeCommand
+    fn before_command(&self, env: &mut CommandEnvironment) -> Result<(), AbruptExitException> {
+        // Conditionally enable debugging
+        let build_options = env.get_options().get_options::<StarlarkDebuggerOptions>();
+        let enabled = build_options.as_ref().is_some_and(|o| o.debug_starlark);
+        self.discard_graph_compiled_otherwise(env, enabled);
+        match build_options {
+            Some(o) if enabled => {
+                initialize_debugging(env, o.debug_server_port, o.verbose_logs, o.reset_analysis)
+            }
+            _ => disable_debugging(),
+        }
+        Ok(())
+    }
+
+    // Java: com/google/devtools/build/lib/starlarkdebug/module/StarlarkDebuggerModule.java:50 StarlarkDebuggerModule.afterCommand
+    fn after_command(&self) -> Result<(), AbruptExitException> {
+        disable_debugging();
+        Ok(())
     }
 
     // Java: com/google/devtools/build/lib/starlarkdebug/module/StarlarkDebuggerModule.java:55 StarlarkDebuggerModule.getCommandOptions
@@ -750,6 +874,161 @@ impl BlazeModule for StarlarkDebuggerModule {
             vec![]
         }
     }
+
+    // Java: com/google/devtools/build/lib/starlarkdebug/module/StarlarkDebuggerModule.java:62 StarlarkDebuggerModule.blazeShutdown
+    fn blaze_shutdown(&self) {
+        disable_debugging();
+    }
+
+    // Java: com/google/devtools/build/lib/starlarkdebug/module/StarlarkDebuggerModule.java:67 StarlarkDebuggerModule.blazeShutdownOnCrash
+    fn blaze_shutdown_on_crash(&self, _exit_code: &crate::exit_code::DetailedExitCode) {
+        disable_debugging();
+    }
+}
+
+impl StarlarkDebuggerModule {
+    /// Not in Java (ruling of 2026-11-26): drops the kept graph when its code was compiled with
+    /// the debugger flag in the other state.
+    fn discard_graph_compiled_otherwise(&self, env: &CommandEnvironment, enabled: bool) {
+        use std::sync::atomic::Ordering;
+        let was = self.graph_instrumented.swap(enabled, Ordering::SeqCst);
+        if was == enabled {
+            return;
+        }
+        let workspace = env.get_blaze_workspace();
+        if !workspace.get_incremental_state().has_kept_graph() {
+            return;
+        }
+        blaze_util::server_logger::info(
+            "com.google.devtools.build.lib.starlarkdebug.module.StarlarkDebuggerModule",
+            "beforeCommand",
+            &format!(
+                "Discarding the kept Skyframe graph: --experimental_skylark_debug turned {}, \
+                 and its Starlark code was compiled {} the debugger's hook",
+                if enabled { "on" } else { "off" },
+                if enabled { "without" } else { "with" },
+            ),
+        );
+        workspace.reset_evaluator();
+    }
+}
+
+// Java: com/google/devtools/build/lib/starlarkdebug/module/StarlarkDebuggerModule.java:71 StarlarkDebuggerModule.initializeDebugging
+fn initialize_debugging(
+    env: &CommandEnvironment,
+    debug_port: i32,
+    verbose_logs: bool,
+    reset_analysis: bool,
+) {
+    use blaze_events::EventHandler as _;
+    let callback: Arc<dyn blaze_starlarkdebug::DebugCallback> = if reset_analysis {
+        Arc::new(BreakpointInvalidatingCallback::new(env))
+    } else {
+        Arc::new(blaze_starlarkdebug::NoopCallback)
+    };
+    let reporter: Arc<dyn blaze_events::EventHandler> = env.get_reporter().clone();
+    // new ServerSocket(port): a port out of range is an IllegalArgumentException in Java.
+    let port = u16::try_from(debug_port).unwrap_or_else(|_| {
+        panic!("IllegalArgumentException: Port value out of range: {debug_port}")
+    });
+    match blaze_starlarkdebug::StarlarkDebugServer::create_and_wait_for_connection(
+        reporter,
+        port,
+        verbose_logs,
+        callback.clone(),
+    ) {
+        Ok(server) => {
+            blaze_starlark::debug::set_debugger(Some(server));
+            // we need to block otherwise the build (i.e. analysis) may start and the request to
+            // set breakpoints may lose the race to delete skyframe nodes
+            callback.maybe_block_before_start();
+        }
+        Err(e) => env
+            .get_reporter()
+            .handle(&blaze_events::Event::error(format!(
+                "Error while setting up the debug server: {}",
+                java_io_message(&e)
+            ))),
+    }
+}
+
+/// The callback of `--experimental_skylark_debug_reset_analysis`: deletes the FILE nodes of the
+/// paths with breakpoints before the build starts.
+// Java: com/google/devtools/build/lib/starlarkdebug/module/StarlarkDebuggerModule.java:89 StarlarkDebuggerModule.getBreakpointInvalidatingCallback
+struct BreakpointInvalidatingCallback {
+    reporter: Arc<blaze_events::Reporter>,
+    incremental_state: Arc<blaze_sky_top::incremental::SkyframeIncrementalState>,
+    /// `CountDownLatch(1)`.
+    latch: (parking_lot::Mutex<bool>, parking_lot::Condvar),
+}
+
+impl BreakpointInvalidatingCallback {
+    fn new(env: &CommandEnvironment) -> Self {
+        BreakpointInvalidatingCallback {
+            reporter: env.get_reporter().clone(),
+            incremental_state: env.get_blaze_workspace().get_incremental_state().clone(),
+            latch: (parking_lot::Mutex::new(false), parking_lot::Condvar::new()),
+        }
+    }
+
+    fn count_down(&self) {
+        *self.latch.0.lock() = true;
+        self.latch.1.notify_all();
+    }
+
+    fn handle(&self, event: blaze_events::Event) {
+        use blaze_events::EventHandler as _;
+        self.reporter.handle(&event);
+    }
+}
+
+impl blaze_starlarkdebug::DebugCallback for BreakpointInvalidatingCallback {
+    // Java: com/google/devtools/build/lib/starlarkdebug/module/StarlarkDebuggerModule.java:94 StarlarkDebuggerModule.getBreakpointInvalidatingCallback.beforeDebuggingStart
+    fn before_debugging_start(&self, break_point_paths: &[String]) {
+        // ImmutableSet.toString(): "[a, b]".
+        self.handle(blaze_events::Event::debug(format!(
+            "resetting analysis for: [{}]",
+            break_point_paths.join(", ")
+        )));
+        // we delete the FILE nodes for all paths with breakpoints to force re-analysis. Ideally,
+        // we should perhaps invalidate bzl-compile (for .bzl files) and package(??) (for BUILD
+        // files) but computing the right arguments for those skykeys is a lot harder.
+        self.incremental_state.delete(&|sky_key| {
+            sky_key.function_name() == blaze_sky_loading::sky_functions::FILE
+                && sky_key
+                    .downcast::<blaze_sky_loading::file::FileKey>()
+                    .is_some_and(|k| {
+                        let path = k.0.as_path();
+                        break_point_paths
+                            .iter()
+                            .any(|p| p.as_str() == path.get_path_string())
+                    })
+        });
+        self.handle(blaze_events::Event::debug("analysis reset complete"));
+        // unblock the build
+        self.count_down();
+    }
+
+    // Java: com/google/devtools/build/lib/starlarkdebug/module/StarlarkDebuggerModule.java:112 StarlarkDebuggerModule.getBreakpointInvalidatingCallback.maybeBlockBeforeStart
+    fn maybe_block_before_start(&self) {
+        self.handle(blaze_events::Event::debug(
+            "waiting for breakpoints before executing build",
+        ));
+        let mut done = self.latch.0.lock();
+        while !*done {
+            self.latch.1.wait(&mut done);
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/starlarkdebug/module/StarlarkDebuggerModule.java:118 StarlarkDebuggerModule.getBreakpointInvalidatingCallback.onClose
+    fn on_close(&self) {
+        self.count_down();
+    }
+}
+
+// Java: com/google/devtools/build/lib/starlarkdebug/module/StarlarkDebuggerModule.java:128 StarlarkDebuggerModule.disableDebugging
+fn disable_debugging() {
+    blaze_starlark::debug::set_debugger(None);
 }
 
 /// Module reporting about cache hits in external repositories in case of failures.
@@ -1526,6 +1805,7 @@ impl BlazeModule for ExecutionGraphModule {
     }
 }
 
+// Java: com/google/devtools/build/lib/runtime/commands/BuiltinCommandModule.java:25 BuiltinCommandModule.<init>
 /// A module that contains the built-in commands (`BuiltinCommandModule` constructed with a
 /// `RunCommand` that uses `StandaloneTestStrategy.DEFAULT_LOCAL_POLICY`).
 // Java: com/google/devtools/build/lib/bazel/BazelBuiltinCommandModule.java:21 BazelBuiltinCommandModule

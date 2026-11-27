@@ -385,9 +385,9 @@ impl RemoteModule {
     /// for the commands that execute actions, after `beforeCommand`: with a combined cache and
     /// `--rewind_lost_inputs` (`rewind_lost_inputs`: `buildRequestOptions != null &&
     /// buildRequestOptions.rewindLostInputs`) the option has no effect and a warning says so;
-    /// without rewinding it creates a `RemoteLeaseExtension`, which is not ported (it needs the
-    /// Skyframe evaluator and the persistent action cache). The `LeaseService` of the same
-    /// branch is the caller's (`blaze_runtime` `build_remote.rs`).
+    /// without rewinding the caller (`blaze_runtime` `build_remote.rs`, which has the Skyframe
+    /// evaluator and the persistent action cache) creates the `RemoteLeaseExtension` and the
+    /// `LeaseService`.
     // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1241 RemoteModule.executorInit
     pub fn executor_init(&self, reporter: &dyn EventHandler, rewind_lost_inputs: bool) {
         let Some(action_context_provider) = &self.action_context_provider else {
@@ -413,11 +413,6 @@ impl RemoteModule {
                     "--experimental_remote_cache_lease_extension has no effect since --rewind_lost_inputs is enabled, which recovers from lost remote cache entries as they are encountered.",
                 ));
             }
-        } else if remote_options.remote_cache_lease_extension {
-            blaze_util::unported!(
-                "RemoteLeaseExtension",
-                "--experimental_remote_cache_lease_extension"
-            );
         }
     }
 
@@ -1341,23 +1336,14 @@ fn create_channel(
     digest_function: digest_function::Value,
     requirement: ServerCapabilitiesRequirement,
 ) -> ReferenceCountedChannel {
-    // `setup` turns `--experimental_remote_max_concurrency_per_connection` and
-    // `--remote_max_connections` into `maxConcurrencyPerConnection` / `maxConnections` and
-    // hands them to `createChannel`, whose `GoogleChannelConnectionFactory` and
-    // `ReferenceCountedChannel` size a `DynamicConnectionPool` with them: only a gRPC channel
-    // reads them (a `--disk_cache` alone never does). The port's channel multiplexes every call
-    // on one HTTP/2 connection (`crate::grpc::channel`), so a value other than the default fails
-    // loudly here (review 2026-11-19 R13).
+    // `setup` turns `--remote_max_concurrency_per_connection` and `--remote_max_connections`
+    // into `maxConcurrencyPerConnection` / `maxConnections` (0 when not positive) and hands them
+    // to `createChannel`, whose `GoogleChannelConnectionFactory` and `ReferenceCountedChannel`
+    // size a `DynamicConnectionPool` with them: only a gRPC channel reads them.
     // Java: com/google/devtools/build/lib/remote/RemoteModule.java:623 RemoteModule.setup
-    // Java: com/google/devtools/build/lib/remote/ReferenceCountedChannel.java:70 ReferenceCountedChannel.<init>
-    if remote_options.remote_max_concurrency_per_connection != 100
-        || remote_options.remote_max_connections != 100
-    {
-        blaze_util::unported!(
-            "DynamicConnectionPool",
-            "--remote_max_connections / --remote_max_concurrency_per_connection other than 100 (one HTTP/2 connection per endpoint)"
-        );
-    }
+    let max_concurrency_per_connection =
+        remote_options.remote_max_concurrency_per_connection.max(0);
+    let max_connections = remote_options.remote_max_connections.max(0);
 
     let mut interceptors: Vec<Arc<dyn ClientInterceptor>> = Vec::new();
     if let Some(headers_interceptor) = headers_interceptor {
@@ -1431,7 +1417,13 @@ fn create_channel(
         managed.max_inbound_message_size,
         Some(fetcher),
     )
-    .with_transport_lifecycle(managed.transport_lifecycle.clone());
+    .with_transport_lifecycle(managed.transport_lifecycle.clone())
+    // Java: com/google/devtools/build/lib/remote/ReferenceCountedChannel.java:70 ReferenceCountedChannel.<init>
+    .with_connection_pool(
+        managed.channel_factory.clone(),
+        max_concurrency_per_connection,
+        max_connections,
+    );
     let channel = match &managed.service_config {
         Some(config) => match channel.with_service_config(config) {
             Ok(channel) => channel,

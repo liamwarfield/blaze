@@ -2636,11 +2636,8 @@ mod tests {
     use super::*;
     use blaze_analysis::aspect_key_creator::AspectKeyCreator;
 
-    // Java: src/test/java/com/google/devtools/build/lib/query2/PostAnalysisQueryTest.java
-    // PORT: the PostAnalysisQueryTest suite drives analysis through BuildViewTestCase.
-    #[test]
-    #[ignore = "needs the BuildViewTestCase analysis harness"]
-    fn test_target_literal_with_missing_targets() {}
+    // The tests of PostAnalysisQueryTest are ported in crates/blaze_query_testing/tests (on its
+    // PostAnalysisQueryHelper port).
 
     // Oracle (scripts/w4/scenarios/query-errors, `cquery //:x --nodep_deps=false`): "The following
     // filter(s) are not currently supported by configured query: [NO_NODEP_DEPS,

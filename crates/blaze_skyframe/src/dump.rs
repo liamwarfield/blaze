@@ -8,12 +8,17 @@
 //! function name (Java: Guava `HashMultiset`, insertion order, i.e. the graph's order). For a
 //! key's canonical name see [`canonical_name`].
 
+use std::any::{Any, TypeId};
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt::Write as _;
+use std::sync::{LazyLock, Once};
+
+use parking_lot::RwLock;
 
 use crate::node_entry::NodeEntry as _;
-use crate::{Evaluator, SkyFunctionName, SkyKey};
+use crate::{Evaluator, SkyFunctionName, SkyKey, SkyValue};
 
 /// One node of the graph as the dumps read it.
 struct DumpNode {
@@ -25,6 +30,60 @@ struct DumpNode {
     direct_dep_groups: Vec<Vec<SkyKey>>,
     /// The reverse dependencies of a done node that keeps edges.
     reverse_deps: Vec<SkyKey>,
+    /// `entry.getValue()` of a done node (`null` for a node that holds only an error).
+    value: Option<SkyValue>,
+}
+
+/// One value type's `SkyValue.debugPrint`: the text it writes to the stream, newlines included.
+type DebugPrintFn = Box<dyn Fn(&(dyn Any + Send + Sync)) -> String + Send + Sync>;
+
+/// `SkyValue.debugPrint` by value type. Java dispatches on the value's class; the Rust values are
+/// `Arc<dyn Any>`, so each crate that defines a value type whose Java `toString` (or
+/// `debugPrint` override) is deterministic registers it here with [`register_to_string`] or
+/// [`register_debug_print`]. A value type that is not registered fails loudly in
+/// [`dump_values`]: either its Java text is not ported yet, or it holds an identity hash code
+/// (`Object.toString`), which no port can reproduce.
+static DEBUG_PRINTS: LazyLock<RwLock<HashMap<TypeId, DebugPrintFn>>> =
+    LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Registers `debug_print` as the `SkyValue.debugPrint` override of `T`: the whole text the
+/// override writes, its newlines included.
+pub fn register_debug_print<T: Any + Send + Sync>(debug_print: fn(&T) -> String) {
+    DEBUG_PRINTS.write().insert(
+        TypeId::of::<T>(),
+        Box::new(move |v| debug_print(v.downcast_ref::<T>().expect("registered by TypeId"))),
+    );
+}
+
+/// Registers `to_string` as the Java `toString()` of `T`, printed by the default
+/// `SkyValue.debugPrint` (`out.println(this)`).
+// Java: com/google/devtools/build/skyframe/SkyValue.java:27 SkyValue.debugPrint
+pub fn register_to_string<T: Any + Send + Sync>(to_string: fn(&T) -> String) {
+    DEBUG_PRINTS.write().insert(
+        TypeId::of::<T>(),
+        Box::new(move |v| {
+            let mut out = to_string(v.downcast_ref::<T>().expect("registered by TypeId"));
+            out.push('\n');
+            out
+        }),
+    );
+}
+
+/// The value types of the graph's own nodes.
+fn register_skyframe_values() {
+    // Java: com/google/devtools/build/skyframe/ErrorTransienceValue.java:64 ErrorTransienceValue.toString
+    register_to_string::<crate::evaluator::ErrorTransienceValue>(|_| {
+        "ErrorTransienceValue".to_owned()
+    });
+    // A record: `EnvironmentVariableValue[value=...]`, `null` for an unset variable. The value of
+    // CLIENT_ENVIRONMENT_VARIABLE and REPOSITORY_ENVIRONMENT_VARIABLE.
+    // Java: com/google/devtools/build/lib/skyframe/EnvironmentVariableValue.java:28 EnvironmentVariableValue
+    register_to_string::<crate::precomputed::EnvironmentVariableValue>(|v| {
+        format!(
+            "EnvironmentVariableValue[value={}]",
+            v.value().unwrap_or("null")
+        )
+    });
 }
 
 /// `SkyKey.getCanonicalName()`: `functionName() + ":" + argument()`.
@@ -66,7 +125,9 @@ fn all_node_entries(evaluator: &Evaluator) -> Vec<DumpNode> {
             } else {
                 (Vec::new(), Vec::new())
             };
+            let value = if done { entry.get_value() } else { None };
             DumpNode {
+                value,
                 canonical_name: canonical_name(&key),
                 key,
                 done,
@@ -134,20 +195,58 @@ fn process_graph_for_dump_command(
         .collect()
 }
 
-/// `dumpValues`: needs each value's `debugPrint` (Java `toString` of the `SkyValue`), which is
-/// not ported; a dump that selects at least one node fails loudly.
+/// `dumpValues`: each done node's canonical name, its value's `debugPrint`, and an empty line.
+///
+/// PORT: a value type without a registered `debugPrint` (see [`register_to_string`]) fails
+/// loudly, naming every such type among the selected nodes; Java prints them with their own
+/// `toString`, which for the types not registered is either not ported yet or
+/// `Object.toString` (class name and identity hash code).
 // Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:336 AbstractInMemoryMemoizingEvaluator.dumpValues
 pub fn dump_values(evaluator: &Evaluator, filter: &dyn Fn(&str) -> bool) -> String {
+    static SKYFRAME_VALUES: Once = Once::new();
+    SKYFRAME_VALUES.call_once(register_skyframe_values);
     let entries = process_graph_for_dump_command(evaluator, filter);
-    if let Some(first) = entries.first() {
+    let prints = DEBUG_PRINTS.read();
+    let mut missing: BTreeMap<String, (String, usize)> = BTreeMap::new();
+    for entry in &entries {
+        if let Some(value) = &entry.value {
+            let value: &(dyn Any + Send + Sync) = value.as_ref();
+            if !prints.contains_key(&value.type_id()) {
+                let function = entry.key.function_name().0.to_owned();
+                missing
+                    .entry(function)
+                    .or_insert_with(|| (entry.canonical_name.clone(), 0))
+                    .1 += 1;
+            }
+        }
+    }
+    if !missing.is_empty() {
+        let list: Vec<String> = missing
+            .iter()
+            .map(|(function, (first, n))| format!("{function} ({n} nodes, first {first})"))
+            .collect();
         blaze_util::unported!(
             "SkyValue.debugPrint",
-            "the Java toString of the value of {} (and {} more nodes)",
-            first.canonical_name,
-            entries.len() - 1
+            "the Java toString of the values of {}",
+            list.join(", ")
         );
     }
-    String::new()
+    let mut out = String::new();
+    for entry in &entries {
+        out.push_str(&entry.canonical_name);
+        out.push('\n');
+        // Java: entry.getValue().debugPrint(out); a node holding only an error has a null value.
+        let Some(value) = &entry.value else {
+            panic!(
+                "java.lang.NullPointerException: the value of {} (an error) in dumpValues",
+                entry.canonical_name
+            );
+        };
+        let value: &(dyn Any + Send + Sync) = value.as_ref();
+        out.push_str(&prints[&value.type_id()](value));
+        out.push('\n');
+    }
+    out
 }
 
 // Java: com/google/devtools/build/skyframe/AbstractInMemoryMemoizingEvaluator.java:349 AbstractInMemoryMemoizingEvaluator.dumpDeps
@@ -218,4 +317,71 @@ pub fn dump_rdeps(evaluator: &Evaluator, filter: &dyn Fn(&str) -> bool) -> Strin
         out.push('\n');
     }
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{EvaluationContext, EvaluatorBuilder, FunctionHermeticity, Key};
+
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    struct Printed(u32);
+    struct PrintedValue(u32);
+    impl Key for Printed {
+        type Value = PrintedValue;
+        const FUNCTION: SkyFunctionName = SkyFunctionName("PRINTED");
+        const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    }
+
+    #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+    struct Unprinted(u32);
+    struct UnprintedValue;
+    impl Key for Unprinted {
+        type Value = UnprintedValue;
+        const FUNCTION: SkyFunctionName = SkyFunctionName("UNPRINTED");
+        const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
+    }
+
+    fn evaluator() -> Evaluator {
+        register_to_string::<PrintedValue>(|v| format!("printed {}", v.0));
+        let ev = EvaluatorBuilder::new()
+            .typed_function::<Printed, _>(|k: &Printed, _env| Ok(Some(PrintedValue(k.0 * 10))))
+            .typed_function::<Unprinted, _>(|_: &Unprinted, _env| Ok(Some(UnprintedValue)))
+            .build();
+        ev.evaluate(
+            &[
+                SkyKey::new(Printed(2)),
+                SkyKey::new(Printed(1)),
+                SkyKey::new(Unprinted(1)),
+            ],
+            &EvaluationContext {
+                parallelism: 2,
+                thread_stack_size: 16 << 20,
+                ..EvaluationContext::default()
+            },
+        )
+        .expect("not interrupted");
+        ev
+    }
+
+    #[test]
+    fn dump_values_prints_name_value_and_empty_line() {
+        let ev = evaluator();
+        assert_eq!(
+            dump_values(&ev, &|name| name.starts_with("PRINTED:")),
+            "PRINTED:Printed(1)\nprinted 10\n\nPRINTED:Printed(2)\nprinted 20\n\n"
+        );
+        assert_eq!(
+            dump_values(&ev, &|name| name.starts_with("NONE:")),
+            "",
+            "no node selected"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "SkyValue.debugPrint")]
+    fn dump_values_of_an_unregistered_type_fails_loudly() {
+        let ev = evaluator();
+        dump_values(&ev, &|_| true);
+    }
 }

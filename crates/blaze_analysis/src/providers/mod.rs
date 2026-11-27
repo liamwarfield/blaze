@@ -7,6 +7,7 @@
 pub mod alias_provider;
 pub mod default_info;
 pub mod file_provider;
+pub mod materialized_deps_info;
 pub mod output_group_info;
 pub mod package_specification_provider;
 pub mod required_config_fragments_provider;
@@ -15,8 +16,8 @@ pub mod starlark_runfiles;
 pub mod visibility;
 
 use blaze_packages::starlark_defs::builtin_providers::{
-    BuiltinConstructor, BuiltinProvider, BuiltinProviderData, DEFAULT_INFO, OUTPUT_GROUP_INFO,
-    RUN_ENVIRONMENT_INFO,
+    BuiltinConstructor, BuiltinProvider, BuiltinProviderData, DEFAULT_INFO,
+    MATERIALIZED_DEPS_INFO, OUTPUT_GROUP_INFO, RUN_ENVIRONMENT_INFO,
 };
 use starlark::environment::GlobalsBuilder;
 
@@ -50,12 +51,24 @@ pub const fn run_environment_info_provider() -> BuiltinProvider {
     })
 }
 
-/// Defines the analysis-capable `DefaultInfo`, `OutputGroupInfo` and `RunEnvironmentInfo`
-/// toplevels (same `BuiltinProviderId`s as W3's, so infos created by either are found by
+/// Java `MaterializedDepsInfo.PROVIDER` with its constructor.
+// Java: com/google/devtools/build/lib/analysis/MaterializedDepsInfo.java:31 MaterializedDepsInfo.PROVIDER
+pub const fn materialized_deps_info_provider() -> BuiltinProvider {
+    BuiltinProvider::new(BuiltinProviderData {
+        id: MATERIALIZED_DEPS_INFO,
+        constructor: BuiltinConstructor::Native(
+            materialized_deps_info::materialized_deps_info_constructor,
+        ),
+    })
+}
+
+/// Defines the analysis-capable `DefaultInfo`, `OutputGroupInfo`, `RunEnvironmentInfo` and
+/// `MaterializedDepsInfo` toplevels (same `BuiltinProviderId`s as W3's, so infos created by either are found by
 /// either symbol). The lead substitutes these for W3's entries.
 // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkGlobalsImpl.java:101 StarlarkGlobalsImpl.getFixedBzlToplevels
 pub fn register_provider_toplevels(builder: &mut GlobalsBuilder) {
     builder.set("DefaultInfo", default_info_provider());
     builder.set("OutputGroupInfo", output_group_info_provider());
     builder.set("RunEnvironmentInfo", run_environment_info_provider());
+    builder.set("MaterializedDepsInfo", materialized_deps_info_provider());
 }

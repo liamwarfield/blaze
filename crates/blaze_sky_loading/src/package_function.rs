@@ -172,6 +172,7 @@ pub struct GlobsGlobber {
     non_skyframe_globber: NonSkyframeGlobber,
     glob_requests: Mutex<IndexSet<GlobRequest>>,
     /// Java `GlobsToken`s by token id: (operation, allow_empty).
+    // Java: com/google/devtools/build/lib/skyframe/PackageFunctionWithSingleGlobsDep.java:163 PackageFunctionWithSingleGlobsDep.GlobsGlobber.GlobsToken.<init>
     tokens: Mutex<IndexMap<u64, (GlobberOperation, bool)>>,
 }
 
@@ -240,10 +241,12 @@ impl Globber for GlobsGlobber {
         Ok(result)
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/PackageFunctionWithSingleGlobsDep.java:137 PackageFunctionWithSingleGlobsDep.GlobsGlobber.onInterrupt
     fn on_interrupt(&self) {
         self.non_skyframe_globber.on_interrupt();
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/PackageFunctionWithSingleGlobsDep.java:142 PackageFunctionWithSingleGlobsDep.GlobsGlobber.onCompletion
     fn on_completion(&self) {
         self.non_skyframe_globber.on_completion();
     }
@@ -280,6 +283,7 @@ fn filesystem_code_of(detailed_exit_code: &DetailedExitCode) -> &str {
     }
 }
 
+// PORT: skipped, Bazel's one ActionOnIOExceptionReadingBuildFile, a singleton with no state (see below): PackageFunction.ActionOnIOExceptionReadingBuildFile.UseOriginalIOException.<init>
 /// The builder of a `PackageFunctionException` and its `NoSuchPackageException` cause.
 ///
 /// PORT: Bazel's `ActionOnIOExceptionReadingBuildFile` is `UseOriginalIOException`, so it is not
@@ -366,6 +370,7 @@ impl PackageFunctionExceptionBuilder {
         )
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1721 PackageFunction.PackageFunctionException.<init>
     // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:1864 PackageFunction.PackageFunctionException.Builder.build
     fn build(self) -> ComputeError {
         let transience = self.transience;
@@ -547,6 +552,33 @@ enum Packageoid {
 // PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: PackageLoader.close
 // PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Result.getLoadedValues
 // PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Result.getEvents
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: AbstractPackageLoader.<init>
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: AbstractPackageLoader.Builder.<init>
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Builder.setRuleClassProvider
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Builder.setStarlarkSemantics
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Builder.useDefaultStarlarkSemantics
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Builder.setLazyMacroExpansionPackages
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Builder.setCommonReporter
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Builder.addExtraSkyFunctions
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Builder.addExtraPrecomputedValues
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Builder.setNonSkyframeGlobbingThreads
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Builder.setSkyframeThreads
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Builder.setCpuBoundSemaphoreTokenCount
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Builder.setExternalFileAction
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Builder.validate
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Builder.build
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Builder.buildImpl
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Builder.getDefaultRuleClassProvider
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: LoadingContext.<init>
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: BazelPackageLoader.<init>
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: BazelPackageLoader.Builder.<init>
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Builder.createRuleClassProvider
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Builder.enableFetchForTesting
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: StarlarkModuleLoadingException.<init>
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Result.<init>
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: PackageLoader.LoadingContext.loadPackages
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: PackageLoader.LoadingContext.loadModules
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: PackageLoader.LoadingContext.getRepositoryMapping
 // Bazel's SkyframeExecutor uses SINGLE_GLOBS_HYBRID (`globUnderSingleDep` is true and nothing sets it
 // false), so the classes of the other strategies never run.
 // PORT: skipped, the MULTIPLE_GLOB_HYBRID strategy, never used at the pin (nothing calls setGlobUnderSingleDep(false)): GlobFunctionWithMultipleRecursiveFunctions.compute, GlobFunctionWithMultipleRecursiveFunctions.processSubdir, GlobFunctionWithMultipleRecursiveFunctions.containsGlobs, GlobFunctionWithMultipleRecursiveFunctions.addToMatches
@@ -576,10 +608,12 @@ pub struct PackageFunctionConfig {
 /// A SkyFunction which computes a [`PackageValue`] given a [`PackageKey`] (Java
 /// `PackageFunctionWithSingleGlobsDep`).
 // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:120 PackageFunction
+// Java: com/google/devtools/build/lib/skyframe/PackageFunctionWithSingleGlobsDep.java:58 PackageFunctionWithSingleGlobsDep.<init>
 pub struct PackageFunction {
     config: Arc<PackageFunctionConfig>,
 }
 
+// Java: com/google/devtools/build/lib/skyframe/PackageFunctionWithSingleGlobsDep.java:213 PackageFunctionWithSingleGlobsDep.newLoadedPackage
 /// A loaded package and its globber (Java `LoadedPackageWithGlobRequests`).
 // Java: com/google/devtools/build/lib/skyframe/PackageFunctionWithSingleGlobsDep.java:83 PackageFunctionWithSingleGlobsDep.LoadedPackageWithGlobRequests
 struct LoadedPackage {
@@ -1306,6 +1340,7 @@ impl PackageFunction {
             self.config.package_locator.clone(),
         );
         // Java: com/google/devtools/build/lib/skyframe/PackageFunction.java:984 PackageFunction.makeGlobber
+        // Java: com/google/devtools/build/lib/skyframe/PackageFunctionWithSingleGlobsDep.java:204 PackageFunctionWithSingleGlobsDep.makeGlobber
         let globber = Arc::new(GlobsGlobber::new(non_skyframe_globber));
 
         let generator_map = match &compiled {
@@ -1361,6 +1396,13 @@ impl PackageFunction {
             } => {
                 let (load_map, direct_loads) =
                     loaded_modules.expect("loads are computed for a compiled BUILD file");
+                // PORT: Blaze-only (decision D7): the package owns the heaps of what it loaded.
+                pkg_builder.get_declarations().add_module_heaps(
+                    load_map
+                        .modules()
+                        .chain(prelude_bindings.iter())
+                        .map(|m| m.frozen_heap().clone()),
+                );
                 pkg_builder = self.execute_build_file(
                     pkg_builder,
                     prog,

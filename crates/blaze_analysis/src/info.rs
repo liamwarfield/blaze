@@ -19,8 +19,11 @@ use blaze_packages::starlark_defs::provider::provider_view;
 use blaze_starlark::structs::StarlarkInfo;
 use starlark::any::ProvidesStaticType;
 use starlark::values::{
-    AllocFrozenValue, FrozenHeap, FrozenValue, OwnedFrozenValue, Value, ValueLike,
+    AllocFrozenValue, FrozenHeap, FrozenValue, Heap, OwnedFrozenValue, StarlarkValue, Value,
+    ValueLike,
 };
+use starlark_map::StarlarkHasher;
+use std::hash::{Hash, Hasher};
 
 /// What a native info value `provide`s so that [`info_provider_key`] can find its key
 /// (Java `Info.getProvider().getKey()`).
@@ -28,6 +31,11 @@ use starlark::values::{
 pub struct InfoProviderKey(pub ProviderKey);
 
 /// Java `Info.getProvider().getKey()` of `v`, or `None` if `v` is not an `Info`.
+// Java: com/google/devtools/build/lib/packages/Info.java:55 Info.getProvider
+// PORT: the creation location (Java `Info.getCreationLocation`) is passed to the one reader,
+// StarlarkRuleConfiguredTargetUtil.infoError (starlark_rule_configured_target_util.rs).
+// Java: com/google/devtools/build/lib/packages/Info.java:61 Info.getCreationLocation
+// Java: com/google/devtools/build/lib/packages/StarlarkInfo.java:47 StarlarkInfo.getCreationLocation
 pub fn info_provider_key(v: Value) -> Option<ProviderKey> {
     if let Some(k) = v.request_value::<InfoProviderKey>() {
         return Some(k.0);
@@ -84,4 +92,131 @@ pub fn downcast_info<T: starlark::values::StarlarkValue<'static>>(
 ) -> Option<&T> {
     // SAFETY: the returned reference borrows `v`, which keeps the frozen heap alive.
     unsafe { v.unchecked_frozen_value() }.downcast_ref::<T>()
+}
+
+// -------------------------------------------------------------------------------------------
+// NativeInfo: equality, hashing and repr by legacy fields.
+
+/// Runs `f` with a temporary heap, typed as the heap of the values it reads. `equals`,
+/// `write_hash` and `Display` of a native info have no heap, but its fields are computed
+/// (`get_attr` allocates).
+fn with_temporary_heap<'v, R: 'static>(f: impl FnOnce(Heap<'v>) -> R) -> R {
+    Heap::temp(|heap| f(as_heap_of(heap)))
+}
+
+/// SAFETY of the callers: the values made on the temporary heap live only during
+/// [`with_temporary_heap`]'s closure, whose result (`R: 'static`) holds none of them.
+fn as_heap_of<'t, 'v>(heap: Heap<'t>) -> Heap<'v> {
+    // SAFETY: see above; only the lifetime changes.
+    unsafe { std::mem::transmute::<Heap<'t>, Heap<'v>>(heap) }
+}
+
+/// Java `NativeInfo.getLegacyFields` of a native info: its struct fields in
+/// `getLegacyStarlarkMethodNames` order (sorted names), methods left out (Java skips
+/// `BuiltinFunction` values; Rust methods are not fields), a field whose `getattr` fails `None`.
+// Java: com/google/devtools/build/lib/packages/NativeInfo.java:64 NativeInfo.getLegacyStarlarkMethodNames
+// Java: com/google/devtools/build/lib/packages/NativeInfo.java:69 NativeInfo.getLegacyFields
+fn legacy_fields<'v, T: StarlarkValue<'v>>(this: &T, heap: Heap<'v>) -> Vec<(String, Value<'v>)> {
+    let mut names = this.dir_attr();
+    names.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+    names.dedup();
+    names
+        .into_iter()
+        .map(|name| {
+            let value = this.get_attr(&name, heap).unwrap_or_else(Value::new_none);
+            (name, value)
+        })
+        .collect()
+}
+
+/// [`legacy_fields`] of a value known only as a `Value` (the other operand of `==`).
+fn legacy_fields_of_value<'v>(v: Value<'v>, heap: Heap<'v>) -> Vec<(String, Value<'v>)> {
+    let mut names = v.dir_attr();
+    names.sort_by(|a, b| a.encode_utf16().cmp(b.encode_utf16()));
+    names.dedup();
+    let mut fields = Vec::with_capacity(names.len());
+    for name in names {
+        match v.get_attr(&name, heap) {
+            Ok(Some(value)) if value.get_type() == "builtin_function_or_method" => {}
+            Ok(Some(value)) => fields.push((name, value)),
+            Ok(None) => {}
+            // Java: an EvalException from getattr gives `None`.
+            Err(_) => fields.push((name, Value::new_none())),
+        }
+    }
+    fields
+}
+
+/// Java `NativeInfo.equals`: an info of the same provider with equal legacy fields. For the
+/// native infos that do not override it (Java subclasses of `NativeInfo` without their own
+/// `equals`); `key` is this info's provider key.
+// Java: com/google/devtools/build/lib/packages/NativeInfo.java:97 NativeInfo.equals
+pub fn native_info_equals<'v, T: StarlarkValue<'v>>(
+    this: &T,
+    key: &ProviderKey,
+    other: Value<'v>,
+) -> starlark::Result<bool> {
+    if other
+        .request_value::<InfoProviderKey>()
+        .map(|k| k.0)
+        .as_ref()
+        != Some(key)
+    {
+        return Ok(false);
+    }
+    with_temporary_heap(|heap| {
+        let x = legacy_fields(this, heap);
+        let y = legacy_fields_of_value(other, heap);
+        if x.len() != y.len() {
+            return Ok(false);
+        }
+        for ((xn, xv), (yn, yv)) in x.iter().zip(y.iter()) {
+            if xn != yn || !xv.equals(*yv)? {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    })
+}
+
+/// Java `NativeInfo.hashCode` (`Objects.hashCode(getProvider(), getLegacyFields())`); a native
+/// info is always hashable (Java `NativeInfo.isImmutable` is true), whatever its fields hold.
+// Java: com/google/devtools/build/lib/packages/NativeInfo.java:115 NativeInfo.hashCode
+pub fn native_info_write_hash<'v, T: StarlarkValue<'v>>(
+    this: &T,
+    key: &ProviderKey,
+    hasher: &mut StarlarkHasher,
+) -> starlark::Result<()> {
+    key.hash(hasher);
+    let fields: starlark::Result<Vec<(String, u64)>> = with_temporary_heap(|heap| {
+        legacy_fields(this, heap)
+            .into_iter()
+            .map(|(name, value)| {
+                let mut h = StarlarkHasher::new();
+                blaze_starlark::structs::java_hash_code(value, &mut h)?;
+                Ok((name, h.finish()))
+            })
+            .collect()
+    });
+    for (name, h) in fields? {
+        name.hash(hasher);
+        h.hash(hasher);
+    }
+    Ok(())
+}
+
+/// Java `NativeInfo.repr` (and `toString`, which is `Starlark.repr`): `struct(name = value, ...)`
+/// over the legacy fields. Native infos call it from `StarlarkValue::collect_repr`, which `str`
+/// also uses.
+// Java: com/google/devtools/build/lib/packages/NativeInfo.java:125 NativeInfo.repr
+// Java: com/google/devtools/build/lib/packages/NativeInfo.java:140 NativeInfo.toString
+pub fn native_info_collect_repr<'v, T: StarlarkValue<'v>>(this: &T, collector: &mut String) {
+    let text = with_temporary_heap(|heap| {
+        let fields: Vec<String> = legacy_fields(this, heap)
+            .into_iter()
+            .map(|(name, value)| format!("{name} = {}", value.to_repr()))
+            .collect();
+        format!("struct({})", fields.join(", "))
+    });
+    collector.push_str(&text);
 }

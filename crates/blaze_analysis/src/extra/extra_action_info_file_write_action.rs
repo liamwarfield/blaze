@@ -143,6 +143,9 @@ impl AbstractFileWriteAction for ExtraActionInfoFileWriteAction {
                 return Err(NewDeterministicWriterError::Exec(e.message));
             }
         };
+        // Java: com/google/devtools/build/lib/util/ProtoDeterministicWriter.java:26 ProtoDeterministicWriter.<init>
+        // Java: com/google/devtools/build/lib/util/ProtoDeterministicWriter.java:38 ProtoDeterministicWriter.writeTo
+        // PORT: skipped, the message is serialized once above (the supplier form and getBytes have no other caller): ProtoDeterministicWriter.MessageSupplier.getMessage, ProtoDeterministicWriter.getBytes
         // ProtoDeterministicWriter.writeTo: message.writeTo(out).
         Ok(Box::new(FnDeterministicWriter(
             move |out: &mut dyn Write| out.write_all(&bytes),

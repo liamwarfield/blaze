@@ -44,6 +44,9 @@ use crate::grpc::{CallCredentials, ClientInterceptor};
 pub struct ManagedChannel {
     /// The transport, connecting lazily on first use (as a gRPC channel does).
     pub channel: Channel,
+    /// Makes another such transport (another connection): `ChannelFactory.newChannel` for
+    /// each connection of the `DynamicConnectionPool`.
+    pub channel_factory: Arc<dyn Fn() -> Channel + Send + Sync>,
     /// `ManagedChannel.authority()`: the `--tls_authority_override` on a TLS channel that has
     /// one, else the authority of the target.
     pub authority: String,
@@ -318,11 +321,16 @@ pub fn new_channel(
     // return builder.build();
     // PORT: `connect_lazy` needs a runtime context for the channel's background task.
     let mut transport_lifecycle = None;
-    let channel = {
-        let _guard = crate::runtime::runtime().enter();
-        match rejected_client_certificate {
-            Some(message) => {
-                builder.connect_with_connector_lazy(tower::service_fn(move |_uri: http::Uri| {
+    // Each connection of the channel's `DynamicConnectionPool` is a channel of its own (Java:
+    // `ChannelFactory.newChannel` per `GoogleChannelConnectionFactory.create`).
+    let channel_factory: Arc<dyn Fn() -> Channel + Send + Sync> = match rejected_client_certificate
+    {
+        Some(message) => Arc::new(move || {
+            let _guard = crate::runtime::runtime().enter();
+            let message = message.clone();
+            builder
+                .clone()
+                .connect_with_connector_lazy(tower::service_fn(move |_uri: http::Uri| {
                     let message = message.clone();
                     async move {
                         Err::<hyper_util::rt::TokioIo<tokio::net::TcpStream>, io::Error>(
@@ -330,18 +338,24 @@ pub fn new_channel(
                         )
                     }
                 }))
-            }
-            None => {
-                let lifecycle = TransportLifecycle::new();
-                transport_lifecycle = Some(lifecycle.clone());
-                let connector =
-                    LifecycleConnector::new(http_connector(&builder), connector_tls, lifecycle);
-                builder.connect_with_connector_lazy(connector)
-            }
+        }),
+        None => {
+            let lifecycle = TransportLifecycle::new();
+            transport_lifecycle = Some(lifecycle.clone());
+            let connector =
+                LifecycleConnector::new(http_connector(&builder), connector_tls, lifecycle);
+            Arc::new(move || {
+                let _guard = crate::runtime::runtime().enter();
+                builder
+                    .clone()
+                    .connect_with_connector_lazy(connector.clone())
+            })
         }
     };
+    let channel = channel_factory();
     Ok(ManagedChannel {
         channel,
+        channel_factory,
         authority,
         tls,
         interceptors,

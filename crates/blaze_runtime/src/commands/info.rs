@@ -292,9 +292,9 @@ impl InfoCommand {
             }
         }
 
-        // PORT: `env.getEventBus().post(new NoBuildEvent())` only reaches the Build Event
-        // Protocol, which is ported for build and test; a BEP file requested for this command
-        // fails loudly before it runs (crate::unported_options).
+        // `env.getEventBus().post(new NoBuildEvent())` reaches only the Build Event Protocol,
+        // which Bazel does not write for this command (BazelBuildEventServiceModule
+        // .ALLOWED_COMMANDS; oracle: no file for --build_event_json_file).
         if !residue.is_empty() {
             let mut unknown_keys: IndexSet<String> = IndexSet::new();
             for key in residue {

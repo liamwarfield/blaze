@@ -111,7 +111,6 @@ fn toolchain_attribute() -> &'static Attribute {
     })
 }
 
-// PORT: skipped, Blaze analyzes before it executes (the incremental conflict finder is skipped, see blaze_sky_exec BuildDriverFunction): RuleContext.getConflictFinder, RuleContext.Builder.setConflictFinder
 // PORT: skipped, Blaze's native rules call no Starlark-defined builtins: RuleContext.getStarlarkDefinedBuiltin, RuleContext.callStarlarkOrThrowRuleError
 // PORT: skipped, the Starlark thread and context are the evaluator's (thread_payload): RuleContext.getStarlarkThread, RuleContext.getStarlarkRuleContext
 /// The totality of data available during the analysis of a rule.
@@ -165,9 +164,20 @@ pub struct RuleContext {
     /// context is for the evaluation of an aspect. The methods `AspectContext` overrides
     /// dispatch on it.
     aspect_context: Option<AspectContext>,
+    /// `conflictFinder`.
+    conflict_finder: crate::rule::action_conflict_exception::ConflictFinderSupplier,
 }
 
 impl RuleContext {
+    /// Returns the conflict finder if `ConflictCheckingMode.UPON_CONFIGURED_OBJECT_CREATION`
+    /// and `None` otherwise.
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1052 RuleContext.getConflictFinder
+    pub fn get_conflict_finder(
+        &self,
+    ) -> Option<Arc<dyn crate::rule::action_conflict_exception::ConflictFinder>> {
+        (self.conflict_finder)()
+    }
+
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:153 RuleContext.TOOLCHAIN_ATTR_NAME
     pub const TOOLCHAIN_ATTR_NAME: &'static str = "$toolchain";
 
@@ -193,6 +203,7 @@ impl RuleContext {
         let features = Self::compute_features(&rule, attributes.as_ref(), &builder.configuration);
         let attributes = RuleContextAttributes(attributes);
         RuleContext {
+            conflict_finder: builder.conflict_finder.clone(),
             target_context,
             rule,
             configuration: builder.configuration.clone(),
@@ -1611,6 +1622,8 @@ impl AttributeMap for RuleContextAttributes {
 /// Builder class for a RuleContext.
 // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1425 RuleContext.Builder
 pub struct RuleContextBuilder {
+    /// `conflictFinder` (`() -> null` by default).
+    conflict_finder: crate::rule::action_conflict_exception::ConflictFinderSupplier,
     env: Arc<CachingAnalysisEnvironment>,
     target: Target,
     aspects: Vec<Aspect>,
@@ -1663,6 +1676,7 @@ impl RuleContextBuilder {
             ))
         };
         RuleContextBuilder {
+            conflict_finder: crate::rule::action_conflict_exception::no_conflict_finder(),
             env,
             target,
             aspects,
@@ -1821,6 +1835,15 @@ impl RuleContextBuilder {
     }
 
     // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1571 RuleContext.Builder.setRuleClassProvider
+    // Java: com/google/devtools/build/lib/analysis/RuleContext.java:1699 RuleContext.Builder.setConflictFinder
+    pub fn set_conflict_finder(
+        &mut self,
+        conflict_finder: crate::rule::action_conflict_exception::ConflictFinderSupplier,
+    ) -> &mut Self {
+        self.conflict_finder = conflict_finder;
+        self
+    }
+
     pub fn set_rule_class_provider(&mut self, p: Arc<ConfiguredRuleClassProvider>) -> &mut Self {
         self.rule_class_provider = Some(p);
         self
@@ -2444,10 +2467,11 @@ impl RuleContextBuilder {
             .config_setting_visibility_policy;
         if config_setting_visibility_policy != Some(ConfigSettingVisibilityPolicy::LegacyOff) {
             // Validate config conditions.
+            // Java: a rule class without `$config_dependencies` (a dependency resolution rule)
+            // has no config conditions, so the null attribute is never used.
             let config_setting_attr = attributes
                 .get_attribute_definition(CONFIG_SETTING_DEPS_ATTRIBUTE)
-                .expect("$config_dependencies")
-                .clone();
+                .cloned();
             for condition in self
                 .config_conditions
                 .as_ref()
@@ -2469,7 +2493,12 @@ impl RuleContextBuilder {
                 } else {
                     condition.clone()
                 };
-                self.validate_direct_prerequisite(&config_setting_attr, &checked);
+                self.validate_direct_prerequisite(
+                    config_setting_attr
+                        .as_ref()
+                        .expect("NullPointerException: $config_dependencies"),
+                    &checked,
+                );
             }
         }
 

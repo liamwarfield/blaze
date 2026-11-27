@@ -42,6 +42,7 @@ impl RepositoryCache {
         self.path = path;
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/cache/RepositoryCache.java:50 RepositoryCache.getDownloadCache
     pub fn get_download_cache(&self) -> &DownloadCache {
         &self.download_cache
     }
@@ -50,6 +51,7 @@ impl RepositoryCache {
         &mut self.download_cache
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/cache/RepositoryCache.java:54 RepositoryCache.getRepoContentsCache
     pub fn get_repo_contents_cache(&self) -> &LocalRepoContentsCache {
         &self.repo_contents_cache
     }
@@ -58,6 +60,7 @@ impl RepositoryCache {
         &mut self.repo_contents_cache
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/cache/RepositoryCache.java:58 RepositoryCache.getPath
     pub fn get_path(&self) -> Option<&Path> {
         self.path.as_ref()
     }

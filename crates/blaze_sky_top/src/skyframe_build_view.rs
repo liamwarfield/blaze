@@ -1258,14 +1258,6 @@ pub fn analyze_and_execute_targets(
     } else {
         ConflictCheckingMode::NONE
     };
-    if conflict_checking_mode == ConflictCheckingMode::UPON_CONFIGURED_OBJECT_CREATION {
-        // The conflict check as each action is registered
-        // (IncrementalArtifactConflictFinder.conflictCheckPerAction from the analysis).
-        blaze_util::unported!(
-            "SkyframeBuildView.analyzeAndExecuteTargets",
-            "ConflictCheckingMode.UPON_CONFIGURED_OBJECT_CREATION (no incrementality tracking)"
-        );
-    }
     execution_seam::set_conflict_checking_mode_in_this_build(conflict_checking_mode);
 
     // The execution tasks wait for the go-ahead of the watcher (MultiThreadPoolsQuiescingExecutor
@@ -1433,6 +1425,20 @@ pub fn analyze_and_execute_targets(
     })();
     // finally: No more action execution beyond this point.
     hooks.clear_execution_states_skymeld();
+    // clearExecutionStatesSkymeld: cleanUpAfterSingleEvaluationWithActionExecution (the rewind
+    // strategy posts PostableActionRewindingStats).
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2520 SkyframeExecutor.clearExecutionStatesSkymeld
+    if let Some(execution) = skyframe_executor.get_execution() {
+        blaze_buildtool::buildtool::execution_tool::clean_up_after_single_evaluation_with_action_execution(
+            &execution.prepared.executor,
+            &*watched_event_handler,
+        );
+    }
+    // cleanUpAfterSingleEvaluationWithActionExecution: setExecutionProgressReceiver(null).
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2511 SkyframeExecutor.cleanUpAfterSingleEvaluationWithActionExecution
+    skyframe_executor
+        .get_progress_receiver()
+        .set_execution_progress_receiver(None);
     let (main_evaluation_result, _) = executed?;
 
     let graph = skyframe_executor.get_walkable_graph();

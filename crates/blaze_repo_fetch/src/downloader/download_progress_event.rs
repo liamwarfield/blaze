@@ -8,10 +8,15 @@ use crate::uri::JavaUri;
 // Java: com/google/devtools/build/lib/bazel/repository/downloader/DownloadProgressEvent.java:27 DownloadProgressEvent
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DownloadProgressEvent {
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/DownloadProgressEvent.java:58 DownloadProgressEvent.getOriginalUrl
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/DownloadProgressEvent.java:62 DownloadProgressEvent.getResourceIdentifier
     pub original_url: JavaUri,
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/DownloadProgressEvent.java:67 DownloadProgressEvent.getActualUrl
     pub actual_url: Option<JavaUri>,
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/DownloadProgressEvent.java:76 DownloadProgressEvent.getBytesRead
     pub bytes_read: i64,
     pub total_bytes: Option<i64>,
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/DownloadProgressEvent.java:71 DownloadProgressEvent.isFinished
     pub download_finished: bool,
 }
 

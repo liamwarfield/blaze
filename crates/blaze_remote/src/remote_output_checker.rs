@@ -125,6 +125,7 @@ fn get_expiration_time(metadata: &FileArtifactValue) -> Option<i64> {
             ..
         } => expiration_time_millis
             .0
+            .get()
             .filter(|expiration_time| *expiration_time >= 0),
         // Java: FileArtifactValue.java:1053 ResolvedSymlinkArtifactValue.getExpirationTime
         FileArtifactValue::ResolvedSymlink { delegate, .. } => get_expiration_time(delegate),

@@ -224,6 +224,8 @@ pub enum RepositoryFunctionCause {
     Eval(String),
 }
 
+// PORT: skipped, no instance or subclass at the pin (RepositoryFunctionException only checks for it in a precondition): ExternalPackageException.<init>
+// PORT: skipped, the evaluator blocks in get_value instead of restarting a function, so nothing throws a restart: NeedsSkyframeRestartException.<init>
 /// Port of `RepositoryFunctionException`: a `SkyFunctionException` wrapping an `IOException` or
 /// `EvalException`.
 // Java: com/google/devtools/build/lib/bazel/repository/RepositoryFunctionException.java:27 RepositoryFunctionException

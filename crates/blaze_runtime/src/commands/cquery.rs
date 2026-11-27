@@ -280,8 +280,11 @@ pub(crate) fn construct_execution_tool(
             .get_options::<blaze_optdefs::fragment::core_options::CoreOptions>()
             .map(|o| o.experimental_writable_outputs)
             .unwrap_or(false),
+        archived_artifacts_mnemonics_filter: None,
         output_filter: None,
         remote: Default::default(),
+        // Java's cquery makes no ExecutionTool, so no module's registerSpawnStrategies runs.
+        module_spawn_strategy_registrations: Vec::new(),
     };
     let prepared = match prepare_for_execution_with_action_cache(
         &config,

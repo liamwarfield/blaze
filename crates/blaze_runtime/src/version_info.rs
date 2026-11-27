@@ -105,10 +105,23 @@ impl BlazeVersionInfo {
         }
     }
 
-    /// PORT: Java logs the summary to the server log (`logVersionInfo`); Blaze has no server
-    /// logger, so nothing is logged.
     // Java: com/google/devtools/build/lib/analysis/BlazeVersionInfo.java:66 BlazeVersionInfo.logVersionInfo
-    fn log_version_info(_info: &BlazeVersionInfo) {}
+    fn log_version_info(info: &BlazeVersionInfo) {
+        const CLASS: &str = "com.google.devtools.build.lib.analysis.BlazeVersionInfo";
+        match info.get_summary() {
+            None => blaze_util::server_logger::warning(
+                CLASS,
+                "logVersionInfo",
+                "Bazel release version information not available",
+                None,
+            ),
+            Some(summary) => blaze_util::server_logger::info(
+                CLASS,
+                "logVersionInfo",
+                &format!("Bazel version info: {summary}"),
+            ),
+        }
+    }
 
     /// Sets build info.
     ///

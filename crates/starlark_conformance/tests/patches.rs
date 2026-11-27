@@ -2888,7 +2888,8 @@ mod java_map {
 
     starlark_simple_value!(JavaMap);
 
-    #[starlark_value(type = "dict")]
+    // Java `Starlark.type` of a `Map` that is not a `Dict` (Starlark.java:397).
+    #[starlark_value(type = "Map")]
     impl<'v> StarlarkValue<'v> for JavaMap {
         fn java_map_entries(
             &self,
@@ -2941,6 +2942,55 @@ r = repr((
                      {\"z\": 0, \"a\": 1, \"b\": 2}, {\"a\": 1, \"b\": 2}, \
                      {\"a\": 1, \"b\": 2, \"c\": 3}, {\"c\": 3, \"a\": 1, \"b\": 2}, \
                      {\"a\": 1, \"b\": 2}, {\"z\": 0, \"a\": 1, \"b\": 2}, [\"a\", \"b\"])"
+                );
+            });
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+/// Patch 0069: a dict equals a native `Map` with the same entries (Java `Dict.equals`, i.e.
+/// `AbstractMap.equals`); the map's own equality stays identity (Bazel's views do not override
+/// `equals`). `java_map_entries` is public.
+#[test]
+fn patch_0069_dict_equals_java_map() {
+    std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(|| {
+            let globals = dialect::bazel_universe();
+            let program = r#"
+r = repr((
+    dict(m) == m,
+    m == dict(m),
+    {"b": 2, "a": 1} == m,
+    {"a": 1} == m,
+    {"a": 1, "b": 3} == m,
+    {"a": 1, "b": 2, "c": 3} == m,
+    dict(m) != m,
+    [dict(m)] == [m],
+    (dict(m),) == (m,),
+    m == m,
+))
+"#;
+            let ast =
+                AstModule::parse("t.bzl", program.to_owned(), &dialect::bzl_dialect()).unwrap();
+            Module::with_temp_heap(|module| {
+                let m = module.heap().alloc(java_map::JavaMap);
+                module.set("m", m);
+                let entries = starlark::values::dict::java_map_entries(m, module.heap())
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(entries.len(), 2);
+                assert!(
+                    starlark::values::dict::java_map_entries(module.heap().alloc(1), module.heap())
+                        .is_none()
+                );
+                let mut e = Evaluator::new(&module);
+                e.eval_module(ast, &globals).unwrap();
+                assert_eq!(
+                    module.get("r").unwrap().unpack_str().unwrap(),
+                    "(True, False, True, False, False, False, False, True, True, True)"
                 );
             });
         })

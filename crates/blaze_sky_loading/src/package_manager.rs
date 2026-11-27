@@ -101,6 +101,7 @@ pub trait TargetProvider: Send + Sync {
 
     /// Returns the BUILD file target of the package which contains the given target.
     // Java: com/google/devtools/build/lib/pkgcache/TargetProvider.java:44 TargetProvider.getBuildFile
+    // PORT: skipped, the (event handler, package) overload has no Rust caller: query and the dump command reach BUILD files through targets: PackageProvider.getBuildFile, SkyframePackageManager.getBuildFile
     fn get_build_file(&self, target: &Target) -> Result<Arc<InputFile>, Interrupted>;
 
     /// Returns all targets in the package which contains the given target.
@@ -152,11 +153,31 @@ impl From<Interrupted> for RepositoryMappingResolutionOrInterrupted {
 /// Loads packages through the evaluator (Java `SkyframePackageManager` over
 /// `SkyframeExecutor.SkyframePackageLoader`).
 // Java: com/google/devtools/build/lib/skyframe/SkyframePackageManager.java:42 SkyframePackageManager
+// PORT: skipped, the statistic is counted by the build view (skyframe_build_view.rs `packages_successfully_loaded`): SkyframePackageManager.getAndClearStatistics
+// PORT: skipped, `dump --packages` is in commands/dump.rs (SequencedSkyframeExecutor.dumpPackages): SkyframePackageManager.dump
+// PORT: skipped, the query and aquery/cquery commands take the package path from the locator (`SkyframePackageLocator`): SkyframePackageManager.getPackagePath
+// PORT: skipped, the one caller is SkyfocusExecutor (`--experimental_enable_skyfocus`); query asks the recursive package providers: SkyframePackageManager.isPackage
 pub struct SkyframePackageManager {
     evaluator: Arc<Evaluator>,
     locator: SkyframePackageLocator,
     /// Java's `valueLookupLock`: evaluations are not re-entrant.
     value_lookup_lock: parking_lot::Mutex<()>,
+    /// Java `SkyframeExecutor.cyclesReporter`, which the package loader, the main repository
+    /// mapping and the target pattern evaluator share with the executor. The reporters live in
+    /// `blaze_sky_top` and hold this package manager, so the executor sets a weak handle here.
+    cycles_reporter: std::sync::OnceLock<std::sync::Weak<dyn CyclesReporterHandle>>,
+}
+
+/// The executor's `CyclesReporter` as the package manager reaches it (Java
+/// `CyclesReporter.reportCycles`).
+pub trait CyclesReporterHandle: Send + Sync {
+    // Java: com/google/devtools/build/skyframe/CyclesReporter.java:75 CyclesReporter.reportCycles
+    fn report_cycles(
+        &self,
+        cycles: &[blaze_skyframe::CycleInfo],
+        top_level_key: &SkyKey,
+        event_handler: &Arc<dyn ExtendedEventHandler>,
+    );
 }
 
 impl SkyframePackageManager {
@@ -165,6 +186,26 @@ impl SkyframePackageManager {
             evaluator,
             locator,
             value_lookup_lock: parking_lot::Mutex::new(()),
+            cycles_reporter: std::sync::OnceLock::new(),
+        }
+    }
+
+    /// Sets the executor's cycles reporter (once).
+    pub fn set_cycles_reporter(&self, cycles_reporter: std::sync::Weak<dyn CyclesReporterHandle>) {
+        let _ = self.cycles_reporter.set(cycles_reporter);
+    }
+
+    /// Java `cyclesReporter.reportCycles(cycles, topLevelKey, eventHandler)`.
+    /// PORT: a package manager made without an executor (unit tests of this crate) has no
+    /// reporter, and reports nothing.
+    fn report_cycles(
+        &self,
+        cycles: &[blaze_skyframe::CycleInfo],
+        top_level_key: &SkyKey,
+        event_handler: &Arc<dyn ExtendedEventHandler>,
+    ) {
+        if let Some(reporter) = self.cycles_reporter.get().and_then(|r| r.upgrade()) {
+            reporter.report_cycles(cycles, top_level_key, event_handler);
         }
     }
 
@@ -206,12 +247,19 @@ impl SkyframePackageManager {
             &[SkyKey::new(key.clone())],
             /* keep_going= */ true,
             DEFAULT_THREAD_COUNT,
-            event_handler,
+            event_handler.clone(),
         )?;
         if let Some(error) = result.get_error(&SkyKey::new(key.clone())) {
             // Java checkCycles.
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2929 SkyframeExecutor.SkyframePackageLoader.checkCycles
             if !error.get_cycle_info().is_empty() {
-                // PORT: Java reports the cycles with its CyclesReporter (not ported).
+                self.report_cycles(
+                    error.get_cycle_info(),
+                    &SkyKey::new(key.clone()),
+                    &event_handler,
+                );
+                // This can only happen if a package is freshly loaded outside of the target
+                // parsing or loading phase
                 return Err(
                     NoSuchPackageException::build_file_contains_errors_with_message(
                         pkg_name.clone(),
@@ -276,7 +324,7 @@ impl SkyframePackageManager {
             &[SkyKey::new(main_repo_mapping_key.clone())],
             keep_going,
             loading_phase_threads,
-            event_handler,
+            event_handler.clone(),
         )?;
         if eval_result.has_error() {
             let error_info = eval_result
@@ -284,7 +332,11 @@ impl SkyframePackageManager {
                 .or_else(|| eval_result.get_first_error())
                 .expect("an error");
             let Some(e) = error_info.get_exception() else {
-                // PORT: Java reports the cycles with its CyclesReporter (not ported).
+                self.report_cycles(
+                    error_info.get_cycle_info(),
+                    &SkyKey::new(main_repo_mapping_key.clone()),
+                    &event_handler,
+                );
                 return Err(RepositoryMappingResolutionException {
                     detailed_exit_code: DetailedExitCode {
                         message: "cycles detected during computation of main repo mapping"
@@ -619,11 +671,12 @@ impl SkyframePackageManager {
                             key,
                             error
                         );
-                        // PORT: Java reports the cycles with its CyclesReporter (not ported).
-                        TargetParsingException::new(
+                        let target_parsing_exception = TargetParsingException::new(
                             "cycles detected during target parsing",
                             TargetPatternsCode::Cycle,
-                        )
+                        );
+                        self.report_cycles(error.get_cycle_info(), &key, &event_handler);
+                        target_parsing_exception
                     }
                 };
                 if keep_going {
@@ -675,6 +728,14 @@ impl SkyframePackageManager {
     }
 
     // Java: com/google/devtools/build/lib/skyframe/SkyframeTargetPatternEvaluator.java:262 SkyframeTargetPatternEvaluator.NormalLookup.process
+    // PORT: the builder's steps are inlined: labels deduplicated in order, each package looked up
+    // once in the graph, each label made a target.
+    // Java: com/google/devtools/build/lib/skyframe/TargetPatternsResultBuilder.java:50 TargetPatternsResultBuilder.transformLabelsIntoTargets
+    // Java: com/google/devtools/build/lib/skyframe/TargetPatternsResultBuilder.java:60 TargetPatternsResultBuilder.precomputePackages
+    // Java: com/google/devtools/build/lib/skyframe/TargetPatternsResultBuilder.java:68 TargetPatternsResultBuilder.getExistingTarget
+    // Java: com/google/devtools/build/lib/skyframe/TargetPatternsResultBuilder.java:80 TargetPatternsResultBuilder.getPackagesIdentifiers
+    // Java: com/google/devtools/build/lib/skyframe/TargetPatternsResultBuilder.java:88 TargetPatternsResultBuilder.findPackageInGraph
+    // Java: com/google/devtools/build/lib/skyframe/TargetPatternsResultBuilder.java:96 TargetPatternsResultBuilder.addLabelsOfPositivePattern
     // Java: com/google/devtools/build/lib/skyframe/TargetPatternsResultBuilder.java:40 TargetPatternsResultBuilder.build
     fn process_normal_lookup(&self, value: &TargetPatternValue) -> Vec<Target> {
         let mut packages: HashMap<PackageIdentifier, Arc<Package>> = HashMap::new();

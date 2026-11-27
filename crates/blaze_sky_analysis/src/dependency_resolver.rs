@@ -746,9 +746,8 @@ pub fn load_starlark_exec_transition_provider(
         .starlark_exec_config
         .clone();
     let user_ref = (user_ref, (*services.starlark_semantics).clone());
-    if let Some(p) = loaded.0.lock().get(&user_ref) {
-        return Ok(Some(p.clone()));
-    }
+    // Java asks Skyframe for the .bzl file's BZL_LOAD value every time (a dependency edge of
+    // the requesting node); the memo only keeps one provider per file.
     let loader = EnvironmentBzlFileLoader {
         env: std::cell::RefCell::new(env),
         loaded_user_file: std::cell::Cell::new(false),
@@ -761,6 +760,11 @@ pub fn load_starlark_exec_transition_provider(
     else {
         return Ok(None);
     };
+    if !loader.loaded_user_file.get()
+        && let Some(p) = loaded.0.lock().get(&user_ref)
+    {
+        return Ok(Some(p.clone()));
+    }
     let provider = transition.map(|t| Arc::new(StarlarkAttributeTransitionProvider::new_exec(t)));
     if loader.loaded_user_file.get() {
         return Ok(Some(provider));

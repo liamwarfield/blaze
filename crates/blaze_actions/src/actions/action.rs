@@ -151,7 +151,7 @@ impl AbstractAction {
         inputs: NestedSet<Artifact>,
         outputs: impl IntoIterator<Item = Artifact>,
     ) -> AbstractAction {
-        // Java: com/google/devtools/build/lib/actions/AbstractAction.java:96 AbstractAction.singletonOrArray
+        // Java: com/google/devtools/build/lib/actions/AbstractAction.java:106 AbstractAction.singletonOrArray
         let set: IndexSet<Artifact> = outputs.into_iter().collect();
         check_argument!(!set.is_empty(), "Action outputs may not be empty");
         AbstractAction {
@@ -220,12 +220,12 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
     }
 
     /// Returns the mnemonic for this action.
-    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:324 AbstractAction.getMnemonic
+    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:334 AbstractAction.getMnemonic
     // Java: com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java:58 ActionAnalysisMetadata.getMnemonic
     fn get_mnemonic(&self) -> String;
 
     /// See the javadoc for `Action` and [`Action::get_key`] for the contract of this method.
-    // Java: com/google/devtools/build/lib/actions/ActionKeyComputer.java:43 ActionKeyComputer.computeKey
+    // Java: com/google/devtools/build/lib/actions/ActionKeyComputer.java:63 ActionKeyComputer.computeKey
     fn compute_key(
         &self,
         action_key_context: &ActionKeyContext,
@@ -299,7 +299,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
 
     /// Returns true if inputs are known for this action.
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:123 AbstractAction.inputsKnown
-    // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:94 ActionExecutionMetadata.inputsKnown
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:95 ActionExecutionMetadata.inputsKnown
     fn inputs_known(&self) -> bool {
         if !self.discovers_inputs() {
             return true;
@@ -308,7 +308,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
     }
 
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:139 AbstractAction.discoversInputs
-    // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:102 ActionExecutionMetadata.discoversInputs
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:103 ActionExecutionMetadata.discoversInputs
     fn discovers_inputs(&self) -> bool {
         false
     }
@@ -369,7 +369,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
         )
     }
 
-    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:157 AbstractAction.getOriginalInputs
+    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:188 AbstractAction.getOriginalInputs
     // Java: com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java:143 ActionAnalysisMetadata.getOriginalInputs
     fn get_original_inputs(&self) -> NestedSet<Artifact> {
         check_state!(
@@ -397,7 +397,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
         self.abstract_action().inputs()
     }
 
-    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:238 AbstractAction.getEnvironment
+    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:231 AbstractAction.getEnvironment
     fn get_environment(&self) -> Arc<ActionEnvironment> {
         Arc::new(ActionEnvironment::Empty)
     }
@@ -450,7 +450,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
     }
 
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:337 AbstractAction.describeKey
-    // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:78 ActionExecutionMetadata.describeKey
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:79 ActionExecutionMetadata.describeKey
     fn describe_key(&self) -> Option<String> {
         None
     }
@@ -481,7 +481,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
     /// the tool configurations.
     ///
     /// `None` indicates no message should be reported.
-    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:376 AbstractAction.getRawProgressMessage
+    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:410 AbstractAction.getRawProgressMessage
     fn get_raw_progress_message(&self) -> Option<String> {
         // A cheesy default implementation. Subclasses are invited to do something more
         // meaningful.
@@ -499,8 +499,8 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
 
     /// `getProgressMessage()` / `getProgressMessage(mainRepositoryMapping)`.
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:363 AbstractAction.getProgressMessage
-    // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:34 ActionExecutionMetadata.getProgressMessage
-    // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:45 ActionExecutionMetadata.getProgressMessage
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:35 ActionExecutionMetadata.getProgressMessage
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:46 ActionExecutionMetadata.getProgressMessage
     fn get_progress_message(
         &self,
         main_repository_mapping: Option<&RepositoryMapping>,
@@ -515,7 +515,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
         })
     }
 
-    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:380 AbstractAction.replaceProgressMessagePlaceholders
+    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:384 AbstractAction.replaceProgressMessagePlaceholders
     fn replace_progress_message_placeholders(
         &self,
         progress_message: String,
@@ -550,7 +550,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
         format!("action '{}'", self.describe())
     }
 
-    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:422 AbstractAction.describe
+    // Java: com/google/devtools/build/lib/actions/AbstractAction.java:557 AbstractAction.describe
     // Java: com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java:107 ActionAnalysisMetadata.describe
     fn describe(&self) -> String {
         match self.get_progress_message(None) {
@@ -718,7 +718,7 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
 /// The exceptions the `ActionApi` getters throw to Starlark: `EvalException` (Java wraps every
 /// other checked exception, such as `IOException` or `CommandLineExpansionException`, in an
 /// `EvalException` carrying its message) and `InterruptedException`.
-// Java: net/starlark/java/eval/MethodDescriptor.java:282 MethodDescriptor.call
+// Java: net/starlark/java/eval/MethodDescriptor.java:256 MethodDescriptor.call
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ActionApiError {
     /// The `EvalException` message.

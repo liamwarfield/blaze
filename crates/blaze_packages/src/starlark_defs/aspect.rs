@@ -643,6 +643,7 @@ fn starlark_int_parse(s: &str, base: i32) -> Result<i64, String> {
 }
 
 /// A Starlark-defined aspect (Java `StarlarkDefinedAspect`).
+// PORT: skipped, serialization for remote analysis caching (not ported, ruling 2026-11-19 (1)): StarlarkDefinedAspect.Codec.getEncodedClass, StarlarkDefinedAspect.Codec.getBzlLoadKey, StarlarkDefinedAspect.Codec.getExportedName
 // Java: com/google/devtools/build/lib/packages/StarlarkDefinedAspect.java:48 StarlarkDefinedAspect
 #[derive(Debug, Trace, ProvidesStaticType, NoSerialize, Allocative)]
 #[repr(C)]
@@ -803,12 +804,22 @@ where
         })
     }
 
+    // Java: com/google/devtools/build/lib/packages/StarlarkDefinedAspect.java:458 StarlarkDefinedAspect.hashCode
+    // PORT: the hash of the identity that `equals` compares (the exported name, else the
+    // aspect() call's symbol), consistent with it.
     fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
         match self.data.exported.get() {
             Some(e) => e.hash(hasher),
             None => self.data.symbol.hash(hasher),
         }
         Ok(())
+    }
+
+    // Java: com/google/devtools/build/lib/packages/StarlarkDefinedAspect.java:156 StarlarkDefinedAspect.isImmutable
+    // Java: `implementation.isImmutable()`, and a StarlarkFunction is always immutable
+    // (StarlarkFunction.java:273), so an aspect is too (a struct holding one is hashable).
+    fn provide(&'v self, demand: &mut starlark::values::Demand<'_, 'v>) {
+        demand.provide_value(blaze_starlark::structs::DeeplyImmutable);
     }
 
     // Java: com/google/devtools/build/lib/packages/StarlarkDefinedAspect.java:184 StarlarkDefinedAspect.export

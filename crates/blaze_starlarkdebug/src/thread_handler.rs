@@ -441,10 +441,7 @@ fn list_frames_of<'v>(
     object_map: &mut ThreadObjectMap<'v>,
 ) -> Vec<Frame> {
     let frames = debug::frames(eval, current);
-    let live_file = frames
-        .last()
-        .and_then(|f| f.location.as_ref())
-        .map(|l| l.file.clone());
+    let live_file = live_file_of(&frames);
     let mut result = Vec::with_capacity(frames.len());
     for frame in &frames {
         let locals: Vec<(String, Value<'v>)> = match frame.frame_index {
@@ -464,11 +461,23 @@ fn list_frames_of<'v>(
     result
 }
 
+/// The file whose top level the thread executes (the bottom frame is its top-level frame),
+/// `None` for a function called from Rust (a rule implementation).
+fn live_file_of(frames: &[debug::DebugFrame]) -> Option<String> {
+    frames
+        .last()
+        .filter(|f| f.frame_index.is_none())
+        .and_then(|f| f.location.as_ref())
+        .map(|l| l.file.clone())
+}
+
 /// `((StarlarkFunction) frame.getFunction()).getModule().getGlobals()`: the bindings of the
-/// module the frame's code belongs to; the module being executed when that is the file at the
-/// bottom of the stack, else the frozen module recorded for the file.
+/// module the frame's code belongs to (private ones included; names a `load` binds file-locally
+/// excluded), in binding order; the module being executed when that is the file at the bottom
+/// of the stack, else the frozen module recorded for the file.
+// Java: net/starlark/java/eval/Module.java:216 Module.getGlobals
 fn module_globals<'v>(
-    eval: &Evaluator<'v, '_, '_>,
+    eval: &mut Evaluator<'v, '_, '_>,
     file: Option<&str>,
     live_file: Option<&str>,
 ) -> Vec<(String, Value<'v>)> {
@@ -476,21 +485,39 @@ fn module_globals<'v>(
         return Vec::new();
     };
     if Some(file) == live_file {
+        let load_bound = debug::load_bound_of_file(file);
         let module = eval.module();
-        return module
-            .names()
-            .filter_map(|name| {
-                module
-                    .get(name.as_str())
-                    .map(|v| (name.as_str().to_owned(), v))
+        let names: Vec<(String, bool)> = module
+            .names_and_visibilities()
+            .filter(|(name, _)| !load_bound.iter().any(|l| l == name.as_str()))
+            .map(|(name, vis)| {
+                (
+                    name.as_str().to_owned(),
+                    vis == starlark_syntax::syntax::ast::Visibility::Public,
+                )
             })
             .collect();
+        let mut result = Vec::with_capacity(names.len());
+        for (name, public) in names {
+            let value = if public {
+                eval.module().get(&name)
+            } else {
+                // PORT: a live module exposes only its public values; a private one (`_x`, or a
+                // BUILD file's load binding) is read by evaluating its name in the module
+                // (`Evaluator::eval_statements`), as a debugger statement is.
+                private_value(eval, &name)
+            };
+            if let Some(value) = value {
+                result.push((name, value));
+            }
+        }
+        return result;
     }
     match debug::module_of_file(file) {
         Some(frozen) => frozen
-            .names()
+            .java_globals()
             .filter_map(|name| {
-                frozen.get_option(name.as_str()).ok().flatten().map(|v| {
+                frozen.java_get_global(name.as_str()).map(|v| {
                     (
                         name.as_str().to_owned(),
                         blaze_starlark::eval::frozen_into(eval.module(), &v),
@@ -500,6 +527,12 @@ fn module_globals<'v>(
             .collect(),
         None => Vec::new(),
     }
+}
+
+/// The value of the live module's private binding `name` (`None` when it has none yet).
+fn private_value<'v>(eval: &mut Evaluator<'v, '_, '_>, name: &str) -> Option<Value<'v>> {
+    let ast = AstModule::parse("<debug eval>", name.to_owned(), &FileKind::Bzl.dialect()).ok()?;
+    eval.eval_statements(ast).ok()
 }
 
 /// Evaluates `content` in the module of the innermost Starlark function (its globals; the
@@ -529,10 +562,7 @@ fn do_evaluate<'v>(
     // TODO(adonovan): opt: don't parse and resolve the expression every time we hit a breakpoint
     // (!).
     let frames = debug::frames(eval, current);
-    let live_file = frames
-        .last()
-        .and_then(|f| f.location.as_ref())
-        .map(|l| l.file.clone());
+    let live_file = live_file_of(&frames);
     // TODO(adonovan): the module or call frame should be a parameter to doEvaluate.
     // Module.ofInnermostEnclosingStarlarkFunction(thread): the module of the paused statement.
     let globals: Vec<String> = module_globals(eval, Some(&current.file), live_file.as_deref())

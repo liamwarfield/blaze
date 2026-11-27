@@ -222,6 +222,7 @@ struct DeclarationsInner {
 /// Package-level declarations made during BUILD evaluation: `package()` args, make variables
 /// and loads (Java `Package.Declarations`; mutable through its `Builder` subclass until built).
 /// Shared by the package and its targets.
+// PORT: skipped, serialization for remote analysis caching (not ported, ruling 2026-11-19 (1)): PackageCodecDependencies.getPackageSerializer, PackageCodecDependencies.SimplePackageCodecDependencies.<init>, PackageCodecDependencies.SimplePackageCodecDependencies.getPackageSerializer
 // Java: com/google/devtools/build/lib/packages/Package.java:1556 Package.Declarations
 #[derive(Debug)]
 pub struct PackageDeclarations {
@@ -233,6 +234,14 @@ pub struct PackageDeclarations {
     contains_errors: AtomicBool,
     /// PORT: Java `Packageoid.failureDetail`, reachable from targets (see `contains_errors`).
     failure_detail: RwLock<Option<DetailedExitCode>>,
+    /// PORT: Blaze-only (decision D7, amended 2026-11-26). The frozen heaps of the `.bzl` modules
+    /// the package's BUILD file loaded (and its prelude). Rule classes, macro classes, attribute
+    /// defaults and the other values a package's targets take from those modules live on these
+    /// heaps without owning them (a value inside a heap cannot own that heap), so the package
+    /// owns them for its targets; analysis references them from its own heaps
+    /// ([`PackageDeclarations::get_module_heaps`]). Each module's heap references the heaps of its
+    /// own loads, so the direct loads suffice. Java's collector keeps them through the objects.
+    module_heaps: RwLock<Vec<starlark::values::FrozenHeapRef>>,
 }
 
 impl PackageDeclarations {
@@ -248,6 +257,7 @@ impl PackageDeclarations {
             mutable: AtomicBool::new(true),
             contains_errors: AtomicBool::new(false),
             failure_detail: RwLock::new(None),
+            module_heaps: RwLock::new(Vec::new()),
         }
     }
 
@@ -262,7 +272,25 @@ impl PackageDeclarations {
             mutable: AtomicBool::new(false),
             contains_errors: AtomicBool::new(false),
             failure_detail: RwLock::new(None),
+            module_heaps: RwLock::new(self.module_heaps.read().clone()),
         }
+    }
+
+    /// Records the heaps of modules the package loaded (see `module_heaps`).
+    ///
+    /// PORT: Blaze-only (decision D7).
+    pub fn add_module_heaps(
+        &self,
+        heaps: impl IntoIterator<Item = starlark::values::FrozenHeapRef>,
+    ) {
+        self.module_heaps.write().extend(heaps);
+    }
+
+    /// The heaps of the modules the package loaded (see `module_heaps`).
+    ///
+    /// PORT: Blaze-only (decision D7).
+    pub fn get_module_heaps(&self) -> Vec<starlark::values::FrozenHeapRef> {
+        self.module_heaps.read().clone()
     }
 
     // Java: com/google/devtools/build/lib/packages/Package.java:1608 Package.Declarations.getPackageArgs
@@ -403,6 +431,7 @@ impl PackageDeclarations {
     }
 }
 
+// PORT: skipped, declarations are compared (PartialEq below), never hashed (no `Hash` impl): Package.Declarations.hashCode
 impl PartialEq for PackageDeclarations {
     // Java: com/google/devtools/build/lib/packages/Package.java:1573 Package.Declarations.equals
     fn eq(&self, other: &PackageDeclarations) -> bool {

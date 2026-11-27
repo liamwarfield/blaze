@@ -337,8 +337,21 @@ impl<'a> RuleConfiguredTargetBuilder<'a> {
             }
         }
 
-        // PORT: the conflict finder (ConflictCheckingMode.UPON_CONFIGURED_OBJECT_CREATION) is
-        // not used by Blaze.
+        // Java: com/google/devtools/build/lib/analysis/RuleConfiguredTargetBuilder.java:286 RuleConfiguredTargetBuilder.build
+        if let Some(conflict_finder) = rule_context.get_conflict_finder() {
+            for action in &actions {
+                conflict_finder
+                    .conflict_check_per_action(action)
+                    .map_err(|e| match e {
+                        crate::rule::action_conflict_exception::ConflictCheckPerActionError::ActionConflict(e) => {
+                            RuleConfiguredTargetBuildError::ActionConflict(e)
+                        }
+                        crate::rule::action_conflict_exception::ConflictCheckPerActionError::Interrupted => {
+                            RuleConfiguredTargetBuildError::Interrupted
+                        }
+                    })?;
+            }
+        }
         Ok(Some(ConfiguredTarget::Rule(Arc::new(
             RuleConfiguredTarget::new(rule_context, providers, actions),
         ))))

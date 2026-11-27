@@ -596,6 +596,7 @@ enum MatchingPredicate {
     Find(java_regex::Pattern),
 }
 
+// PORT: skipped, the private constructor of a static-only class: RegexUtil.<init>
 // Java: com/google/devtools/build/lib/util/regex/RegexUtil.java:27 RegexUtil.LITERAL_PATTERN_WITH_DOT_UNESCAPED
 static LITERAL_PATTERN_WITH_DOT_UNESCAPED: std::sync::LazyLock<java_regex::Pattern> =
     std::sync::LazyLock::new(|| {

@@ -396,6 +396,7 @@ impl WorkerModule {
             env.worker_options.clone(),
             WorkerProcessMetricsCollector::instance(),
         );
+        // Java: com/google/devtools/build/lib/worker/WorkerSpawnStrategy.java:25 WorkerSpawnStrategy.<init>
         // Java: com/google/devtools/build/lib/worker/WorkerSpawnStrategy.java:30 WorkerSpawnStrategy.toString
         registry_builder.register_strategy(
             Arc::new(

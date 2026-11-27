@@ -11,7 +11,7 @@ use blaze_exec::actions::{FileArtifactValue, RunfilesArtifactValue, TreeArtifact
 use indexmap::IndexMap;
 
 /// A value representing an executed action.
-// Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:56 ActionExecutionValue
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:59 ActionExecutionValue
 // PORT: Java's four size-specialized subclasses (a memory optimization) are one struct. The
 // "rich artifact data" (`RunfilesArtifactValue` of a runfiles tree action, `FilesetOutputTree`)
 // is `rich_artifact_data`. `toString()` is the `Debug` form.
@@ -20,7 +20,7 @@ use indexmap::IndexMap;
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:417 ActionExecutionValue.MultiOutputFile.<init>
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:434 ActionExecutionValue.SingleTree.<init>
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:466 ActionExecutionValue.MultiTree.<init>
-// Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:223 ActionExecutionValue.toString
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:224 ActionExecutionValue.toString
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:399 ActionExecutionValue.ModuleDiscovering.<init>
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:406 ActionExecutionValue.ModuleDiscovering.getDiscoveredModules
 // PORT: skipped, values are compared (keys.rs values_equal), never hashed: ActionExecutionValue.hashCode
@@ -65,7 +65,7 @@ pub fn is_missing_tree_artifact(value: &Arc<TreeArtifactValue>) -> bool {
 
 /// The argument checks at the start of `ActionExecutionValue.create(artifactData,
 /// treeArtifactData, richArtifactData, discoveredModules)`, in Java's order.
-// Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:69 ActionExecutionValue.create
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:64 ActionExecutionValue.create
 fn check_output_data(
     artifact_data: &IndexMap<Artifact, FileArtifactValue>,
     tree_artifact_data: &IndexMap<Artifact, Arc<TreeArtifactValue>>,
@@ -85,7 +85,7 @@ fn check_output_data(
     }
     for (tree, tree_value) in tree_artifact_data {
         // MISSING_TREE_ARTIFACT.getChildValues() throws.
-        // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:445 TreeArtifactValue.createMarker
+        // Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:431 TreeArtifactValue.createMarker
         if is_missing_tree_artifact(tree_value) {
             panic!("UnsupportedOperationException: MISSING_TREE_ARTIFACT");
         }
@@ -109,7 +109,7 @@ fn check_output_data(
 }
 
 impl ActionExecutionValue {
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:63 ActionExecutionValue.create
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:64 ActionExecutionValue.create
     pub fn create(
         artifact_data: IndexMap<Artifact, FileArtifactValue>,
         tree_artifact_data: IndexMap<Artifact, Arc<TreeArtifactValue>>,
@@ -214,8 +214,8 @@ impl ActionExecutionValue {
     }
 
     /// Returns metadata for a given artifact, if that metadata is cached in this value.
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:162 ActionExecutionValue.getExistingFileArtifactValue
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:358 ActionExecutionValue.SingleOutputFile.getExistingFileArtifactValue
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:164 ActionExecutionValue.getExistingFileArtifactValue
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:359 ActionExecutionValue.SingleOutputFile.getExistingFileArtifactValue
     pub fn get_existing_file_artifact_value(
         &self,
         artifact: &Artifact,
@@ -232,33 +232,33 @@ impl ActionExecutionValue {
     }
 
     /// `getTreeArtifactValue(Artifact)`.
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:184 ActionExecutionValue.getTreeArtifactValue
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:439 ActionExecutionValue.SingleTree.getTreeArtifactValue
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:473 ActionExecutionValue.MultiTree.getTreeArtifactValue
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:199 ActionExecutionValue.getTreeArtifactValue
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:441 ActionExecutionValue.SingleTree.getTreeArtifactValue
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:475 ActionExecutionValue.MultiTree.getTreeArtifactValue
     pub fn get_tree_artifact_value(&self, artifact: &Artifact) -> Option<&Arc<TreeArtifactValue>> {
         self.tree_artifact_data.get(artifact)
     }
 
     /// `getAllFileValues()`.
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:208 ActionExecutionValue.getAllFileValues
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:367 ActionExecutionValue.SingleOutputFile.getAllFileValues
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:421 ActionExecutionValue.MultiOutputFile.getAllFileValues
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:451 ActionExecutionValue.SingleTree.getAllFileValues
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:368 ActionExecutionValue.SingleOutputFile.getAllFileValues
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:422 ActionExecutionValue.MultiOutputFile.getAllFileValues
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:452 ActionExecutionValue.SingleTree.getAllFileValues
     pub fn get_all_file_values(&self) -> &IndexMap<Artifact, FileArtifactValue> {
         &self.artifact_data
     }
 
     /// `getAllTreeArtifactValues()`.
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:211 ActionExecutionValue.getAllTreeArtifactValues
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:446 ActionExecutionValue.SingleTree.getAllTreeArtifactValues
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:480 ActionExecutionValue.MultiTree.getAllTreeArtifactValues
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:447 ActionExecutionValue.SingleTree.getAllTreeArtifactValues
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:481 ActionExecutionValue.MultiTree.getAllTreeArtifactValues
     pub fn get_all_tree_artifact_values(&self) -> &IndexMap<Artifact, Arc<TreeArtifactValue>> {
         &self.tree_artifact_data
     }
 
     /// `getRichArtifactData()` (a runfiles tree's `RunfilesArtifactValue`).
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:215 ActionExecutionValue.getRichArtifactData
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:384 ActionExecutionValue.WithRichData.getRichArtifactData
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:385 ActionExecutionValue.WithRichData.getRichArtifactData
     pub fn get_rich_artifact_data(&self) -> Option<&Arc<RunfilesArtifactValue>> {
         self.rich_artifact_data.as_ref()
     }
@@ -320,7 +320,7 @@ impl ActionExecutionValue {
     }
 }
 
-// Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:253 ActionExecutionValue.transformMap
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:255 ActionExecutionValue.transformMap
 fn transform_map<V>(
     data: &IndexMap<Artifact, V>,
     new_artifact_map: &HashMap<OwnerlessArtifactWrapper, Artifact>,
@@ -370,10 +370,18 @@ fn transform_shared_tree(new_artifact: &Artifact, tree: &TreeArtifactValue) -> T
             value.clone(),
         ));
     }
-    if tree.archived_representation.is_some() {
-        blaze_util::unported!("ArchivedTreeArtifact.createForTree");
-    }
-    TreeArtifactValue::build(children, None, None)
+    let archived_representation =
+        tree.archived_representation
+            .as_ref()
+            .map(|(_, archived_file_value)| {
+                (
+                    artifact_input(&Artifact::create_archived_tree_artifact_for_tree(
+                        new_artifact,
+                    )),
+                    archived_file_value.clone(),
+                )
+            });
+    TreeArtifactValue::build(children, archived_representation, None)
 }
 
 #[cfg(test)]
@@ -553,13 +561,13 @@ mod action_execution_value_test {
         }
     }
 
-    // Java: ActionExecutionValueTest.java:58 ActionExecutionValueTest.OUTPUT_ROOT
+    // Java: src/test/java/com/google/devtools/build/lib/skyframe/ActionExecutionValueTest.java:58 ActionExecutionValueTest.OUTPUT_ROOT
     fn output_root() -> ArtifactRoot {
         let fs: FileSystemRef = UnixFileSystem::create(DigestHashFunction::Sha256);
         ArtifactRoot::as_derived_root(&fs.get_path("/execroot"), RootType::OUTPUT, &["out"])
     }
 
-    // Java: ActionExecutionValueTest.java:214 ActionExecutionValueTest.output
+    // Java: src/test/java/com/google/devtools/build/lib/skyframe/ActionExecutionValueTest.java:214 ActionExecutionValueTest.output
     fn output(root: &ArtifactRoot, root_relative_path: &str) -> Artifact {
         Artifact::create_derived_artifact(
             root.clone(),
@@ -568,7 +576,7 @@ mod action_execution_value_test {
         )
     }
 
-    // Java: ActionExecutionValueTest.java:229 ActionExecutionValueTest.tree
+    // Java: src/test/java/com/google/devtools/build/lib/skyframe/ActionExecutionValueTest.java:229 ActionExecutionValueTest.tree
     fn tree(root: &ArtifactRoot, root_relative_path: &str) -> Artifact {
         let result = Artifact::create_special_artifact(
             root.clone(),
@@ -594,7 +602,7 @@ mod action_execution_value_test {
             .unwrap_or_default()
     }
 
-    // Java: ActionExecutionValueTest.java:62 ActionExecutionValueTest.equality
+    // Java: src/test/java/com/google/devtools/build/lib/skyframe/ActionExecutionValueTest.java:62 ActionExecutionValueTest.equality
     #[test]
     #[ignore = "ActionExecutionValue.equals (the equals of Java's SingleOutputFile, \
                 MultiOutputFile, SingleTree, MultiTree, WithRichData and ModuleDiscovering \
@@ -603,7 +611,7 @@ mod action_execution_value_test {
         blaze_util::unported!("ActionExecutionValue.equals");
     }
 
-    // Java: ActionExecutionValueTest.java:135 ActionExecutionValueTest.serialization
+    // Java: src/test/java/com/google/devtools/build/lib/skyframe/ActionExecutionValueTest.java:135 ActionExecutionValueTest.serialization
     #[test]
     #[ignore = "Skyframe serialization (SerializationTester, the ActionExecutionValue codecs) is \
                 not ported"]
@@ -614,7 +622,7 @@ mod action_execution_value_test {
     /// Package I2: `ActionExecutionValueTest.equality`'s groups of output files, over
     /// `Key::values_equal`, with local file values (remote values never prune here, see
     /// `keys::file_values_equal_for_pruning`).
-    // Java: ActionExecutionValueTest.java:62 ActionExecutionValueTest.equality
+    // Java: src/test/java/com/google/devtools/build/lib/skyframe/ActionExecutionValueTest.java:62 ActionExecutionValueTest.equality
     #[test]
     fn values_equal_of_output_files() {
         use crate::keys::ActionExecutionKey;

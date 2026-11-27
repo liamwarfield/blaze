@@ -404,6 +404,7 @@ impl Converter for DottedVersionConverter {
             Err(e) => Err(OptionsParsingException::new(e.get_message())),
         }
     }
+    // Java: com/google/devtools/build/lib/rules/apple/DottedVersionConverter.java:32 DottedVersionConverter.getTypeDescription
     fn get_type_description(&self) -> String {
         "a dotted version (for example '2.3' or '3.3alpha2.4')".into()
     }

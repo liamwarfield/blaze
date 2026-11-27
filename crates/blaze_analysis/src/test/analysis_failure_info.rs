@@ -138,14 +138,15 @@ const INFO_FIELDS: [&str; 1] = ["causes"];
 // Java: com/google/devtools/build/lib/starlarkbuildapi/test/AnalysisFailureInfoApi.java:46 AnalysisFailureInfoApi
 #[starlark_value(type = "AnalysisFailureInfo")]
 impl<'v> StarlarkValue<'v> for AnalysisFailureInfo {
-    fn get_attr(&self, attribute: &str, _heap: Heap<'v>) -> Option<Value<'v>> {
+    fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         match attribute {
             // Java: com/google/devtools/build/lib/analysis/test/AnalysisFailureInfo.java:69 AnalysisFailureInfo.getCauses
-            "causes" => Some(depset_value(&nested_set_to_depset(
-                &self.causes,
-                "AnalysisFailure",
-                &|failure, heap| heap.alloc(failure.clone()),
-            ))),
+            "causes" => Some(depset_value(
+                heap,
+                &nested_set_to_depset(&self.causes, "AnalysisFailure", &|failure, heap| {
+                    heap.alloc(failure.clone())
+                }),
+            )),
             _ => None,
         }
     }

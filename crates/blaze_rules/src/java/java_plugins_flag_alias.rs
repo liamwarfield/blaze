@@ -207,18 +207,20 @@ impl fmt::Display for JavaPluginDataValue {
 
 #[starlark_value(type = "JavaPluginData")]
 impl<'v> StarlarkValue<'v> for JavaPluginDataValue {
-    fn get_attr(&self, attribute: &str, _heap: Heap<'v>) -> Option<Value<'v>> {
+    fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         match attribute {
             // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:199 JavaPluginInfo.JavaPluginData.getProcessorJarsForStarlark
-            "processor_jars" => Some(depset_value(&artifacts_to_depset(
-                self.0.processor_classpath(),
-            ))),
+            "processor_jars" => Some(depset_value(
+                heap,
+                &artifacts_to_depset(self.0.processor_classpath()),
+            )),
             // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:204 JavaPluginInfo.JavaPluginData.getProcessorClassesForStarlark
-            "processor_classes" => {
-                Some(depset_value(&strings_to_depset(self.0.processor_classes())))
-            }
+            "processor_classes" => Some(depset_value(
+                heap,
+                &strings_to_depset(self.0.processor_classes()),
+            )),
             // Java: com/google/devtools/build/lib/rules/java/JavaPluginInfo.java:209 JavaPluginInfo.JavaPluginData.getProcessorDataForStarlark
-            "processor_data" => Some(depset_value(&artifacts_to_depset(self.0.data()))),
+            "processor_data" => Some(depset_value(heap, &artifacts_to_depset(self.0.data()))),
             _ => None,
         }
     }

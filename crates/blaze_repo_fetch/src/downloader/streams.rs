@@ -201,6 +201,49 @@ impl InputStream for PrefixedInputStream {
 }
 
 /// Input stream that guarantees its contents matches a hash code.
+// PORT: an UnrecoverableHttpException is an IoException of kind UnrecoverableHttpException (errors.rs).
+// Java: com/google/devtools/build/lib/bazel/repository/downloader/UnrecoverableHttpException.java:21 UnrecoverableHttpException.<init>
+/// Input stream that interrupts I/O when the thread is interrupted (Java
+/// `InterruptibleInputStream`, which hedges against JVMs that do not do it).
+// Java: com/google/devtools/build/lib/bazel/repository/downloader/InterruptibleInputStream.java:30 InterruptibleInputStream
+// PORT: skipped, java.io.InputStream methods the download pipeline never calls (the trait has `read` and `close` only): InterruptibleInputStream.available, InterruptibleInputStream.markSupported, InterruptibleInputStream.mark, InterruptibleInputStream.reset
+pub struct InterruptibleInputStream {
+    delegate: Box<dyn InputStream>,
+}
+
+impl InterruptibleInputStream {
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/InterruptibleInputStream.java:34 InterruptibleInputStream.<init>
+    pub fn new(delegate: Box<dyn InputStream>) -> Self {
+        InterruptibleInputStream { delegate }
+    }
+
+    /// `Thread.interrupted()` (which clears the status) then `new InterruptedIOException()`.
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/InterruptibleInputStream.java:83 InterruptibleInputStream.check
+    fn check() -> Result<(), IoException> {
+        if blaze_shell::thread_interrupt::interrupted() {
+            return Err(IoException::without_message(
+                IoExceptionKind::InterruptedIOException,
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl InputStream for InterruptibleInputStream {
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/InterruptibleInputStream.java:38 InterruptibleInputStream.read
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/InterruptibleInputStream.java:44 InterruptibleInputStream.read
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/InterruptibleInputStream.java:50 InterruptibleInputStream.read
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, IoException> {
+        Self::check()?;
+        self.delegate.read(buf)
+    }
+
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/InterruptibleInputStream.java:78 InterruptibleInputStream.close
+    fn close(&mut self) -> Result<(), IoException> {
+        self.delegate.close()
+    }
+}
+
 // Java: com/google/devtools/build/lib/bazel/repository/downloader/HashInputStream.java:34 HashInputStream
 pub struct HashInputStream {
     delegate: Box<dyn InputStream>,
@@ -240,7 +283,10 @@ impl HashInputStream {
     }
 }
 
+// PORT: skipped, a java.io stream method the download pipeline never calls (the trait has `read` and `close` only): HashInputStream.available
 impl InputStream for HashInputStream {
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/HashInputStream.java:49 HashInputStream.read
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/HashInputStream.java:60 HashInputStream.read
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, IoException> {
         let amount = self.delegate.read(buf)?;
         if amount == 0 && !buf.is_empty() {
@@ -251,6 +297,7 @@ impl InputStream for HashInputStream {
         Ok(amount)
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/HashInputStream.java:76 HashInputStream.close
     fn close(&mut self) -> Result<(), IoException> {
         self.delegate.close()?;
         self.check()
@@ -288,6 +335,7 @@ impl CheckContentLengthInputStream {
     // Java: com/google/devtools/build/lib/bazel/repository/downloader/CheckContentLengthInputStream.java:69 CheckContentLengthInputStream.checkContentLength
     fn check_content_length(&self) -> Result<(), IoException> {
         if self.actual_size != self.expected_size {
+            // PORT: skipped, the sizes are in the message; no caller reads them: ContentLengthMismatchException.getActualSize, ContentLengthMismatchException.getExpectedSize
             // Java: com/google/devtools/build/lib/bazel/repository/downloader/ContentLengthMismatchException.java:25 ContentLengthMismatchException.<init>
             return Err(IoException::of(
                 IoExceptionKind::ContentLengthMismatchException,
@@ -301,8 +349,10 @@ impl CheckContentLengthInputStream {
     }
 }
 
+// PORT: skipped, a java.io stream method the download pipeline never calls (the trait has `read` and `close` only): CheckContentLengthInputStream.available
 impl InputStream for CheckContentLengthInputStream {
     // Java: com/google/devtools/build/lib/bazel/repository/downloader/CheckContentLengthInputStream.java:48 CheckContentLengthInputStream.read
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/CheckContentLengthInputStream.java:36 CheckContentLengthInputStream.read
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, IoException> {
         let amount = match self.delegate.read(buf) {
             Ok(amount) => amount,
@@ -324,6 +374,7 @@ impl InputStream for CheckContentLengthInputStream {
         Ok(amount)
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/CheckContentLengthInputStream.java:63 CheckContentLengthInputStream.close
     fn close(&mut self) -> Result<(), IoException> {
         self.delegate.close()?;
         self.check_content_length()
@@ -331,6 +382,7 @@ impl InputStream for CheckContentLengthInputStream {
 }
 
 /// Lambda for establishing a connection with the same parameters as initially.
+// Java: com/google/devtools/build/lib/bazel/repository/downloader/RetryingInputStream.java:42 RetryingInputStream.Reconnector.connect
 pub type Reconnector = Arc<
     dyn Fn(&IoException, Vec<(String, Vec<String>)>) -> Result<UrlConnection, IoException>
         + Send
@@ -376,6 +428,7 @@ impl RetryingInputStream {
         self
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/RetryingInputStream.java:139 RetryingInputStream.propagate
     fn propagate(&self, mut error: IoException) -> IoException {
         for e in &self.suppressed {
             error.add_suppressed(e.clone());
@@ -434,7 +487,10 @@ impl RetryingInputStream {
     }
 }
 
+// PORT: skipped, a java.io stream method the download pipeline never calls (the trait has `read` and `close` only): RetryingInputStream.available
 impl InputStream for RetryingInputStream {
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/RetryingInputStream.java:57 RetryingInputStream.read
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/RetryingInputStream.java:72 RetryingInputStream.read
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, IoException> {
         loop {
             match self.delegate.read(buf) {
@@ -449,6 +505,7 @@ impl InputStream for RetryingInputStream {
         }
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/RetryingInputStream.java:92 RetryingInputStream.close
     fn close(&mut self) -> Result<(), IoException> {
         self.delegate.close()
     }
@@ -504,6 +561,8 @@ impl ProgressInputStream {
     }
 
     /// `ProgressInputStream.Factory.create` (interval 200 ms).
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/ProgressInputStream.java:48 ProgressInputStream.Factory.<init>
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/ProgressInputStream.java:54 ProgressInputStream.Factory.create
     pub fn create(
         clock: Arc<dyn Clock>,
         event_handler: Arc<dyn ExtendedEventHandler>,
@@ -552,7 +611,10 @@ impl ProgressInputStream {
     }
 }
 
+// PORT: skipped, a java.io stream method the download pipeline never calls (the trait has `read` and `close` only): ProgressInputStream.available
 impl InputStream for ProgressInputStream {
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/ProgressInputStream.java:104 ProgressInputStream.read
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/ProgressInputStream.java:113 ProgressInputStream.read
     fn read(&mut self, buf: &mut [u8]) -> Result<usize, IoException> {
         let amount = self.delegate.read(buf)?;
         if amount > 0 {
@@ -563,6 +625,7 @@ impl InputStream for ProgressInputStream {
         Ok(amount)
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/ProgressInputStream.java:127 ProgressInputStream.close
     fn close(&mut self) -> Result<(), IoException> {
         self.delegate.close()?;
         self.event_handler.post(Arc::new(DownloadProgressEvent::new(
@@ -596,6 +659,7 @@ impl<W: Write> HashOutputStream<W> {
     }
 
     // Java: com/google/devtools/build/lib/bazel/repository/downloader/HashOutputStream.java:79 HashOutputStream.close
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/HashOutputStream.java:80 HashOutputStream.check
     pub fn close(&mut self) -> Result<(), IoException> {
         self.delegate.flush()?;
         if self.actual.is_none() {
@@ -618,6 +682,10 @@ impl<W: Write> HashOutputStream<W> {
 }
 
 impl<W: Write> Write for HashOutputStream<W> {
+    // PORT: one `write` for Java's three overloads (byte, array, slice).
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/HashOutputStream.java:51 HashOutputStream.write
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/HashOutputStream.java:57 HashOutputStream.write
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/HashOutputStream.java:63 HashOutputStream.write
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
         let n = self.delegate.write(buf)?;
         if let Some(h) = &mut self.hasher {
@@ -626,6 +694,7 @@ impl<W: Write> Write for HashOutputStream<W> {
         Ok(n)
     }
 
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/HashOutputStream.java:69 HashOutputStream.flush
     fn flush(&mut self) -> io::Result<()> {
         self.delegate.flush()
     }

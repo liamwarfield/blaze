@@ -49,6 +49,7 @@ impl AspectPropagationPredicate {
         context: StarlarkAspectPropagationContext<'_>,
         event_handler: &dyn EventHandler,
     ) -> Result<bool, EvalError> {
+        // Java: com/google/devtools/build/lib/packages/AspectPropagationPredicate.java:52 AspectPropagationPredicate.runPropagationPredicate
         // Java: runPropagationPredicate (AspectPropagationPredicate.java:52), then the
         // `instanceof Boolean` check on its result.
         run_transient_call(
@@ -72,6 +73,7 @@ impl PartialEq for AspectPropagationPredicate {
     }
 }
 
+// PORT: skipped, the predicate is compared (PartialEq above), never hashed (no `Hash` impl): AspectPropagationPredicate.hashCode
 impl Eq for AspectPropagationPredicate {}
 
 impl fmt::Debug for AspectPropagationPredicate {

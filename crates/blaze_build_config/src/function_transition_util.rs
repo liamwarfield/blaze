@@ -160,7 +160,7 @@ pub fn apply_and_validate_with_attrs(
     }
 }
 
-// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:139 FunctionTransitionUtil.maybeGetExecDefaults
+// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:187 FunctionTransitionUtil.maybeGetExecDefaults
 /// For all transitions except the exec transition, returns `None` (use `fromOptions`).
 ///
 /// The exec transition is special: any options not explicitly set by the transition take their
@@ -206,7 +206,7 @@ fn maybe_get_exec_defaults(
     Some(ans)
 }
 
-// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:198 FunctionTransitionUtil.getExecPropagatingStarlarkFlags
+// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:231 FunctionTransitionUtil.getExecPropagatingStarlarkFlags
 /// Filters a map of Starlark flag <Label, value> pairs to those that should propagate from the
 /// target configuration to exec configuration.
 fn get_exec_propagating_starlark_flags(
@@ -270,7 +270,7 @@ fn command_line_option(name: &str) -> Label {
     Label::create_unvalidated(COMMAND_LINE_OPTION_PACKAGE_IDENTIFIER.clone(), name)
 }
 
-// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:152 FunctionTransitionUtil.handleImplicitPlatformChange
+// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:313 FunctionTransitionUtil.handleImplicitPlatformChange
 /// If the transition changes --cpu but not --platforms, clear out --platforms.
 fn handle_implicit_platform_change(
     options: &BuildOptions,
@@ -298,7 +298,7 @@ fn handle_implicit_platform_change(
 const TRUE_STRINGS: [&str; 2] = ["true", "1"];
 const FALSE_STRINGS: [&str; 2] = ["false", "0"];
 
-// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:153 FunctionTransitionUtil.applyStarlarkFlagsAliases
+// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:334 FunctionTransitionUtil.applyStarlarkFlagsAliases
 /// Set the Starlark flag value to the value of its alias.
 fn apply_starlark_flags_aliases(
     flags_aliases: &IndexMap<String, Label>,
@@ -384,7 +384,7 @@ fn is_native_option_non_configurable(
     }
 }
 
-// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:121 FunctionTransitionUtil.validateInputOptions
+// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:421 FunctionTransitionUtil.validateInputOptions
 fn validate_input_options(
     options: &[String],
     allow_non_configurable_flag_changes: bool,
@@ -401,7 +401,7 @@ fn validate_input_options(
     )
 }
 
-// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:126 FunctionTransitionUtil.validateOutputOptions
+// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:438 FunctionTransitionUtil.validateOutputOptions
 fn validate_output_options(
     options: &[String],
     allow_non_configurable_flag_changes: bool,
@@ -424,7 +424,7 @@ fn validate_output_options(
     )
 }
 
-// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:427 FunctionTransitionUtil.checkForInvalidNativeOptions
+// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:464 FunctionTransitionUtil.checkForInvalidNativeOptions
 fn check_for_invalid_native_options(
     transition_parameter_type: &str,
     options: &[String],
@@ -453,7 +453,7 @@ fn check_for_invalid_native_options(
     Ok(())
 }
 
-// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:430 FunctionTransitionUtil.checkForNonConfigurableOptions
+// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:487 FunctionTransitionUtil.checkForNonConfigurableOptions
 fn check_for_non_configurable_options(
     transition_parameter_type: &str,
     options: &[String],
@@ -485,7 +485,7 @@ fn check_for_non_configurable_options(
     Ok(())
 }
 
-// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:133 FunctionTransitionUtil.buildSettings
+// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:526 FunctionTransitionUtil.buildSettings
 /// Return a map containing only BuildOptions explicitly registered as transition inputs.
 /// nulls are converted to Starlark.NONE but no other conversions are done.
 fn build_settings(
@@ -535,7 +535,7 @@ fn insert_or_throw(map: &mut IndexMap<String, JavaObject>, key: &str, value: Jav
     }
 }
 
-// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:541 FunctionTransitionUtil.findNativeOptionValue
+// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:561 FunctionTransitionUtil.findNativeOptionValue
 fn find_native_option_value(
     build_options: &BuildOptions,
     option_info_map: &IndexMap<String, OptionInfo>,
@@ -557,7 +557,7 @@ fn find_native_option_value(
     Some(JavaObject::from_option_value(option_value.as_ref()))
 }
 
-// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:544 FunctionTransitionUtil.findStarlarkOptionValue
+// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:583 FunctionTransitionUtil.findStarlarkOptionValue
 fn find_starlark_option_value(build_options: &BuildOptions, setting: &Label) -> JavaObject {
     match build_options.get_starlark_options().get(setting) {
         None => JavaObject::Null,
@@ -640,7 +640,7 @@ fn java_to_starlark_option(v: &JavaObject) -> Result<StarlarkOptionValue, Valida
     })
 }
 
-// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:156 FunctionTransitionUtil.applyTransition
+// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:601 FunctionTransitionUtil.applyTransition
 /// Apply the transition dictionary to the build option, using optionInfoMap to look up the
 /// option info.
 fn apply_transition(
@@ -884,7 +884,7 @@ fn apply_transition(
 /// `ImmutableMap.copyOf(dict)` stored in a field whose Java type is `Map`. Java stores the map
 /// whatever the classes of its keys and values (the generic type is erased); the Rust field has
 /// a concrete type, so only entries of the field's element classes are carried over.
-// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:156 FunctionTransitionUtil.applyTransition (the Map branch, lines 678-681 and 724-725)
+// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:601 FunctionTransitionUtil.applyTransition (the Map branch, lines 678-681 and 724-725)
 fn map_option_value(
     field: &blaze_options::FieldInfo,
     entries: &[(JavaObject, JavaObject)],
@@ -1002,7 +1002,7 @@ pub fn get_affected_by_starlark_transition_via_diff(
     result
 }
 
-// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:790 FunctionTransitionUtil.updateAffectedByStarlarkTransition
+// Java: com/google/devtools/build/lib/analysis/starlark/FunctionTransitionUtil.java:819 FunctionTransitionUtil.updateAffectedByStarlarkTransition
 /// Extend the global build config affectedByStarlarkTransition, by adding any new option names
 /// from changedOptions.
 pub fn update_affected_by_starlark_transition<'a>(
@@ -1151,7 +1151,7 @@ pub fn exec_transition_patch(
             ));
         }
         CoreOptionsExecConfigurationDistinguisherScheme::FULL_HASH => {
-            // Java: com/google/devtools/build/lib/analysis/config/ExecutionTransitionFactory.java:235 ExecutionTransitionFactory.ExecTransitionFinalizer.patch
+            // Java: com/google/devtools/build/lib/analysis/config/ExecutionTransitionFactory.java:192 ExecutionTransitionFactory.ExecTransitionFinalizer.patch
             result.get_mut::<CoreOptions>().unwrap().platform_suffix = Some(String::new());
             // execOptions creation above made a clone, which will have a fresh hashCode.
             // PORT: the checksum is computed on a clone, which has no cached checksum
@@ -1195,7 +1195,7 @@ pub fn exec_transition_patch(
     result
 }
 
-// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1541 SkyframeExecutor.adjustForExec
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1544 SkyframeExecutor.adjustForExec
 /// Adjusts the baseline options for the exec transition.
 pub fn adjust_for_exec(
     baseline_options: &BuildOptions,

@@ -11,6 +11,8 @@ blaze_util = { path = "../blaze_util" }
 blaze_cmdline = { path = "../blaze_cmdline" }
 blaze_vfs = { path = "../blaze_vfs" }
 blaze_events = { path = "../blaze_events" }
+# The workspace rules log (WorkspaceLogProtos).
+blaze_protos = { path = "../blaze_protos" }
 blaze_starlark = { path = "../blaze_starlark" }
 blaze_skyframe = { path = "../blaze_skyframe" }
 blaze_bzlmod_model = { path = "../blaze_bzlmod_model" }

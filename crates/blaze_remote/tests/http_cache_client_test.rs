@@ -11,11 +11,12 @@ use std::collections::HashMap;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use blaze_optdefs::misc::auth_and_tls_options::AuthAndTLSOptions;
 use blaze_remote::common::cache_not_found_exception::CacheNotFoundException;
 use blaze_remote::common::errors;
 use blaze_remote::common::{
@@ -91,11 +92,43 @@ type EarlyHandler = Arc<dyn Fn(&Request) -> Option<Answer> + Send + Sync>;
 enum ServerKind {
     Inet,
     Unix,
+    /// An internet socket speaking TLS (the `testdata/mtls` server certificate for `localhost`).
+    Tls,
 }
 
 struct TestServer {
     port: Option<u16>,
     socket: Option<PathBuf>,
+    tls: bool,
+}
+
+fn mtls_file(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/testdata/mtls")
+        .join(name)
+}
+
+/// The server side of [`ServerKind::Tls`].
+fn tls_server_config() -> Arc<tokio_rustls::rustls::ServerConfig> {
+    use tokio_rustls::rustls::pki_types::pem::PemObject;
+    use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    let certs: Vec<CertificateDer<'static>> =
+        CertificateDer::pem_file_iter(mtls_file("server.crt"))
+            .unwrap()
+            .map(|c| c.unwrap())
+            .collect();
+    let key = PrivateKeyDer::from_pem_file(mtls_file("server.key")).unwrap();
+    Arc::new(
+        tokio_rustls::rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(certs, key)
+            .unwrap(),
+    )
+}
+
+impl Connection
+    for tokio_rustls::rustls::StreamOwned<tokio_rustls::rustls::ServerConnection, TcpStream>
+{
 }
 
 trait Connection: Read + Write + Send {}
@@ -201,6 +234,27 @@ impl TestServer {
         early: Option<EarlyHandler>,
     ) -> TestServer {
         match kind {
+            ServerKind::Tls => {
+                let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+                let port = listener.local_addr().unwrap().port();
+                let config = tls_server_config();
+                std::thread::spawn(move || {
+                    for stream in listener.incoming() {
+                        let Ok(stream) = stream else { return };
+                        let handler = handler.clone();
+                        let early = early.clone();
+                        let connection =
+                            tokio_rustls::rustls::ServerConnection::new(config.clone()).unwrap();
+                        let tls = tokio_rustls::rustls::StreamOwned::new(connection, stream);
+                        std::thread::spawn(move || serve(Box::new(tls), handler, early));
+                    }
+                });
+                TestServer {
+                    port: Some(port),
+                    socket: None,
+                    tls: true,
+                }
+            }
             ServerKind::Inet => {
                 let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
                 let port = listener.local_addr().unwrap().port();
@@ -215,6 +269,7 @@ impl TestServer {
                 TestServer {
                     port: Some(port),
                     socket: None,
+                    tls: false,
                 }
             }
             ServerKind::Unix => {
@@ -238,6 +293,7 @@ impl TestServer {
                 TestServer {
                     port: None,
                     socket: Some(path),
+                    tls: false,
                 }
             }
         }
@@ -247,7 +303,7 @@ impl TestServer {
     /// connects).
     fn stopped(kind: ServerKind) -> TestServer {
         match kind {
-            ServerKind::Inet => {
+            ServerKind::Inet | ServerKind::Tls => {
                 let port = TcpListener::bind(("127.0.0.1", 0))
                     .unwrap()
                     .local_addr()
@@ -256,6 +312,7 @@ impl TestServer {
                 TestServer {
                     port: Some(port),
                     socket: None,
+                    tls: false,
                 }
             }
             ServerKind::Unix => TestServer {
@@ -264,6 +321,7 @@ impl TestServer {
                     "blaze-http-cache-test-{}-stopped.sock",
                     std::process::id()
                 ))),
+                tls: false,
             },
         }
     }
@@ -335,6 +393,36 @@ fn closed_channel_retrier() -> Arc<RemoteRetrier> {
     ))
 }
 
+/// The socket, the cache URI and, for a TLS server, the client's TLS configuration (trusting the
+/// `testdata/mtls` CA, as `--tls_certificate` does).
+fn server_address(
+    server: &TestServer,
+) -> (
+    Option<PathBuf>,
+    String,
+    Option<Arc<tokio_rustls::rustls::ClientConfig>>,
+) {
+    match (&server.socket, server.port) {
+        (Some(socket), _) => (Some(socket.clone()), "http://localhost".to_string(), None),
+        (None, Some(port)) if server.tls => {
+            let mut options = AuthAndTLSOptions::default();
+            options.tls_certificate = Some(mtls_file("ca.crt").to_str().unwrap().to_string());
+            let config = blaze_remote::authandtls::google_auth_utils::http_cache_tls_config(
+                "localhost",
+                &options,
+            )
+            .unwrap();
+            (
+                None,
+                format!("https://localhost:{port}"),
+                Some(Arc::new(config)),
+            )
+        }
+        (None, Some(port)) => (None, format!("http://localhost:{port}"), None),
+        (None, None) => unreachable!(),
+    }
+}
+
 // Java: src/test/java/com/google/devtools/build/lib/remote/http/HttpCacheClientTest.java:274 HttpCacheClientTest.createHttpBlobStore
 fn create_http_blob_store(
     server: &TestServer,
@@ -345,11 +433,7 @@ fn create_http_blob_store(
     retrier: Option<Arc<RemoteRetrier>>,
 ) -> Arc<HttpCacheClient> {
     let retrier = retrier.unwrap_or_else(default_retrier);
-    let (socket, uri) = match (&server.socket, server.port) {
-        (Some(socket), _) => (Some(socket.clone()), "http://localhost".to_string()),
-        (None, Some(port)) => (None, format!("http://localhost:{port}")),
-        (None, None) => unreachable!(),
-    };
+    let (socket, uri, tls) = server_address(server);
     Arc::new(
         HttpCacheClient::create(
             socket,
@@ -361,7 +445,7 @@ fn create_http_blob_store(
             digest_util(),
             retrier,
             creds,
-            /* tls= */ None,
+            tls,
             "9.3.2",
         )
         .unwrap(),
@@ -1029,7 +1113,11 @@ fn upload_answered_before_body_reports_the_status(kind: ServerKind) {
 both_servers!(upload_answered_before_body_reports_the_status);
 
 /// A 401 for an expired token before the body is read: refreshed and uploaded again, for a blob
-/// whose stream Java can reset (a `ByteString`'s).
+/// whose stream Java can reset (a `ByteString`'s). The answered connection goes back to the pool
+/// with the body unwritten (`HttpUploadHandler.channelRead0`, `releaseUploadChannel`) and the
+/// retry takes it; this server keeps it open without reading, so the retry times out
+/// (`UploadTimeoutException`), as Java's does (review 2026-11-19 round 9, J1; the oracle's
+/// `authput` probe: "Upload of '/cas/…' timed out").
 fn expired_auth_token_before_body_is_refreshed(kind: ServerKind) {
     let server = TestServer::start_with_early(
         kind,
@@ -1053,21 +1141,26 @@ fn expired_auth_token_before_body_is_refreshed(kind: ServerKind) {
     let credentials = Arc::new(MockCredentials::default());
     let blob_store = create_http_blob_store(
         &server,
-        10,
+        1,
         true,
         Vec::new(),
         Some(credentials.clone()),
         None,
     );
     let data = bytes::Bytes::from(vec![7u8; LARGE_BODY]);
-    get_from_future(blob_store.upload_bytes(
+    let e = get_from_future(blob_store.upload_bytes(
         &context(),
         &digest_util().compute(&data),
         data,
         false,
     ))
-    .unwrap();
+    .unwrap_err();
     assert_eq!(credentials.refresh_count.load(Ordering::SeqCst), 1);
+    assert!(
+        errors::find_cause::<UploadTimeoutException>(&e).is_some()
+            || errors::downcast_ref::<UploadTimeoutException>(&e).is_some(),
+        "{e:?}"
+    );
 }
 both_servers!(expired_auth_token_before_body_is_refreshed);
 
@@ -1119,3 +1212,164 @@ fn expired_auth_token_for_a_file_is_not_retried(kind: ServerKind) {
     assert_eq!(credentials.refresh_count.load(Ordering::SeqCst), 0);
 }
 both_servers!(expired_auth_token_for_a_file_is_not_retried);
+
+/// `createHttpBlobStore` with `--remote_max_connections`.
+fn store_with_max_connections(
+    server: &TestServer,
+    remote_max_connections: i32,
+) -> Arc<HttpCacheClient> {
+    let (socket, uri, tls) = server_address(server);
+    Arc::new(
+        HttpCacheClient::create(
+            socket,
+            JavaUri::create(&uri).unwrap(),
+            /* timeout_seconds= */ 5,
+            remote_max_connections,
+            /* verify_downloads= */ true,
+            Vec::new(),
+            digest_util(),
+            default_retrier(),
+            None,
+            tls,
+            "9.3.2",
+        )
+        .unwrap(),
+    )
+}
+
+/// Review 2026-11-19 round 9, J1: `uploadAsync` acquires its channel on the calling thread, so
+/// uploads started together take their channels in call order; with one connection
+/// (`FixedChannelPool` of 1) the server reads them in that order (the queued acquisitions are
+/// served first in first out).
+fn uploads_take_channels_in_call_order(kind: ServerKind) {
+    let order = Arc::new(Mutex::new(Vec::<String>::new()));
+    let seen = order.clone();
+    let server = TestServer::start(
+        kind,
+        Arc::new(move |request: &Request| {
+            seen.lock().unwrap().push(request.path.clone());
+            Answer::Respond(response("200 OK", &[("content-length", "0")], b""))
+        }),
+    );
+    let store = store_with_max_connections(&server, 1);
+    let blobs: Vec<bytes::Bytes> = (0..8)
+        .map(|i| bytes::Bytes::from(format!("blob {i}").repeat(1000 * (8 - i))))
+        .collect();
+    let digests: Vec<Digest> = blobs.iter().map(|b| digest_util().compute(b)).collect();
+    let context = context();
+    let uploads: Vec<_> = blobs
+        .iter()
+        .zip(&digests)
+        .map(|(blob, digest)| store.upload_bytes(&context, digest, blob.clone(), false))
+        .collect();
+    let results =
+        get_from_future(async { Ok::<_, io::Error>(futures::future::join_all(uploads).await) })
+            .unwrap();
+    for result in results {
+        result.unwrap();
+    }
+    let expected: Vec<String> = digests.iter().map(|d| format!("/cas/{}", d.hash)).collect();
+    assert_eq!(*order.lock().unwrap(), expected);
+}
+both_servers!(uploads_take_channels_in_call_order);
+
+/// Downloads a caller waits for together proceed at once, each on its own channel, as in Java
+/// (`get` acquires a channel per download): the server answers neither until both requests have
+/// arrived.
+fn downloads_proceed_together(kind: ServerKind) {
+    let foo = b"foo".to_vec();
+    let bar = b"bar".to_vec();
+    let mut contents = HashMap::new();
+    contents.insert(
+        format!("/cas/{}", digest_util().compute(&foo[..]).hash),
+        foo.clone(),
+    );
+    contents.insert(
+        format!("/cas/{}", digest_util().compute(&bar[..]).hash),
+        bar.clone(),
+    );
+    let arrived = Arc::new(AtomicUsize::new(0));
+    let server = TestServer::start(
+        kind,
+        Arc::new(move |request: &Request| {
+            arrived.fetch_add(1, Ordering::SeqCst);
+            let deadline = std::time::Instant::now() + Duration::from_secs(3);
+            while arrived.load(Ordering::SeqCst) < 2 && std::time::Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if arrived.load(Ordering::SeqCst) < 2 {
+                return Answer::Respond(response("404 Not Found", &[("content-length", "0")], b""));
+            }
+            Answer::Respond(ok_with_body(&contents[&request.path]))
+        }),
+    );
+    let store = store_with_max_connections(&server, 0);
+    let context = context();
+    let foo_digest = digest_util().compute(&foo[..]);
+    let bar_digest = digest_util().compute(&bar[..]);
+    let mut foo_out: Vec<u8> = Vec::new();
+    let mut bar_out: Vec<u8> = Vec::new();
+    let (a, b) = get_from_future(async {
+        Ok::<_, io::Error>(
+            futures::future::join(
+                store.download_blob(&context, &foo_digest, &mut foo_out),
+                store.download_blob(&context, &bar_digest, &mut bar_out),
+            )
+            .await,
+        )
+    })
+    .unwrap();
+    a.unwrap();
+    b.unwrap();
+    assert_eq!(foo_out, foo);
+    assert_eq!(bar_out, bar);
+}
+both_servers!(downloads_proceed_together);
+
+/// Review 2026-11-19 round 9, S3: over TLS, an answer that arrives while the client still holds
+/// unsent records is read at once (`tls_read` decrypts what has arrived without first flushing
+/// those records, as Netty's `SslHandler` decodes inbound records independently of its pending
+/// writes). The server reads the head, then nothing, and answers after half a second: by then
+/// the socket buffers are full (the body is larger than they grow) and rustls holds records it
+/// could not send. Before the fix the
+/// read first blocked in a write to the server that does not read, until the server closed the
+/// connection (5 s), and the status was lost.
+#[test]
+fn upload_answered_before_body_reports_the_status_over_tls() {
+    let server = TestServer::start_with_early(
+        ServerKind::Tls,
+        ok_handler(),
+        Some(large_put_answered_early(|_| {
+            std::thread::sleep(Duration::from_millis(500));
+            Some(Answer::Respond(response(
+                "403 Forbidden",
+                &[("content-length", "0")],
+                b"",
+            )))
+        })),
+    );
+    let blob_store = create_http_blob_store(&server, 10, true, Vec::new(), None, None);
+    // More than the loopback socket buffers take (`tcp_rmem` grows to 32 MiB here).
+    let data = bytes::Bytes::from(vec![7u8; 96 * 1024 * 1024]);
+    let start = std::time::Instant::now();
+    let e = get_from_future(blob_store.upload_bytes(
+        &context(),
+        &digest_util().compute(&data),
+        data,
+        false,
+    ))
+    .unwrap_err();
+    assert!(
+        start.elapsed() < Duration::from_secs(4),
+        "{:?}",
+        start.elapsed()
+    );
+    let http_exception = errors::downcast_ref::<HttpException>(&e).expect("an HttpException");
+    assert_eq!(http_exception.status, 403);
+}
+
+/// The TLS test server itself: a plain upload and download over TLS.
+#[test]
+fn test_upload_over_tls() {
+    test_upload(ServerKind::Tls);
+}

@@ -27,6 +27,7 @@ use crate::sky_functions;
 
 /// The SkyKey for [`FileStateValue`]: a [`RootedPath`]. `Debug` prints the rooted path, as Java
 /// (where `RootedPath` itself is the key) does.
+// PORT: skipped, the function name is `Key::FUNCTION` (FILE_STATE): FileStateKey.functionName
 // Java: com/google/devtools/build/lib/vfs/FileStateKey.java:25 FileStateKey
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct FileStateKey(pub RootedPath);

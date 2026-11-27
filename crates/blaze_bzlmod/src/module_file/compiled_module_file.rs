@@ -192,6 +192,7 @@ impl CompiledModuleFile {
         let globals = &self.predeclared_env;
         Module::with_temp_heap(|module| {
             let mut eval = Evaluator::new(&module);
+            blaze_starlark::debug::install_hook(&mut eval);
             eval.extra = Some(thread);
             eval.set_forbid_recursion(!thread.semantics.allow_recursion);
             // Java: net/starlark/java/eval/StringModule.java:326 and lib/json/Json.java:346 read

@@ -207,6 +207,32 @@ pub fn build_spawn_strategy_registry_with_policy(
     remote: &RemoteModuleContributions,
     strategy_policy: &blaze_protos::blaze::strategy_policy::StrategyPolicy,
 ) -> Result<SpawnStrategyRegistry, AbruptExitException> {
+    build_spawn_strategy_registry_with_modules(env, sandbox_module, remote, strategy_policy, &[])
+}
+
+/// A module's `BlazeModule.registerSpawnStrategies`, as the runtime hands it to the execution
+/// tool (the modules live in blaze_runtime, which this crate cannot name).
+// Java: com/google/devtools/build/lib/runtime/BlazeModule.java:329 BlazeModule.registerSpawnStrategies
+pub type ModuleSpawnStrategyRegistration = Arc<
+    dyn Fn(
+            &mut SpawnStrategyRegistryBuilder,
+            &ExecCommandEnvironment,
+        ) -> Result<(), AbruptExitException>
+        + Send
+        + Sync,
+>;
+
+/// [`build_spawn_strategy_registry_with_policy`] with the `registerSpawnStrategies` of the
+/// runtime's other modules (`module_registrations`, in module order), which Java's
+/// `ExecutionTool` calls after Bazel's built-in modules (they come first in the module list).
+// Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:151 ExecutionTool.<init> (the module loop, line 170)
+pub fn build_spawn_strategy_registry_with_modules(
+    env: &ExecCommandEnvironment,
+    sandbox_module: &mut crate::sandbox::sandbox_module::SandboxModule,
+    remote: &RemoteModuleContributions,
+    strategy_policy: &blaze_protos::blaze::strategy_policy::StrategyPolicy,
+    module_registrations: &[ModuleSpawnStrategyRegistration],
+) -> Result<SpawnStrategyRegistry, AbruptExitException> {
     // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:166 ExecutionTool.<init>
     let mut spawn_strategy_registry_builder =
         SpawnStrategyRegistry::builder_with_policy(strategy_policy);
@@ -255,6 +281,12 @@ pub fn build_spawn_strategy_registry_with_policy(
     dynamic_execution_module_register_spawn_strategies(&mut spawn_strategy_registry_builder, env)?;
     // com.google.devtools.build.lib.bazel.rules.BazelStrategyModule
     bazel_strategy_module_register_spawn_strategies(&mut spawn_strategy_registry_builder, env);
+    // The runtime's other modules, after Bazel's (`module.registerSpawnStrategies(builder, env)`
+    // for each module, in order).
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:151 ExecutionTool.<init> (line 182)
+    for registration in module_registrations {
+        registration(&mut spawn_strategy_registry_builder, env)?;
+    }
 
     let registry = spawn_strategy_registry_builder.build()?;
     // PORT: Java logs the registry when `ExecutionTool.prepareBuild` makes the `BlazeExecutor`

@@ -332,9 +332,32 @@ fn server_says_tarball_path_is_gzipped_doesnt_automatically_gunzip() {
     assert_eq!(read_and_close(s).unwrap(), gz);
 }
 
+// Java: src/test/java/com/google/devtools/build/lib/bazel/repository/downloader/HttpStreamTest.java:292 HttpStreamTest.threadInterrupted_haltsReadingAndThrowsInterrupt
 #[test]
-#[ignore = "Blaze has no thread interruption (InterruptibleInputStream is not ported)"]
-fn thread_interrupted_halts_reading_and_throws_interrupt() {}
+fn thread_interrupted_halts_reading_and_throws_interrupt() {
+    let was_interrupted = std::thread::spawn(|| {
+        let mut stream = factory()
+            .create(
+                connection(AURL, &[], bytes(DATA)),
+                &aurl(),
+                None,
+                unused_reconnector(),
+                None,
+            )
+            .unwrap();
+        let mut one = [0u8; 1];
+        if stream.read(&mut one).is_err() {
+            return false;
+        }
+        blaze_shell::thread_interrupt::interrupt_current();
+        let result = stream.read(&mut one);
+        let _ = stream.close();
+        matches!(result, Err(e) if e.kind == IoExceptionKind::InterruptedIOException)
+    })
+    .join()
+    .unwrap();
+    assert!(was_interrupted);
+}
 
 #[test]
 fn tarball_has_no_format_and_type_is_gzipped_doesnt_automatically_gunzip() {

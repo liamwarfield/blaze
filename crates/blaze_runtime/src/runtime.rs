@@ -353,7 +353,15 @@ impl BlazeRuntime {
             let code = Self::batch_main(modules, args);
             Self::exit(code);
         }
-        // PORT: skipped, logging ("Starting Bazel server with pid %d, args %s").
+        blaze_util::server_logger::info(
+            "com.google.devtools.build.lib.runtime.BlazeRuntime",
+            "main",
+            &format!(
+                "Starting Bazel server with pid {}, args [{}]",
+                std::process::id(),
+                args.join(", ")
+            ),
+        );
         let code = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             // Run Blaze in server mode.
             Self::server_main(modules, OutErr::system_out_err().clone(), &args)
@@ -640,6 +648,15 @@ impl BlazeRuntime {
         // Java: com/google/devtools/build/lib/runtime/BlazeRuntime.java:1087 BlazeRuntime.batchMain
         let _signal_handler = crate::interrupt::capture_sigint();
         let (startup_args, other_args) = Self::split_startup_options(&modules, &args);
+        blaze_util::server_logger::info(
+            "com.google.devtools.build.lib.runtime.BlazeRuntime",
+            "batchMain",
+            &format!(
+                "Running Bazel in batch mode with pid {}, startup args [{}]",
+                std::process::id(),
+                startup_args.join(", ")
+            ),
+        );
 
         let runtime = match Self::new_runtime(modules, &startup_args, None) {
             Ok(r) => r,
@@ -678,6 +695,11 @@ impl BlazeRuntime {
         let dispatcher = BlazeCommandDispatcher::new(
             runtime.clone(),
             BlazeCommandDispatcher::UNKNOWN_SERVER_PID,
+        );
+        blaze_util::server_logger::info(
+            "com.google.devtools.build.lib.runtime.BlazeRuntime",
+            "batchMain",
+            &blaze_util::server_logger::safe_request_log_string(&other_args),
         );
         let result = match dispatcher.exec(
             policy,

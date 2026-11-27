@@ -1792,6 +1792,8 @@ struct MapEachAdaptors(Mutex<Vec<Box<CommandLineItemMapEachAdaptor>>>);
 impl blaze_util::build_arena::ArenaSlot for MapEachAdaptors {
     const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
         blaze_util::build_arena::ReleaseOrder::Memo;
+    // Decision D7 (amended 2026-11-26): its entries hold module values; one command.
+    const PER_COMMAND: bool = true;
 }
 
 /// `adaptor` as the `&'static` map fn the fingerprint cache takes.
@@ -1802,12 +1804,12 @@ impl blaze_util::build_arena::ArenaSlot for MapEachAdaptors {
 unsafe fn interned_adaptor(
     adaptor: &CommandLineItemMapEachAdaptor,
 ) -> &'static CommandLineItemMapEachAdaptor {
-    // SAFETY: the box is owned by the arena's table and never removed from it, so it lives as
-    // long as the build arena. The arena outlives every holder of the reference: the nested set
-    // fingerprint caches of the `ActionKeyContext`s of one command (the analysis services of an
-    // executor, which holds a lease; the execution tool's action executor) and the fingerprint
-    // computations that call it, which run inside that command's evaluators. The arena is
-    // released only by the server, once the command has ended and no lease is held.
+    // SAFETY: the box is owned by the arena's table, which is a per-command slot: it is dropped
+    // only by `blaze_util::build_arena::end_command`, after the command has ended (or with the
+    // arena). Every holder of the reference belongs to one command: the nested set fingerprint
+    // caches of the `ActionKeyContext`s of one command (the analysis services of an executor;
+    // the execution tool's action executor) and the fingerprint computations that call it, which
+    // run inside that command's evaluators.
     unsafe { &*(adaptor as *const CommandLineItemMapEachAdaptor) }
 }
 

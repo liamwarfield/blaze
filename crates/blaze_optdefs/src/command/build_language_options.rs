@@ -71,6 +71,7 @@ options! {
 
         #[option(
             name = "incompatible_autoload_externally",
+            // PORT: skipped, the private constructor of a static-only class: FlagConstants.<init>
             // Java: com/google/devtools/build/lib/packages/semantics/FlagConstants.java:30 FlagConstants.DEFAULT_INCOMPATIBLE_AUTOLOAD_EXTERNALLY
             default_value = "",
             converter = CommaSeparatedOptionSetConverter,

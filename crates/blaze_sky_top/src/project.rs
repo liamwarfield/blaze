@@ -113,6 +113,7 @@ pub fn find_project_files(
 #[error("{message}")]
 pub struct LoadingFailedException {
     pub message: String,
+    // Java: com/google/devtools/build/lib/pkgcache/LoadingFailedException.java:32 LoadingFailedException.getDetailedExitCode
     /// `getDetailedExitCode().getExitCode()`.
     pub exit_code: i32,
     /// `getDetailedExitCode().getFailureDetail()`.

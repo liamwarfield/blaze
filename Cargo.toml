@@ -15,7 +15,8 @@ starlark = "0.14.2"
 starlark_derive = "0.14.2"
 starlark_map = "0.14.2"
 # The WebAssembly engine of repository_ctx.execute_wasm (ruling of 2026-11-26 in docs/decisions.md).
-wasmi = "1.1.0"
+# Without the default `wat` feature: Chicory (Bazel) parses the binary format only.
+wasmi = { version = "1.1.0", default-features = false, features = ["std"] }
 starlark_syntax = "0.14.2"
 dupe = "0.9"
 num-bigint = "0.4"

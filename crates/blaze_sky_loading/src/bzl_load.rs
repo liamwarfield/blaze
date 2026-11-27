@@ -417,6 +417,7 @@ impl BzlLoadFailedException {
 // PORT: skipped, the token owner is the thread context's bzl key (see above); its codec is serialization (ruling 2026-11-19 (1)): BzlLoadThreadOwner.call, BzlLoadThreadOwner.setBzlLoadValue
 // Bazel's SkyframeExecutor never enables .bzl inlining (`getBzlLoadFunctionForInliningPackageAndWorkspaceNodes`
 // returns null and nothing overrides it), so the inlining machinery does not run at the pin.
+// PORT: skipped, inlining is never enabled at the pin: BzlLoadFunction.InliningState.<init>, BzlLoadFunction.InliningAndCachingGetter.<init>, BzlLoadFunction.InlineCacheManager.<init>
 // PORT: skipped, inlining is never enabled at the pin: BzlLoadFunction.createForInlining, BzlLoadFunction.computeInline, BzlLoadFunction.computeInlineCachedData
 // PORT: skipped, inlining is never enabled at the pin: BzlLoadFunction.computeInlineForCacheMiss, BzlLoadFunction.resetInliningCache, BzlLoadFunction.computeBzlLoadsWithInlining
 // PORT: skipped, inlining is never enabled at the pin: BzlLoadFunction.create, BzlLoadFunction.createChildState, BzlLoadFunction.buildCachedData, BzlLoadFunction.beginLoad
@@ -509,6 +510,7 @@ fn error_reading_bzl(file: &PathFragment, cause: &FailedIOException) -> BzlLoadF
     )
 }
 
+// PORT: skipped, the SkyFunctionException wrapper is `SkyFunctionException::new(e, e.transience)` at the throw sites: BzlLoadFunction.BzlLoadFunctionException.<init>
 // Java: com/google/devtools/build/lib/skyframe/BzlLoadFunction.java:1611 BzlLoadFunction.noBuildFile
 fn no_build_file(file: &Label, reason: Option<&str>) -> BzlLoadFailedException {
     if let Some(reason) = reason {
@@ -772,8 +774,10 @@ pub fn check_load_visibilities(
 // ---------------------------------------------------------------------------------------------
 // Execution
 
-/// Keeps every frozen .bzl heap alive as long as the build arena: rule classes and other values
-/// hold `FrozenValue` handles into them (DESIGN.md). PORT: keep-alive, in the build arena
+/// Keeps the frozen heaps of `@_builtins` and bzlmod .bzl modules alive as long as the build
+/// arena: rule classes and other values hold `FrozenValue` handles into them (DESIGN.md).
+/// Modules loaded for BUILD files are not kept here (see the push site). PORT: keep-alive, in
+/// the build arena
 /// (`blaze_util::build_arena`, decision D7): released only by the server, after a command has
 /// ended and no evaluator is left; elsewhere it lives for the process.
 #[derive(Default)]
@@ -785,6 +789,32 @@ impl blaze_util::build_arena::ArenaSlot for KeepAlive {
 
     fn held_count(&self) -> usize {
         self.0.lock().len()
+    }
+}
+
+/// Frozen .bzl heaps kept for the life of the build arena because a value leaves them by a path
+/// that does not own the heap (the top-level aspects of `--aspects`, whose `StarlarkCallable`s
+/// `LOAD_ASPECTS` holds). PORT: keep-alive (decision D7, amended 2026-11-26), bounded by the
+/// command-line aspect modules a server sees.
+#[derive(Default)]
+struct KeptBzlHeaps(Mutex<Vec<starlark::values::FrozenHeapRef>>);
+
+impl blaze_util::build_arena::ArenaSlot for KeptBzlHeaps {
+    const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
+        blaze_util::build_arena::ReleaseOrder::Heaps;
+
+    fn held_count(&self) -> usize {
+        self.0.lock().len()
+    }
+}
+
+/// Keeps `heap` for the life of the build arena (see [`KeptBzlHeaps`]); a heap kept already is
+/// not added again.
+pub fn keep_bzl_heap_alive(heap: &starlark::values::FrozenHeapRef) {
+    let slot = blaze_util::build_arena::slot::<KeptBzlHeaps>();
+    let mut heaps = slot.0.lock();
+    if !heaps.iter().any(|h| h == heap) {
+        heaps.push(heap.clone());
     }
 }
 
@@ -1136,10 +1166,15 @@ impl BzlLoadFunction {
                     builtins,
                     &mut Fingerprint::new(),
                 );
-                let Some(autoload_symbols) = AUTOLOAD_SYMBOLS.get(env)? else {
-                    return Ok(Ok(None));
+                let autoload_symbols = if Self::compile_environment_needs_autoload_symbols(key) {
+                    let Some(autoload_symbols) = AUTOLOAD_SYMBOLS.get(env)? else {
+                        return Ok(Ok(None));
+                    };
+                    Some(autoload_symbols)
+                } else {
+                    None
                 };
-                let compile_env = self.compile_environment(key, &autoload_symbols);
+                let compile_env = self.compile_environment(key, autoload_symbols.as_deref());
                 let semantics = &builtins.starlark_semantics;
                 let label = key.get_label();
                 let names = globals.names().map(|n| n.as_str().to_owned()).collect();
@@ -1188,10 +1223,15 @@ impl BzlLoadFunction {
         {
             let globals =
                 self.get_and_digest_predeclared_environment(key, builtins, &mut Fingerprint::new());
-            let Some(autoload_symbols) = AUTOLOAD_SYMBOLS.get(env)? else {
-                return Ok(Ok(None));
+            let autoload_symbols = if Self::compile_environment_needs_autoload_symbols(key) {
+                let Some(autoload_symbols) = AUTOLOAD_SYMBOLS.get(env)? else {
+                    return Ok(Ok(None));
+                };
+                Some(autoload_symbols)
+            } else {
+                None
             };
-            let compile_env = self.compile_environment(key, &autoload_symbols);
+            let compile_env = self.compile_environment(key, autoload_symbols.as_deref());
             let errors = starlark_util::resolve_errors(prog, &globals, |name| {
                 blaze_packages::builtins::env::guarded_symbol_error(
                     compile_env,
@@ -1541,7 +1581,7 @@ impl BzlLoadFunction {
     fn compile_environment<'a>(
         &'a self,
         key: &BzlLoadKey,
-        autoload_symbols: &'a blaze_packages::builtins::AutoloadSymbols,
+        autoload_symbols: Option<&'a blaze_packages::builtins::AutoloadSymbols>,
     ) -> &'a blaze_packages::builtins::env::StarlarkEnv {
         let starlark_env = &self.config.bazel_starlark_environment;
         if key.is_scl_dialect() {
@@ -1549,8 +1589,18 @@ impl BzlLoadFunction {
         } else if key.is_builtins() {
             starlark_env.get_builtins_bzl_env()
         } else {
-            autoload_symbols.get_uninjected_build_bzl_env(Some(key.get_label().get_repository()))
+            autoload_symbols
+                .expect("AUTOLOAD_SYMBOLS is read for a BUILD-loaded .bzl")
+                .get_uninjected_build_bzl_env(Some(key.get_label().get_repository()))
         }
+    }
+
+    /// Whether the compile environment of `key` needs `AutoloadSymbols.AUTOLOAD_SYMBOLS`: Java's
+    /// BzlCompileFunction reads it only for a file that is neither `.scl` nor a builtins file
+    /// (the dependency is the same).
+    // Java: com/google/devtools/build/lib/skyframe/BzlCompileFunction.java:152 BzlCompileFunction.computeInline
+    fn compile_environment_needs_autoload_symbols(key: &BzlLoadKey) -> bool {
+        !key.is_scl_dialect() && !key.is_builtins()
     }
 
     /// Executes the compiled .bzl file defining the module to be loaded.
@@ -1629,10 +1679,17 @@ impl BzlLoadFunction {
             return Err(execution_failed(label));
         }
         let module = module.expect("no error");
-        blaze_util::build_arena::slot::<KeepAlive>()
-            .0
-            .lock()
-            .push(module.clone());
+        // PORT: keep-alive for the modules whose values leave them by paths that do not own the
+        // heap: `@_builtins` (native rule classes; loaded once per semantics) and the bzlmod
+        // loads (repository rules and module extensions). A module loaded for BUILD files is
+        // owned by its value and by the packages and analysis heaps that use it (decision D7,
+        // amended 2026-11-26: `PackageDeclarations::get_module_heaps`).
+        if !matches!(key, BzlLoadKey::ForBuild { .. }) {
+            blaze_util::build_arena::slot::<KeepAlive>()
+                .0
+                .lock()
+                .push(module.clone());
+        }
         let context = thread_context
             .take_payload::<BzlInitThreadContext>()
             .expect("the .bzl thread context");

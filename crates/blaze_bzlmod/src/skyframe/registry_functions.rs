@@ -55,6 +55,7 @@ pub fn compute_registry(
         .map(Some)
         .map_err(|e| {
             // RegistryException: TRANSIENT.
+            // Java: com/google/devtools/build/lib/bazel/bzlmod/RegistryFunction.java:98 RegistryFunction.RegistryException.<init>
             throw(
                 ExternalDepsException::with_cause_and_message(
                     ExternalDepsCode::InvalidRegistryUrl,
@@ -100,6 +101,7 @@ pub fn compute_repo_spec(
         // IOException (NotFound is a FileNotFoundException here).
         Err(e) => {
             // RepoSpecException: TRANSIENT.
+            // Java: com/google/devtools/build/lib/bazel/bzlmod/RepoSpecFunction.java:83 RepoSpecFunction.RepoSpecException.<init>
             return Err(throw(
                 ExternalDepsException::with_cause_and_message(
                     ExternalDepsCode::ErrorAccessingRegistry,

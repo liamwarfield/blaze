@@ -206,7 +206,7 @@ impl CommandEnvironment {
         );
         // The thread that creates the environment runs the command (Java passes
         // Thread.currentThread() from BlazeWorkspace.initCommand).
-        // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:266 CommandEnvironment.<init>
+        // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:226 CommandEnvironment.<init>
         // (runtime.getClock(): BlazeClock).
         let timestamp_granularity_monitor = Arc::new(
             blaze_util::io::timestamp_granularity_monitor::TimestampGranularityMonitor::new(
@@ -239,7 +239,7 @@ impl CommandEnvironment {
             None => PathFragment::empty_fragment(),
         };
 
-        // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:297 CommandEnvironment.<init>
+        // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:226 CommandEnvironment.<init>
         let wait_time_millis = wait_time_in_ms + command_options.wait_time;
         let command_start_time = command_start_time - command_options.startup_time;
 
@@ -311,7 +311,7 @@ impl CommandEnvironment {
             }
         }
 
-        // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:384 CommandEnvironment.<init>
+        // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:226 CommandEnvironment.<init>
         let bazel_workspace = directories
             .get_workspace()
             .map(|w| w.get_path_string().to_string());
@@ -383,7 +383,7 @@ impl CommandEnvironment {
     }
 
     /// The command's `TimestampGranularityMonitor`.
-    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:700 CommandEnvironment.getTimestampGranularityMonitor
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:636 CommandEnvironment.getTimestampGranularityMonitor
     pub fn get_timestamp_granularity_monitor(
         &self,
     ) -> &Arc<blaze_util::io::timestamp_granularity_monitor::TimestampGranularityMonitor> {
@@ -493,7 +493,7 @@ impl CommandEnvironment {
     }
 
     /// `getSkyframeExecutor().tracksStateForIncrementality()`.
-    // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:459 SequencedSkyframeExecutor.tracksStateForIncrementality
+    // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:461 SequencedSkyframeExecutor.tracksStateForIncrementality
     pub fn tracks_state_for_incrementality(&self) -> bool {
         self.track_incremental_state
     }
@@ -854,7 +854,7 @@ impl CommandEnvironment {
 
     /// Returns the module environment, which modules use to request an abrupt exit of this
     /// command from any thread.
-    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:556 CommandEnvironment.getBlazeModuleEnvironment
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:515 CommandEnvironment.getBlazeModuleEnvironment
     pub fn get_blaze_module_environment(&self) -> &BlazeModuleEnvironment {
         &self.blaze_module_environment
     }
@@ -882,7 +882,7 @@ impl CommandEnvironment {
     /// exit code from modules, or `None` if no modules requested an abrupt exit.
     ///
     /// Always returns the same value on subsequent calls.
-    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:781 CommandEnvironment.finalizeDetailedExitCode
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:782 CommandEnvironment.finalizeDetailedExitCode
     fn finalize_detailed_exit_code(&self) -> Option<DetailedExitCode> {
         {
             // Set the pending exception so that further calls to exit(AbruptExitException) don't
@@ -909,7 +909,7 @@ impl CommandEnvironment {
     /// Hook method called by the BlazeCommandDispatcher right before the dispatch of each
     /// command ends (while its outcome can still be modified).
     ///
-    // PORT: skipped, a direct call to its one subscriber (commands/bep.rs): CommandPrecompleteEvent.getExitCode
+    // PORT: skipped, a direct call to its one subscriber (commands/bep.rs): CommandPrecompleteEvent.<init>, CommandPrecompleteEvent.getExitCode
     /// PORT: the deprecated `CommandPrecompleteEvent(ExitCode)` posted here has no subscriber
     /// in Blaze; the metrics collector's `CommandPrecompleteEvent` is posted by `afterCommand`
     /// (see `BlazeCommandDispatcher::after_command`).
@@ -923,7 +923,7 @@ impl CommandEnvironment {
 
     /// Returns the current exit code requested by modules, or `None` if no exit has been
     /// requested.
-    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:810 CommandEnvironment.getPendingDetailedExitCode
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:811 CommandEnvironment.getPendingDetailedExitCode
     fn get_pending_detailed_exit_code(&self) -> Option<DetailedExitCode> {
         self.get_pending_exception()
             .map(|e| e.get_detailed_exit_code().clone())

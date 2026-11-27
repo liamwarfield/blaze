@@ -11,14 +11,16 @@ use super::trace_data::TraceData;
 macro_rules! colors {
     ($($name:ident = $value:expr),* $(,)?) => {
         /// The revered color for rendering the bar chart.
-        // Java: com/google/devtools/build/lib/profiler/CounterSeriesTask.java:31 CounterSeriesTask.Color
+        // Java: com/google/devtools/build/lib/profiler/CounterSeriesTask.java:29 CounterSeriesTask.Color
         #[allow(non_camel_case_types)]
         #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
         pub enum CounterSeriesTaskColor {
             $($name),*
         }
 
+        // PORT: skipped, the macro's arms give each constant its value: CounterSeriesTask.Color.<init>
         impl CounterSeriesTaskColor {
+            // Java: com/google/devtools/build/lib/profiler/CounterSeriesTask.java:74 CounterSeriesTask.Color.value
             pub fn value(self) -> &'static str {
                 match self {
                     $(CounterSeriesTaskColor::$name => $value),*
@@ -72,7 +74,7 @@ colors! {
 ///
 /// `lane_name`: series with the same lane name should be stacked when displaying.
 /// `color`: if `None`, the profile viewer will pick a color automatically.
-// Java: com/google/devtools/build/lib/profiler/CounterSeriesTask.java:29 CounterSeriesTask
+// Java: com/google/devtools/build/lib/profiler/CounterSeriesTask.java:27 CounterSeriesTask
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct CounterSeriesTask {
     lane_name: String,
@@ -110,7 +112,7 @@ impl CounterSeriesTask {
 /// point in time. Time is split into equal-sized buckets, and we compute one value per bucket. If
 /// a range partially overlaps a bucket, then the bucket is incremented by the fraction of
 /// overlap.
-// Java: com/google/devtools/build/lib/profiler/TimeSeries.java:28 TimeSeries
+// Java: com/google/devtools/build/lib/profiler/TimeSeries.java:27 TimeSeries
 pub struct TimeSeries {
     /// `startTime`, in signed nanoseconds (Java's `Duration` is signed).
     start_time: i128,
@@ -127,7 +129,7 @@ fn to_millis(nanos: i128) -> i64 {
 }
 
 impl TimeSeries {
-    // Java: com/google/devtools/build/lib/profiler/TimeSeries.java:36 TimeSeries.<init>
+    // Java: com/google/devtools/build/lib/profiler/TimeSeries.java:35 TimeSeries.<init>
     pub fn new(start_time: Duration, bucket_duration: Duration) -> Self {
         Self::new_nanos(start_time.as_nanos() as i64, bucket_duration)
     }
@@ -141,13 +143,13 @@ impl TimeSeries {
         }
     }
 
-    // Java: com/google/devtools/build/lib/profiler/TimeSeries.java:41 TimeSeries.addRange
+    // Java: com/google/devtools/build/lib/profiler/TimeSeries.java:40 TimeSeries.addRange
     pub fn add_range(&self, start_time: Duration, end_time: Duration) {
         self.add_range_value(start_time, end_time, 1.0);
     }
 
     /// Adds a new range to the time series, by increasing every affected bucket by value.
-    // Java: com/google/devtools/build/lib/profiler/TimeSeries.java:46 TimeSeries.addRange
+    // Java: com/google/devtools/build/lib/profiler/TimeSeries.java:45 TimeSeries.addRange
     pub fn add_range_value(&self, range_start: Duration, range_end: Duration, value: f64) {
         // Compute times relative to start and their positions in the data array.
         let start = self.start_time;
@@ -214,7 +216,7 @@ impl TimeSeries {
         );
     }
 
-    // Java: com/google/devtools/build/lib/profiler/TimeSeries.java:92 TimeSeries.toDoubleArray
+    // Java: com/google/devtools/build/lib/profiler/TimeSeries.java:93 TimeSeries.toDoubleArray
     pub fn to_double_array(&self, len: usize) -> Vec<f64> {
         let data = self.data.lock();
         let mut out = vec![0.0; len];
@@ -227,7 +229,7 @@ impl TimeSeries {
 /// Used to inject a whole counter series (or even multiple) in one go in the JSON trace profile;
 /// these could be used to represent CPU or memory usages over the course of an invocation (as
 /// opposed to individual tasks such as executing an action).
-// Java: com/google/devtools/build/lib/profiler/CounterSeriesTraceData.java:31 CounterSeriesTraceData
+// Java: com/google/devtools/build/lib/profiler/CounterSeriesTraceData.java:30 CounterSeriesTraceData
 pub struct CounterSeriesTraceData {
     counter_series_map: Vec<(CounterSeriesTask, Vec<f64>)>,
     /// `profileStart` (a signed `Duration` on the profiler's clock), in nanoseconds.
@@ -246,7 +248,7 @@ impl CounterSeriesTraceData {
     /// all have the same length; - display name and color are picked from the first profile task
     /// in the map. However, colors the remaining series are picked arbitrarily by the Trace
     /// renderer.
-    // Java: com/google/devtools/build/lib/profiler/CounterSeriesTraceData.java:47 CounterSeriesTraceData.<init>
+    // Java: com/google/devtools/build/lib/profiler/CounterSeriesTraceData.java:46 CounterSeriesTraceData.<init>
     pub fn new(
         counter_series_map: Vec<(CounterSeriesTask, Vec<f64>)>,
         profile_start: i64,
@@ -280,7 +282,7 @@ impl CounterSeriesTraceData {
 }
 
 impl TraceData for CounterSeriesTraceData {
-    // Java: com/google/devtools/build/lib/profiler/CounterSeriesTraceData.java:75 CounterSeriesTraceData.writeTraceData
+    // Java: com/google/devtools/build/lib/profiler/CounterSeriesTraceData.java:73 CounterSeriesTraceData.writeTraceData
     fn write_trace_data(
         &self,
         json_writer: &mut JsonWriter<&mut dyn Write>,

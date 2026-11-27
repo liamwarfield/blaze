@@ -278,6 +278,9 @@ pub struct ExecutionProgressReceiverSetup {
     event_bus: Arc<dyn EventBus>,
     set_execution_progress_receiver: Box<dyn Fn(Arc<ExecutionProgressReceiver>) + Send + Sync>,
     progress_receiver_started: AtomicBool,
+    /// The `exclusiveTestsCount` of the receiver: 0 with merged analysis and execution (Java's
+    /// TODO); see [`ExecutionProgressReceiverSetup::set_exclusive_tests_count`].
+    exclusive_tests_count: std::sync::atomic::AtomicI32,
 }
 
 impl ExecutionProgressReceiverSetup {
@@ -289,7 +292,21 @@ impl ExecutionProgressReceiverSetup {
             event_bus,
             set_execution_progress_receiver,
             progress_receiver_started: AtomicBool::new(false),
+            exclusive_tests_count: std::sync::atomic::AtomicI32::new(0),
         }
+    }
+
+    /// Without merged analysis and execution, Java's `SkyframeBuilder.buildArtifacts` creates
+    /// the build's receiver itself, with `countTestActions(exclusiveTests)` (the test status
+    /// artifacts of the exclusive tests, which run after the main evaluation).
+    ///
+    /// PORT: Blaze creates the receiver of both paths here, on the first
+    /// `SomeExecutionStartedEvent`; the path without merged analysis and execution sets the count
+    /// before its evaluation starts.
+    // Java: com/google/devtools/build/lib/buildtool/SkyframeBuilder.java:133 SkyframeBuilder.buildArtifacts
+    pub fn set_exclusive_tests_count(&self, exclusive_tests_count: i32) {
+        self.exclusive_tests_count
+            .store(exclusive_tests_count, Ordering::SeqCst);
     }
 
     /// `@Subscribe setupExecutionProgressReceiver(SomeExecutionStartedEvent)`.
@@ -302,7 +319,7 @@ impl ExecutionProgressReceiverSetup {
         {
             // TODO(leba): count test actions
             let execution_progress_receiver = Arc::new(ExecutionProgressReceiver::new(
-                /* exclusive_tests_count= */ 0,
+                self.exclusive_tests_count.load(Ordering::SeqCst),
             ));
             self.event_bus
                 .post(Arc::new(ExecutionProgressReceiverAvailableEvent::new(

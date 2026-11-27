@@ -115,6 +115,21 @@ impl<'v> StarlarkValue<'v> for ExecutionInfo {
         vec!["exec_group".to_owned(), "requirements".to_owned()]
     }
 
+    // Java: com/google/devtools/build/lib/packages/NativeInfo.java:97 NativeInfo.equals
+    fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
+        crate::info::native_info_equals(self, &EXECUTION_INFO.key(), other)
+    }
+
+    // Java: com/google/devtools/build/lib/packages/NativeInfo.java:115 NativeInfo.hashCode
+    fn write_hash(&self, hasher: &mut starlark_map::StarlarkHasher) -> starlark::Result<()> {
+        crate::info::native_info_write_hash(self, &EXECUTION_INFO.key(), hasher)
+    }
+
+    // Java: com/google/devtools/build/lib/packages/NativeInfo.java:125 NativeInfo.repr
+    fn collect_repr(&self, collector: &mut String) {
+        crate::info::native_info_collect_repr(self, collector)
+    }
+
     fn provide(&'v self, demand: &mut Demand<'_, 'v>) {
         demand.provide_value(InfoProviderKey(EXECUTION_INFO.key()));
         demand.provide_value(DeeplyImmutable);

@@ -608,11 +608,13 @@ fn create_attribute<'v>(
                 "late-bound attributes must not have a split configuration transition",
             ));
         }
-        if is_split && materializer.is_some() {
-            return Err(errorf(
-                "materializing attributes must not have a split configuration transition",
-            ));
-        }
+        // Java: `isSplit && defaultValue instanceof MaterializingDefault` throws
+        // "materializing attributes must not have a split configuration transition".
+        // `defaultValue` is the `default` argument, a Starlark value, which is never a
+        // MaterializingDefault (the materializer is the `materializer` argument): the check
+        // never fails, and a materializing attribute may have a split transition
+        // (DormantDependencyTest.testSplitConfigurationOnMaterializingAttribute).
+        // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAttrModule.java:484 StarlarkAttrModule.createAttribute
 
         // Check if this transition includes an analysis test or a Starlark transition.
         if converted.is_starlark_defined {

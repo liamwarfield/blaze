@@ -31,6 +31,7 @@ use starlark::values::Heap;
 use starlark::values::NoSerialize;
 use starlark::values::StarlarkValue;
 use starlark::values::Value;
+use starlark::values::ValueLike;
 use starlark::values::starlark_value;
 
 use crate::bzlmod::eval_thread_context::ModuleExtensionEvalStarlarkThreadContext;
@@ -191,6 +192,9 @@ pub struct RepositoryCtx {
     /// `os` (Java `StarlarkBaseExternalContext.osObject`).
     #[allocative(skip)]
     pub os: crate::starlark::os::StarlarkOS,
+    /// Java `identifyingStringForLogging`, for the `os` field's `WorkspaceRuleEvent` (an
+    /// attribute cannot reach the thread payload).
+    pub identifying_string_for_logging: String,
 }
 
 starlark_simple_value!(RepositoryCtx);
@@ -216,6 +220,57 @@ impl<'v> StarlarkValue<'v> for RepositoryCtx {
     }
 }
 
+/// `repository_ctx` with `load_wasm` and `execute_wasm`, for a thread whose semantics have
+/// `--experimental_repository_ctx_execute_wasm` (Java: methods with `enableOnlyWithFlag` are
+/// not members of the object otherwise: `getattr` fails at the dot, `hasattr` and `dir` do not
+/// list them).
+///
+/// PORT: starlark-rust's method table is per type, so the flag picks one of two types.
+#[derive(Debug, ProvidesStaticType, NoSerialize, Allocative)]
+pub struct RepositoryCtxWithWasm(pub RepositoryCtx);
+
+starlark_simple_value!(RepositoryCtxWithWasm);
+
+impl fmt::Display for RepositoryCtxWithWasm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+fn repository_ctx_with_wasm_methods(builder: &mut MethodsBuilder) {
+    repository_ctx_all_methods(builder);
+    crate::starlark::base_external_context::wasm_methods(builder);
+}
+
+#[starlark_value(type = "repository_ctx")]
+impl<'v> StarlarkValue<'v> for RepositoryCtxWithWasm {
+    fn get_methods() -> Option<&'static Methods> {
+        static RES: MethodsStatic =
+            MethodsStatic::new("repository_ctx", repository_ctx_with_wasm_methods);
+        Some(RES.methods())
+    }
+}
+
+/// Allocates the `repository_ctx` handle, with the wasm methods when `execute_wasm` is set.
+pub fn alloc_repository_ctx<'v>(
+    heap: Heap<'v>,
+    ctx: RepositoryCtx,
+    execute_wasm: bool,
+) -> Value<'v> {
+    if execute_wasm {
+        heap.alloc(RepositoryCtxWithWasm(ctx))
+    } else {
+        heap.alloc(ctx)
+    }
+}
+
+/// The [`RepositoryCtx`] of a `repository_ctx` handle of either type.
+pub fn repository_ctx_of<'v>(value: Value<'v>) -> Option<&'v RepositoryCtx> {
+    value
+        .downcast_ref::<RepositoryCtx>()
+        .or_else(|| value.downcast_ref::<RepositoryCtxWithWasm>().map(|c| &c.0))
+}
+
 /// The `module_ctx` object passed to a module extension implementation.
 // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionContext.java:52 ModuleExtensionContext
 #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative)]
@@ -228,6 +283,8 @@ pub struct ModuleCtx {
     /// The values behind `modules`, `facts`, ... (attributes cannot reach the thread payload).
     #[allocative(skip)]
     pub fields: std::sync::Arc<crate::bzlmod::module_extension_context::ModuleCtxFields>,
+    /// Java `identifyingStringForLogging` (see [`RepositoryCtx`]).
+    pub identifying_string_for_logging: String,
 }
 
 starlark_simple_value!(ModuleCtx);
@@ -271,4 +328,57 @@ impl<'v> StarlarkValue<'v> for ModuleCtx {
             None => Vec::new(),
         }
     }
+}
+
+/// `module_ctx` with `load_wasm` and `execute_wasm` (see [`RepositoryCtxWithWasm`]).
+#[derive(Debug, ProvidesStaticType, NoSerialize, Allocative)]
+pub struct ModuleCtxWithWasm(pub ModuleCtx);
+
+starlark_simple_value!(ModuleCtxWithWasm);
+
+impl fmt::Display for ModuleCtxWithWasm {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.0, f)
+    }
+}
+
+fn module_ctx_with_wasm_methods(builder: &mut MethodsBuilder) {
+    module_ctx_all_methods(builder);
+    crate::starlark::base_external_context::wasm_methods(builder);
+}
+
+#[starlark_value(type = "module_ctx")]
+impl<'v> StarlarkValue<'v> for ModuleCtxWithWasm {
+    fn get_methods() -> Option<&'static Methods> {
+        static RES: MethodsStatic = MethodsStatic::new("module_ctx", module_ctx_with_wasm_methods);
+        Some(RES.methods())
+    }
+
+    fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
+        self.0.get_attr(attribute, heap)
+    }
+
+    fn has_attr(&self, attribute: &str, heap: Heap<'v>) -> bool {
+        self.0.has_attr(attribute, heap)
+    }
+
+    fn dir_attr(&self) -> Vec<String> {
+        self.0.dir_attr()
+    }
+}
+
+/// Allocates the `module_ctx` handle, with the wasm methods when `execute_wasm` is set.
+pub fn alloc_module_ctx<'v>(heap: Heap<'v>, ctx: ModuleCtx, execute_wasm: bool) -> Value<'v> {
+    if execute_wasm {
+        heap.alloc(ModuleCtxWithWasm(ctx))
+    } else {
+        heap.alloc(ctx)
+    }
+}
+
+/// The [`ModuleCtx`] of a `module_ctx` handle of either type.
+pub fn module_ctx_of<'v>(value: Value<'v>) -> Option<&'v ModuleCtx> {
+    value
+        .downcast_ref::<ModuleCtx>()
+        .or_else(|| value.downcast_ref::<ModuleCtxWithWasm>().map(|c| &c.0))
 }

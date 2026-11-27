@@ -79,6 +79,9 @@ fn contains_word(haystack: &str, name: &str) -> bool {
 
 impl Guard {
     /// `isObjectAccessibleUsingSemantics(semantics, clientData)`, where the client data is the
+    // Java: com/google/devtools/build/lib/cmdline/BazelCompileContext.java:33 BazelCompileContext.label
+    // Java: com/google/devtools/build/lib/cmdline/BazelCompileContext.java:37 BazelCompileContext.filename
+    // Java: com/google/devtools/build/lib/cmdline/BazelCompileContext.java:39 BazelCompileContext.create
     /// `BazelCompileContext` of the file being compiled (`compile_label`; `None` when there is no
     /// such context).
     pub fn is_object_accessible_using_semantics(

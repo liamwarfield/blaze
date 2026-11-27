@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""Runs the Starlark debugger scenario against the oracle and Blaze, compares. See `e2e help`."""
+
+import os
+import shutil
+import socket
+import subprocess
+import sys
+import time
+
+USAGE = """\
+usage: scripts/starlark-debug/e2e [--blaze <binary>] [--side oracle|blaze|both]
+       scripts/starlark-debug/e2e help
+
+Writes the probe workspace to ~/.cache/blaze/work/ea-7/dbg-ws (MODULE.bazel, pkg/BUILD,
+pkg/defs.bzl), then for each side runs
+
+  <binary> --max_idle_secs=60 --output_base=<side's output base> build --jobs=4
+      --experimental_skylark_debug --experimental_skylark_debug_server_port=<free port>
+      //pkg:t
+
+with scripts/starlark-debug/client playing the scenario against its debug server, then
+`shutdown`. The transcripts go to ~/.cache/blaze/work/ea-7/dbg-<side>.txt (the client's output,
+then the build's exit code); with both sides the script prints a unified diff and exits 1 when
+they differ. The oracle is ~/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64; Blaze defaults to
+target/debug/blaze. Output bases: ~/.cache/blaze/work/ea-7/dbg-ob-<side> (the oracle's under
+--output_user_root=~/.cache/blaze/oracle-out/ur, which holds its install base).
+
+Run it inside `systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0`
+(AGENTS.md).
+"""
+
+HOME = os.path.expanduser("~")
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+WORK = f"{HOME}/.cache/blaze/work/ea-7"
+WS = f"{WORK}/dbg-ws"
+ORACLE = f"{HOME}/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64"
+REPO_CACHE = f"{HOME}/.cache/blaze/repo-cache"
+CLIENT = os.path.join(REPO, "scripts/starlark-debug/client")
+
+FILES = {
+    "MODULE.bazel": "",
+    "pkg/defs.bzl": """\
+def _impl(ctx):
+    items = [ctx.label.name, "x"]
+    n = len(items)
+    out = ctx.actions.declare_file(ctx.label.name + ".txt")
+    ctx.actions.write(out, "\\n".join(items) + str(n))
+    return [DefaultInfo(files = depset([out]))]
+
+my_rule = rule(implementation = _impl, attrs = {"v": attr.int()})
+
+def helper(name):
+    vals = [1, 2, 3]
+    total = 0
+    for v in vals:
+        total += v
+    return total
+""",
+    "pkg/BUILD": """\
+load(":defs.bzl", "helper", "my_rule")
+
+x = helper("a")
+my_rule(name = "t", v = x)
+""",
+}
+
+
+def free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def write_workspace():
+    if os.path.exists(WS):
+        shutil.rmtree(WS)
+    for rel, content in FILES.items():
+        path = os.path.join(WS, rel)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(content)
+
+
+def run_side(side, binary):
+    startup = [binary, "--nohome_rc", "--nosystem_rc", "--max_idle_secs=60",
+               f"--output_base={WORK}/dbg-ob-{side}"]
+    if side == "oracle":
+        startup.insert(1, f"--output_user_root={HOME}/.cache/blaze/oracle-out/ur")
+    env = {"HOME": HOME, "PATH": "/usr/bin:/bin", "USER": os.environ.get("USER", "")}
+    port = free_port()
+    build = subprocess.Popen(
+        startup + ["build", "--jobs=4", f"--repository_cache={REPO_CACHE}", "--color=no",
+                   "--curses=no", "--experimental_skylark_debug",
+                   f"--experimental_skylark_debug_server_port={port}", "//pkg:t"],
+        cwd=WS, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    client = subprocess.run([sys.executable, CLIENT, str(port), WS, "--timeout", "180"],
+                            capture_output=True, text=True, timeout=600)
+    try:
+        out, err = build.communicate(timeout=300)
+    except subprocess.TimeoutExpired:
+        build.kill()
+        out, err = build.communicate()
+    subprocess.run(startup + ["shutdown"], cwd=WS, env=env, capture_output=True, timeout=120)
+    transcript = client.stdout
+    if client.returncode != 0:
+        transcript += f"(client exit {client.returncode})\n{client.stderr}"
+    transcript += f"build exit code: {build.returncode}\n"
+    with open(f"{WORK}/dbg-{side}.txt", "w") as f:
+        f.write(transcript)
+    with open(f"{WORK}/dbg-{side}.stderr", "wb") as f:
+        f.write(err)
+    return transcript
+
+
+def main(argv):
+    if argv[:1] in (["help"], ["--help"]):
+        print(USAGE)
+        return 0
+    blaze, sides = os.path.join(REPO, "target/debug/blaze"), "both"
+    args = list(argv)
+    while args:
+        a = args.pop(0)
+        if a == "--blaze" and args:
+            blaze = args.pop(0)
+        elif a == "--side" and args:
+            sides = args.pop(0)
+        else:
+            print(USAGE)
+            return 2
+    os.makedirs(WORK, exist_ok=True)
+    write_workspace()
+    results = {}
+    for side, binary in (("oracle", ORACLE), ("blaze", blaze)):
+        if sides in (side, "both"):
+            results[side] = run_side(side, binary)
+            print(f"{side}: {WORK}/dbg-{side}.txt")
+    if len(results) == 2:
+        if results["oracle"] == results["blaze"]:
+            print("transcripts equal")
+            return 0
+        import difflib
+        sys.stdout.writelines(difflib.unified_diff(
+            results["oracle"].splitlines(True), results["blaze"].splitlines(True),
+            "oracle", "blaze"))
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

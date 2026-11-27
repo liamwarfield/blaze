@@ -12,6 +12,20 @@ use std::collections::HashSet;
 /// PORT: Java packs groups into one flat array with size markers; the grouping and order are what
 /// matter, so this is a `Vec` of groups.
 // Java: com/google/devtools/build/skyframe/GroupedDeps.java:52 GroupedDeps
+// PORT: skipped, the packed flat array and its compressed forms (a Vec of groups here): GroupedDeps.newSmallArrayList, GroupedDeps.compressionCase, GroupedDeps.compressedToIterable, GroupedDeps.castAsCompressed, GroupedDeps.compress, GroupedDeps.decompress, GroupedDeps.markNextGroup
+// PORT: skipped, iterators over the packed array (slices and iterators of the groups here): GroupedDeps.CollectionView.iterator, GroupedDeps.CollectionView.size, GroupedDeps.UngroupedIterator.<init>, GroupedDeps.UngroupedIterator.hasNext, GroupedDeps.UngroupedIterator.next, GroupedDeps.UngroupedIterator.advanceIfSizeMarker, GroupedDeps.GroupedIterator.hasNext, GroupedDeps.GroupedIterator.next, GroupedDeps.iterator
+// PORT: Java's WithHashSet (a lookup set beside the array) is this type: `contains` and `to_set`
+// search the groups.
+// Java: com/google/devtools/build/skyframe/GroupedDeps.java:534 GroupedDeps.WithHashSet.appendSingleton
+// Java: com/google/devtools/build/skyframe/GroupedDeps.java:540 GroupedDeps.WithHashSet.appendGroup
+// Java: com/google/devtools/build/skyframe/GroupedDeps.java:546 GroupedDeps.WithHashSet.appendGroups
+// Java: com/google/devtools/build/skyframe/GroupedDeps.java:552 GroupedDeps.WithHashSet.remove
+// Java: com/google/devtools/build/skyframe/GroupedDeps.java:558 GroupedDeps.WithHashSet.contains
+// Java: com/google/devtools/build/skyframe/GroupedDeps.java:563 GroupedDeps.WithHashSet.toSet
+// Java: com/google/devtools/build/skyframe/GroupedDeps.java:252 GroupedDeps.numElements
+// Java: com/google/devtools/build/skyframe/GroupedDeps.java:327 GroupedDeps.isEmpty
+// Java: com/google/devtools/build/skyframe/GroupedDeps.java:400 GroupedDeps.hashCode
+// Java: com/google/devtools/build/skyframe/GroupedDeps.java:498 GroupedDeps.toString
 #[derive(Clone, Default)]
 pub struct GroupedDeps {
     groups: Vec<Vec<SkyKey>>,

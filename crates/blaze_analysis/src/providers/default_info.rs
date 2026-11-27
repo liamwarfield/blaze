@@ -135,6 +135,9 @@ impl<'v, V: ValueLike<'v>> DefaultInfoGen<V> {
     // Java: com/google/devtools/build/lib/starlarkbuildapi/DefaultInfoApi.java:53 DefaultInfoApi.getFiles
     // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:108 DefaultInfo.DefaultDefaultInfo.getFiles
     // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:153 DefaultInfo.DelegatingDefaultInfo.getFiles
+    ///
+    /// For immediate reading by Rust code (see `depsets::depset_value_in_command`); the
+    /// `files` field of Starlark is [`DefaultInfoGen::get_files_value`].
     pub fn get_files(&self) -> Option<Value<'v>> {
         match &self.data {
             DefaultInfoData::Default { .. } => {
@@ -143,7 +146,20 @@ impl<'v, V: ValueLike<'v>> DefaultInfoGen<V> {
             }
             DefaultInfoData::Delegating { files_to_build, .. } => {
                 // Java: Depset.of(Artifact.class, target.getProvider(FileProvider.class).getFilesToBuild())
-                Some(depset_value(&artifacts_to_depset(files_to_build)))
+                Some(crate::rule::depsets::depset_value_in_command(
+                    &artifacts_to_depset(files_to_build),
+                ))
+            }
+        }
+    }
+
+    /// [`DefaultInfoGen::get_files`] as a value of `heap` (the `files` field).
+    // Java: com/google/devtools/build/lib/starlarkbuildapi/DefaultInfoApi.java:53 DefaultInfoApi.getFiles
+    fn get_files_value(&self, heap: Heap<'v>) -> Option<Value<'v>> {
+        match &self.data {
+            DefaultInfoData::Default { .. } => self.get_files(),
+            DefaultInfoData::Delegating { files_to_build, .. } => {
+                Some(depset_value(heap, &artifacts_to_depset(files_to_build)))
             }
         }
     }
@@ -298,7 +314,7 @@ where
 {
     fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         match attribute {
-            "files" => Some(self.get_files().unwrap_or_else(Value::new_none)),
+            "files" => Some(self.get_files_value(heap).unwrap_or_else(Value::new_none)),
             "files_to_run" => Some(self.files_to_run_value(heap)),
             "data_runfiles" => Some(self.data_runfiles_value(heap)),
             "default_runfiles" => Some(self.default_runfiles_value(heap)),
@@ -314,6 +330,21 @@ where
         let mut v: Vec<String> = DEFAULT_INFO_FIELDS.iter().map(|s| s.to_string()).collect();
         v.sort();
         v
+    }
+
+    // Java: com/google/devtools/build/lib/packages/NativeInfo.java:97 NativeInfo.equals
+    fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
+        crate::info::native_info_equals(self, &DEFAULT_INFO.key(), other)
+    }
+
+    // Java: com/google/devtools/build/lib/packages/NativeInfo.java:115 NativeInfo.hashCode
+    fn write_hash(&self, hasher: &mut starlark_map::StarlarkHasher) -> starlark::Result<()> {
+        crate::info::native_info_write_hash(self, &DEFAULT_INFO.key(), hasher)
+    }
+
+    // Java: com/google/devtools/build/lib/packages/NativeInfo.java:125 NativeInfo.repr
+    fn collect_repr(&self, collector: &mut String) {
+        crate::info::native_info_collect_repr(self, collector)
     }
 
     // Java: com/google/devtools/build/lib/analysis/DefaultInfo.java:44 DefaultInfo.getProvider

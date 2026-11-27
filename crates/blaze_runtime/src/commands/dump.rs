@@ -100,7 +100,7 @@ impl BlazeCommand for DumpCommand {
 
 impl DumpCommand {
     /// The `try` block of `exec`.
-    // Java: com/google/devtools/build/lib/runtime/commands/DumpCommand.java:360 DumpCommand.exec
+    // Java: com/google/devtools/build/lib/runtime/commands/DumpCommand.java:329 DumpCommand.exec
     fn dump(
         &self,
         env: &mut CommandEnvironment,
@@ -150,6 +150,7 @@ impl DumpCommand {
         if dump_options.memory.is_some() {
             // SkyframeMemoryDumper measures the JVM objects of Skyframe values (RamUsageEstimator,
             // object graph walking): no Rust counterpart.
+            // PORT: skipped, memory instrumentation (dump --memory; out of scope by contract): DumpCommand.getConfigurationKey, DumpCommand.getMemoryDumpSkyKey, DumpCommand.dumpSkyframeMemory
             blaze_util::unported!("DumpCommand.dumpSkyframeMemory");
         }
 
@@ -356,7 +357,7 @@ fn dump_action_cache(env: &CommandEnvironment, out: &mut PrintStream) -> bool {
     let reporter = env.get_reporter();
     // env.getBlazeWorkspace().getOrLoadPersistentActionCache(reporter).
     // PORT: no action cache stays loaded between commands; it is loaded from the output base.
-    // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:386 BlazeWorkspace.getOrLoadPersistentActionCache
+    // Java: com/google/devtools/build/lib/runtime/BlazeWorkspace.java:387 BlazeWorkspace.getOrLoadPersistentActionCache
     let output_base = env.get_output_base();
     match CompactPersistentActionCache::create(
         &output_base.get_child("action_cache"),
@@ -421,7 +422,10 @@ fn dump_rule_classes(out: &mut PrintStream) {
 }
 
 /// `SkyKeyStats`: a rule class's (or aspect class's) count and action count.
-// Java: com/google/devtools/build/lib/skyframe/SkyKeyStats.java SkyKeyStats
+// Java: com/google/devtools/build/lib/skyframe/SkyKeyStats.java:19 SkyKeyStats
+// PORT: skipped, built with a struct literal (`count` and `action_count` start at 0): SkyKeyStats.<init>
+// PORT: skipped, the fields are read directly in this file: SkyKeyStats.getKey, SkyKeyStats.getName, SkyKeyStats.getCount, SkyKeyStats.getActionCount
+// PORT: skipped, no caller at the pin (getSkyframeStats counts with countWithActions): SkyKeyStats.count
 struct SkyKeyStats {
     key: String,
     name: String,

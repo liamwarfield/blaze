@@ -10,9 +10,9 @@
 //! `shouldDeleteWorkingDirectoryOnClose`) or raise `NeedsSkyframeRestartException` /
 //! `InterruptedException` are implemented on [`ExternalContext`].
 //!
-//! PORT: `WorkspaceRuleEvent`s (Java posts one per call to the listener) are not ported; they
-//! are only consumed by `--experimental_workspace_rules_log_file`, which Blaze does not support.
-//! Profiler spans are skipped.
+//! Each call posts its `WorkspaceRuleEvent` (`crate::workspace_rule_event`) to the listener, as
+//! Java does; `--experimental_workspace_rules_log_file` writes them (blaze_runtime
+//! `WorkspaceRuleModule`). Profiler spans are skipped.
 #![allow(non_snake_case)]
 
 use std::collections::HashMap;
@@ -77,8 +77,6 @@ use starlark::values::starlark_value;
 
 use super::context::EvaluationAbort;
 use super::context::ExternalContext;
-use super::context::ModuleCtx;
-use super::context::RepositoryCtx;
 use super::execution_result::StarlarkExecutionResult;
 use super::os::StarlarkOS;
 use super::path::StarlarkPath;
@@ -89,6 +87,7 @@ use crate::repository::repo_recorded_input::RepoCacheFriendlyPath;
 use crate::repository::repo_recorded_input::RepoRecordedInput;
 use crate::repository::repo_recorded_input::RepoRecordedInputWithValue;
 use crate::repository::repository_utils;
+use crate::workspace_rule_event::WorkspaceRuleEvent;
 
 /// Java `EvalException(msg)` / `Starlark.errorf(...)` thrown by a Starlark method.
 ///
@@ -1534,10 +1533,29 @@ fn get_urls(
 }
 
 /// Java `thread.getCallerLocation()` as an event location.
-fn caller_location(eval: &Evaluator<'_, '_, '_>) -> blaze_events::Location {
+pub(crate) fn caller_location(eval: &Evaluator<'_, '_, '_>) -> blaze_events::Location {
     match blaze_starlark::env::caller_location(eval) {
         Some(l) => blaze_events::Location::new(l.file, l.line as i32, l.column as i32),
         None => blaze_events::Location::builtin().clone(),
+    }
+}
+
+/// `env.getListener().post(w)` of a `WorkspaceRuleEvent`.
+pub(crate) fn post_event(event: WorkspaceRuleEvent) {
+    super::thread::post(Arc::new(event));
+}
+
+/// Java `toString()` of a `string | Label | path` argument (`Label.toString` is the canonical
+/// form, `StarlarkPath.toString` the path).
+fn path_param_to_string(v: Value<'_>) -> String {
+    if let Some(s) = v.unpack_str() {
+        s.to_owned()
+    } else if let Some(l) = v.downcast_ref::<LabelValue>() {
+        l.0.to_string()
+    } else if let Some(p) = v.downcast_ref::<StarlarkPath>() {
+        p.to_string()
+    } else {
+        v.to_str()
     }
 }
 
@@ -1812,7 +1830,15 @@ impl ExternalContext {
             };
 
         let output_path = self.get_path(output)?;
-        // PORT: WorkspaceRuleEvent.newDownloadEvent not posted (see module docs).
+        post_event(WorkspaceRuleEvent::new_download_event(
+            urls.iter().map(|u| u.to_string()),
+            &path_param_to_string(output),
+            sha256,
+            integrity,
+            executable,
+            Some(&self.base.identifying_string_for_logging),
+            Some(&location),
+        ));
 
         self.base
             .check_in_output_directory("write", &output_path)
@@ -1900,7 +1926,17 @@ impl ExternalContext {
 
         let rename_files_map = string_dict(rename_files, "rename_files")?;
 
-        // PORT: WorkspaceRuleEvent.newDownloadAndExtractEvent not posted (see module docs).
+        let w = WorkspaceRuleEvent::new_download_and_extract_event(
+            urls.iter().map(|u| u.to_string()),
+            &path_param_to_string(output),
+            sha256,
+            integrity,
+            type_,
+            &strip_prefix,
+            rename_files_map.clone(),
+            Some(&self.base.identifying_string_for_logging),
+            Some(&location),
+        );
 
         let output_path = self.get_path(output)?;
         self.base
@@ -1941,6 +1977,7 @@ impl ExternalContext {
         let (downloaded_path, download_directory) = match downloaded {
             Ok(r) => r,
             Err(e) => {
+                post_event(w);
                 if allow_fail {
                     return Ok(DownloadOutcome::Failed);
                 }
@@ -1952,6 +1989,7 @@ impl ExternalContext {
             // Java: throw checksumValidation
             return Err(repository_function_exception(checksum_validation));
         }
+        post_event(w);
         self.base
             .env
             .get()
@@ -2002,6 +2040,7 @@ impl ExternalContext {
         old_strip_prefix: &str,
         strip_components_i: &IntParam,
         type_: &str,
+        location: &blaze_events::Location,
     ) -> starlark::Result<()> {
         let strip_prefix = renamed_strip_prefix("extract", strip_prefix, old_strip_prefix)?;
         let strip_components = strip_components_i.to_int("strip_components")?;
@@ -2032,7 +2071,14 @@ impl ExternalContext {
 
         let rename_files_map = string_dict(rename_files, "rename_files")?;
 
-        // PORT: WorkspaceRuleEvent.newExtractEvent not posted (see module docs).
+        post_event(WorkspaceRuleEvent::new_extract_event(
+            &path_param_to_string(archive),
+            &path_param_to_string(output),
+            &strip_prefix,
+            rename_files_map.clone(),
+            Some(&self.base.identifying_string_for_logging),
+            Some(location),
+        ));
 
         self.base
             .env
@@ -2077,9 +2123,16 @@ impl ExternalContext {
         content: &str,
         executable: bool,
         _legacy_utf8: bool,
+        location: &blaze_events::Location,
     ) -> starlark::Result<()> {
         let p = self.get_path(path)?;
-        // PORT: WorkspaceRuleEvent.newFileEvent not posted (see module docs).
+        post_event(WorkspaceRuleEvent::new_file_event(
+            &p.to_string(),
+            content,
+            executable,
+            Some(&self.base.identifying_string_for_logging),
+            Some(location),
+        ));
         self.base
             .check_in_output_directory("write", &p)
             .map_err(check_in_output_directory_error)?;
@@ -2118,9 +2171,18 @@ impl ExternalContext {
     }
 
     // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:1631 StarlarkBaseExternalContext.readFile
-    fn read_file(&mut self, path: Value<'_>, watch: &str) -> starlark::Result<String> {
+    fn read_file(
+        &mut self,
+        path: Value<'_>,
+        watch: &str,
+        location: &blaze_events::Location,
+    ) -> starlark::Result<String> {
         let p = self.get_path(path)?;
-        // PORT: WorkspaceRuleEvent.newReadEvent not posted (see module docs).
+        post_event(WorkspaceRuleEvent::new_read_event(
+            &p.to_string(),
+            Some(&self.base.identifying_string_for_logging),
+            Some(location),
+        ));
         self.maybe_watch(&p, ShouldWatch::from_string(watch)?)?;
         if p.is_dir() {
             return Err(eval_error(format!(
@@ -2279,6 +2341,7 @@ impl ExternalContext {
         unchecked_environment: &[(Value<'_>, Value<'_>)],
         quiet: bool,
         override_working_directory: &str,
+        location: &blaze_events::Location,
     ) -> starlark::Result<StarlarkExecutionResult> {
         self.validate_execute_arguments(&arguments)?;
         let timeout = timeout_i.to_int("timeout")?;
@@ -2325,7 +2388,28 @@ impl ExternalContext {
             }
         }
 
-        // PORT: WorkspaceRuleEvent.newExecuteEvent not posted (see module docs).
+        post_event(WorkspaceRuleEvent::new_execute_event(
+            args.iter().cloned(),
+            timeout,
+            Some(
+                self.base
+                    .repo_env
+                    .iter()
+                    .filter(|(k, _)| !remove_repo_env_variables.contains(*k))
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            ),
+            Some(
+                force_repo_env_variables
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .collect(),
+            ),
+            self.base.working_directory.get_path_string(),
+            quiet,
+            Some(&self.base.identifying_string_for_logging),
+            Some(location),
+        ));
         StarlarkBaseExternalContext::create_directory(&self.base.working_directory)
             .map_err(repository_function_exception)?;
 
@@ -2367,8 +2451,16 @@ impl ExternalContext {
     }
 
     // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:2336 StarlarkBaseExternalContext.which
-    fn which(&mut self, program: &str) -> starlark::Result<Option<StarlarkPath>> {
-        // PORT: WorkspaceRuleEvent.newWhichEvent not posted (see module docs).
+    fn which(
+        &mut self,
+        program: &str,
+        location: &blaze_events::Location,
+    ) -> starlark::Result<Option<StarlarkPath>> {
+        post_event(WorkspaceRuleEvent::new_which_event(
+            program,
+            Some(&self.base.identifying_string_for_logging),
+            Some(location),
+        ));
         if program.contains('/') || program.contains('\\') {
             return Err(eval_error(format!(
                 "Program argument of which() may not contain a / or a \\ ('{}' given)",
@@ -2390,12 +2482,23 @@ impl ExternalContext {
     }
 }
 
+/// `identifyingStringForLogging` of a `repository_ctx` / `module_ctx` handle.
+fn identifying_string_of_ctx(this: Value<'_>) -> &str {
+    if let Some(ctx) = super::context::repository_ctx_of(this) {
+        return &ctx.identifying_string_for_logging;
+    }
+    if let Some(ctx) = super::context::module_ctx_of(this) {
+        return &ctx.identifying_string_for_logging;
+    }
+    panic!("internal error: a value that is not a repository_ctx or module_ctx")
+}
+
 /// The `os` of a `repository_ctx` / `module_ctx` handle.
 fn os_of_ctx(this: Value<'_>) -> starlark::Result<StarlarkOS> {
-    if let Some(ctx) = this.downcast_ref::<RepositoryCtx>() {
+    if let Some(ctx) = super::context::repository_ctx_of(this) {
         return Ok(ctx.os.clone());
     }
-    if let Some(ctx) = this.downcast_ref::<ModuleCtx>() {
+    if let Some(ctx) = super::context::module_ctx_of(this) {
         return Ok(ctx.os.clone());
     }
     Err(eval_error(
@@ -2409,14 +2512,6 @@ fn empty_string(heap: Heap<'_>) -> Value<'_> {
 }
 
 /// Java's error for a method hidden by `enableOnlyWithFlag`.
-fn no_such_method(this: Value<'_>, name: &str) -> starlark::Error {
-    eval_error(format!(
-        "'{}' value has no field or method '{}'",
-        this.get_type(),
-        name
-    ))
-}
-
 /// The Starlark methods of `StarlarkBaseExternalContext`, registered on both `repository_ctx`
 /// and `module_ctx`.
 #[starlark_module]
@@ -2544,6 +2639,7 @@ pub fn base_external_context_methods(builder: &mut MethodsBuilder) {
         check_path_param("extract", "output", output)?;
         let rename_files = dict_param("extract", "rename_files", rename_files)?;
         let strip_components = int_param("extract", "strip_components", strip_components, 0)?;
+        let location = caller_location(eval);
         let mut ctx = ExternalContext::from_eval(eval)?;
         ctx.extract(
             archive,
@@ -2554,6 +2650,7 @@ pub fn base_external_context_methods(builder: &mut MethodsBuilder) {
             stripPrefix,
             &strip_components,
             r#type,
+            &location,
         )?;
         Ok(NoneType)
     }
@@ -2569,8 +2666,9 @@ pub fn base_external_context_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<NoneType> {
         check_path_param("file", "path", path)?;
+        let location = caller_location(eval);
         let mut ctx = ExternalContext::from_eval(eval)?;
-        ctx.create_file(path, content, executable, legacy_utf8)?;
+        ctx.create_file(path, content, executable, legacy_utf8, &location)?;
         Ok(NoneType)
     }
 
@@ -2624,8 +2722,9 @@ pub fn base_external_context_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<String> {
         check_path_param("read", "path", path)?;
+        let location = caller_location(eval);
         let mut ctx = ExternalContext::from_eval(eval)?;
-        ctx.read_file(path, watch)
+        ctx.read_file(path, watch, &location)
     }
 
     /// Tells Bazel to watch for changes to the given path.
@@ -2658,7 +2757,10 @@ pub fn base_external_context_methods(builder: &mut MethodsBuilder) {
     // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:1832 StarlarkBaseExternalContext.getOS
     #[starlark(attribute)]
     fn os<'v>(this: Value<'v>) -> starlark::Result<StarlarkOS> {
-        // PORT: WorkspaceRuleEvent.newOsEvent not posted (see module docs).
+        post_event(WorkspaceRuleEvent::new_os_event(
+            Some(identifying_string_of_ctx(this)),
+            Some(blaze_events::Location::builtin()),
+        ));
         os_of_ctx(this)
     }
 
@@ -2697,133 +2799,16 @@ pub fn base_external_context_methods(builder: &mut MethodsBuilder) {
         }
         let timeout = int_param("execute", "timeout", timeout, 600)?;
         let environment = dict_param("execute", "environment", environment)?;
+        let location = caller_location(eval);
         let mut ctx = ExternalContext::from_eval(eval)?;
-        ctx.execute(args, &timeout, &environment, quiet, working_directory)
-    }
-
-    /// Load a WebAssembly module from a file on the filesystem.
-    // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:2166 StarlarkBaseExternalContext.loadWasm
-    fn load_wasm<'v>(
-        #[starlark(this)] this: Value<'v>,
-        path: Value<'v>,
-        #[starlark(require = named, default = "allocate")] allocate_fn: &str,
-        #[starlark(require = named, default = "auto")] watch: &str,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> starlark::Result<Value<'v>> {
-        // Java: enableOnlyWithFlag = EXPERIMENTAL_REPOSITORY_CTX_EXECUTE_WASM.
-        // PORT: starlark-rust cannot hide a method; it fails when called instead.
-        let enabled = {
-            let ctx = ExternalContext::from_eval(eval)?;
-            ctx.base
-                .starlark_semantics
-                .experimental_repository_ctx_execute_wasm
-        };
-        if !enabled {
-            return Err(no_such_method(this, "load_wasm"));
-        }
-        check_path_param("load_wasm", "path", path)?;
-        let heap = eval.heap();
-        let mut ctx = ExternalContext::from_eval(eval)?;
-        let p = ctx.get_path(path)?;
-        // PORT: WorkspaceRuleEvent.newLoadWasmEvent not posted (see module docs).
-        ctx.maybe_watch(&p, ShouldWatch::from_string(watch)?)?;
-        let module_content = read_content(&p).map_err(repository_function_exception)?;
-        super::wasm::new_wasm_module(heap, p, path, &module_content, allocate_fn)
-    }
-
-    /// Instantiate a WebAssembly module and execute the specified function.
-    // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:2271 StarlarkBaseExternalContext.executeWasm
-    fn execute_wasm<'v>(
-        #[starlark(this)] this: Value<'v>,
-        module: Value<'v>,
-        function: Value<'v>,
-        #[starlark(require = named)] input: Value<'v>,
-        #[starlark(require = named)] timeout: Option<Value<'v>>,
-        #[starlark(require = named)] memory_limit: Option<Value<'v>>,
-        #[starlark(require = named, default = "auto")] watch: &str,
-        eval: &mut Evaluator<'v, '_, '_>,
-    ) -> starlark::Result<Value<'v>> {
-        // Java: enableOnlyWithFlag = EXPERIMENTAL_REPOSITORY_CTX_EXECUTE_WASM.
-        let enabled = {
-            let ctx = ExternalContext::from_eval(eval)?;
-            ctx.base
-                .starlark_semantics
-                .experimental_repository_ctx_execute_wasm
-        };
-        if !enabled {
-            return Err(no_such_method(this, "execute_wasm"));
-        }
-        // The interpreter checks every argument against its `@Param` before the method runs.
-        let wasm_module = super::wasm::wasm_module_of(module);
-        if wasm_module.is_none() {
-            check_path_param("execute_wasm", "module", module).map_err(|_| {
-                param_type_error(
-                    "execute_wasm",
-                    "module",
-                    module,
-                    "string, Label, path, or wasm_module",
-                )
-            })?;
-        }
-        let Some(function) = function.unpack_str() else {
-            return Err(param_type_error(
-                "execute_wasm",
-                "function",
-                function,
-                "string",
-            ));
-        };
-        let Some(input) = input.unpack_str() else {
-            return Err(param_type_error("execute_wasm", "input", input, "string"));
-        };
-        let timeout_i = int_param("execute_wasm", "timeout", timeout, 600)?;
-        let mem_limit_i = match memory_limit {
-            None => LongParam::Long(67108864),
-            Some(v) => match <i64 as starlark::values::UnpackValue>::unpack_value(v)
-                .ok()
-                .flatten()
-            {
-                Some(l) => LongParam::Long(l),
-                None if v.get_type() == "int" => LongParam::OutOfRange(v.to_str()),
-                None => {
-                    return Err(param_type_error("execute_wasm", "memory_limit", v, "int"));
-                }
-            },
-        };
-
-        let heap = eval.heap();
-        let mut ctx = ExternalContext::from_eval(eval)?;
-        let path = match &wasm_module {
-            Some(m) => m.get_path().clone(),
-            None => ctx.get_path(module)?,
-        };
-
-        // StringUnsafe.getInternalStringBytes(input): the internal (Latin-1) bytes.
-        let input_bytes = blaze_util::string_encoding::latin1_encode(input).into_owned();
-        let timeout_seconds = timeout_i.to_int("timeout")?;
-        let mem_limit = mem_limit_i.to_long("memory_limit")?;
-
-        // PORT: WorkspaceRuleEvent.newExecuteWasmEvent not posted (see module docs).
-
-        // Math.round(timeoutSeconds * 1000L * timeoutScaling)
-        let timeout_millis = ((timeout_seconds as i64 * 1000) as f64 * ctx.base.timeout_scaling
-            + 0.5)
-            .floor() as i64;
-        let timeout = std::time::Duration::from_millis(timeout_millis.max(0) as u64);
-
-        let result = match wasm_module {
-            Some(m) => m.execute(function, &input_bytes, timeout, mem_limit)?,
-            None => {
-                ctx.maybe_watch(&path, ShouldWatch::from_string(watch)?)?;
-                let module_content = read_content(&path).map_err(repository_function_exception)?;
-                let loaded =
-                    super::wasm::new_wasm_module(heap, path, module, &module_content, "allocate")?;
-                super::wasm::wasm_module_of(loaded)
-                    .expect("a wasm_module")
-                    .execute(function, &input_bytes, timeout, mem_limit)?
-            }
-        };
-        Ok(heap.alloc(result))
+        ctx.execute(
+            args,
+            &timeout,
+            &environment,
+            quiet,
+            working_directory,
+            &location,
+        )
     }
 
     /// Returns the `path` of the corresponding program or `None` if there is no such program in
@@ -2834,8 +2819,9 @@ pub fn base_external_context_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = pos)] program: &str,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<NoneOr<StarlarkPath>> {
+        let location = caller_location(eval);
         let mut ctx = ExternalContext::from_eval(eval)?;
-        Ok(match ctx.which(program)? {
+        Ok(match ctx.which(program, &location)? {
             Some(p) => NoneOr::Other(p),
             None => NoneOr::None,
         })
@@ -3015,5 +3001,139 @@ mod tests {
             0xBF,
         ]);
         assert_eq!(basic_auth_value(&credentials), format!("Basic {expected}"));
+    }
+}
+
+/// `load_wasm` and `execute_wasm` of `StarlarkBaseExternalContext`, which Java declares with
+/// `enableOnlyWithFlag = EXPERIMENTAL_REPOSITORY_CTX_EXECUTE_WASM`: they exist on a context only
+/// when the flag is on (`crate::starlark::context` allocates the context type with or without
+/// them).
+#[starlark_module]
+pub fn wasm_methods(builder: &mut MethodsBuilder) {
+    /// Load a WebAssembly module from a file on the filesystem.
+    // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:2166 StarlarkBaseExternalContext.loadWasm
+    fn load_wasm<'v>(
+        #[starlark(this)] _this: Value<'v>,
+        path: Value<'v>,
+        #[starlark(require = named, default = "allocate")] allocate_fn: &str,
+        #[starlark(require = named, default = "auto")] watch: &str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<Value<'v>> {
+        check_path_param("load_wasm", "path", path)?;
+        let heap = eval.heap();
+        let location = caller_location(eval);
+        let mut ctx = ExternalContext::from_eval(eval)?;
+        let p = ctx.get_path(path)?;
+        post_event(WorkspaceRuleEvent::new_load_wasm_event(
+            &p.to_string(),
+            allocate_fn,
+            Some(&ctx.base.identifying_string_for_logging),
+            Some(&location),
+        ));
+        ctx.maybe_watch(&p, ShouldWatch::from_string(watch)?)?;
+        let module_content = read_content(&p).map_err(repository_function_exception)?;
+        super::wasm::new_wasm_module(heap, p, path, &module_content, allocate_fn)
+    }
+
+    /// Instantiate a WebAssembly module and execute the specified function.
+    // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkBaseExternalContext.java:2271 StarlarkBaseExternalContext.executeWasm
+    fn execute_wasm<'v>(
+        #[starlark(this)] _this: Value<'v>,
+        module: Value<'v>,
+        function: Value<'v>,
+        #[starlark(require = named)] input: Value<'v>,
+        #[starlark(require = named)] timeout: Option<Value<'v>>,
+        #[starlark(require = named)] memory_limit: Option<Value<'v>>,
+        #[starlark(require = named, default = "auto")] watch: &str,
+        eval: &mut Evaluator<'v, '_, '_>,
+    ) -> starlark::Result<Value<'v>> {
+        // The interpreter checks every argument against its `@Param` before the method runs.
+        let wasm_module = super::wasm::wasm_module_of(module);
+        if wasm_module.is_none() {
+            check_path_param("execute_wasm", "module", module).map_err(|_| {
+                param_type_error(
+                    "execute_wasm",
+                    "module",
+                    module,
+                    "string, Label, path, or wasm_module",
+                )
+            })?;
+        }
+        let Some(function) = function.unpack_str() else {
+            return Err(param_type_error(
+                "execute_wasm",
+                "function",
+                function,
+                "string",
+            ));
+        };
+        let Some(input) = input.unpack_str() else {
+            return Err(param_type_error("execute_wasm", "input", input, "string"));
+        };
+        let timeout_i = int_param("execute_wasm", "timeout", timeout, 600)?;
+        let mem_limit_i = match memory_limit {
+            None => LongParam::Long(67108864),
+            Some(v) => match <i64 as starlark::values::UnpackValue>::unpack_value(v)
+                .ok()
+                .flatten()
+            {
+                Some(l) => LongParam::Long(l),
+                None if v.get_type() == "int" => LongParam::OutOfRange(v.to_str()),
+                None => {
+                    return Err(param_type_error("execute_wasm", "memory_limit", v, "int"));
+                }
+            },
+        };
+
+        let heap = eval.heap();
+        let location = caller_location(eval);
+        let mut ctx = ExternalContext::from_eval(eval)?;
+        let path = match &wasm_module {
+            Some(m) => m.get_path().clone(),
+            None => ctx.get_path(module)?,
+        };
+
+        // StringUnsafe.getInternalStringBytes(input): the internal (Latin-1) bytes.
+        let input_bytes = blaze_util::string_encoding::latin1_encode(input).into_owned();
+        let timeout_seconds = timeout_i.to_int("timeout")?;
+        let mem_limit = mem_limit_i.to_long("memory_limit")?;
+
+        post_event(WorkspaceRuleEvent::new_execute_wasm_event(
+            &path.to_string(),
+            function,
+            &input_bytes,
+            timeout_seconds,
+            mem_limit,
+            Some(&ctx.base.identifying_string_for_logging),
+            Some(&location),
+        ));
+
+        // Math.round(timeoutSeconds * 1000L * timeoutScaling)
+        let timeout_millis = ((timeout_seconds as i64 * 1000) as f64 * ctx.base.timeout_scaling
+            + 0.5)
+            .floor() as i64;
+        // `Duration.ofMillis(...)`; zero or negative times out at once (`StarlarkWasmModule`).
+        let timeout = timeout_millis;
+
+        let executed = match wasm_module {
+            Some(m) => m.execute(function, &input_bytes, timeout, mem_limit),
+            None => {
+                ctx.maybe_watch(&path, ShouldWatch::from_string(watch)?)?;
+                let module_content = read_content(&path).map_err(repository_function_exception)?;
+                let loaded =
+                    super::wasm::new_wasm_module(heap, path, module, &module_content, "allocate")?;
+                super::wasm::wasm_module_of(loaded)
+                    .expect("a wasm_module")
+                    .execute(function, &input_bytes, timeout, mem_limit)
+            }
+        };
+        match executed {
+            Ok(result) => Ok(heap.alloc(result)),
+            Err(super::wasm::ExecuteError::Eval(e)) => Err(e),
+            // InterruptedException
+            Err(super::wasm::ExecuteError::Interrupted) => {
+                Err(ctx.abort(EvaluationAbort::Interrupted))
+            }
+        }
     }
 }

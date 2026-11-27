@@ -537,26 +537,26 @@ mod tests {
 
     // Java: src/test/java/com/google/devtools/build/lib/query2/cquery/TransitionsOutputFormatterTest.java:64 TransitionsOutputFormatterTest.testTransitions_full
     #[test]
-    #[ignore = "needs the ConfiguredTargetQueryHelper analysis harness"]
+    #[ignore = "setUpRules defines native MockRules (MockRule.define) through useRuleClassProvider; Blaze rule class providers have no native test rules"]
     fn test_transitions_full() {}
 
     // Java: src/test/java/com/google/devtools/build/lib/query2/cquery/TransitionsOutputFormatterTest.java:115 TransitionsOutputFormatterTest.testTransitions_lite
     #[test]
-    #[ignore = "needs the ConfiguredTargetQueryHelper analysis harness"]
+    #[ignore = "setUpRules defines native MockRules (MockRule.define) through useRuleClassProvider; Blaze rule class providers have no native test rules"]
     fn test_transitions_lite() {}
 
     // Java: src/test/java/com/google/devtools/build/lib/query2/cquery/TransitionsOutputFormatterTest.java:153 TransitionsOutputFormatterTest.testTransitions_getRightConfigurations
     #[test]
-    #[ignore = "needs the ConfiguredTargetQueryHelper analysis harness"]
+    #[ignore = "setUpRules defines native MockRules (MockRule.define) through useRuleClassProvider; Blaze rule class providers have no native test rules"]
     fn test_transitions_get_right_configurations() {}
 
     // Java: src/test/java/com/google/devtools/build/lib/query2/cquery/TransitionsOutputFormatterTest.java:176 TransitionsOutputFormatterTest.testTransitions_noTransitions
     #[test]
-    #[ignore = "needs the ConfiguredTargetQueryHelper analysis harness"]
+    #[ignore = "setUpRules defines native MockRules (MockRule.define) through useRuleClassProvider; Blaze rule class providers have no native test rules"]
     fn test_transitions_no_transitions() {}
 
     // Java: src/test/java/com/google/devtools/build/lib/query2/cquery/TransitionsOutputFormatterTest.java:192 TransitionsOutputFormatterTest.nonAttributeDependencySkipped
     #[test]
-    #[ignore = "needs the ConfiguredTargetQueryHelper analysis harness"]
+    #[ignore = "setUpRules defines native MockRules (MockRule.define) through useRuleClassProvider; Blaze rule class providers have no native test rules"]
     fn non_attribute_dependency_skipped() {}
 }

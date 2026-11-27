@@ -143,6 +143,9 @@ impl Postable for AnalysisFailureEvent {}
 /// This event is fired during the build, when it becomes known that the loading of a target
 /// cannot be completed because of an error in one of its dependencies.
 // Java: com/google/devtools/build/lib/pkgcache/LoadingFailureEvent.java:25 LoadingFailureEvent
+// Java: com/google/devtools/build/lib/pkgcache/LoadingFailureEvent.java:50 LoadingFailureEvent.equals
+// Java: com/google/devtools/build/lib/pkgcache/LoadingFailureEvent.java:62 LoadingFailureEvent.hashCode
+// PORT: skipped, no caller formats the event: LoadingFailureEvent.toString
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct LoadingFailureEvent {
     failed_target: Label,

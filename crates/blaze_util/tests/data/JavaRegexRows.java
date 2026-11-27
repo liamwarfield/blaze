@@ -437,16 +437,56 @@ public class JavaRegexRows {
     loud("(?:(?>a)b)", "ab");
     loud("(?>ab|a)c", "abc");
     loud("a++b", "aab");
-    // Not ported: backreferences, lookaround, \G, \X, \b{g}, \N{..}.
+    // Lookahead; lookbehind of a fixed length (TreeInfo minLength == maxLength).
+    t("(?!Genrule).*", "Genrule");
+    t("(?!Genrule).*", "CppCompile");
+    t("(?!CppCompile).*", "CppCompile");
+    t("(?!CppCompile).*", "Genrule");
+    t("(?=a)", "ba");
+    t("(?=a)a", "ba");
+    t("foo(?=bar)", "foobaz foobar");
+    t("foo(?!bar)", "foobar foobaz");
+    t("(?=(a+))a*b", "aab");
+    t("(a(?=b))+", "ababx");
+    t("(?i)(?=FOO)foo", "xfoo");
+    t("x(?=\\s|$)", "ax x");
+    t("^(?!.*bar).*$", "foobaz");
+    t("^(?!.*bar).*$", "foobar");
+    t("(?:(?!ab).)*", "xxabyy");
+    t("(?=a)*b", "b");
+    t("(?=a", "a");
+    t("(?<=a)b", "cab");
+    t("(?<!a)b", "ab cb");
+    t("(?<=ab|cd)x", "cdx");
+    t("(?<=a{2})b", "aab");
+    t("(?<=\\d{3})x", "12x 123x");
+    t("(?<!^)x", "xx");
+    t("(?<=(?:ab){2})c", "ababc");
+    // Look-behind group does not have an obvious maximum length (JDK 25's TreeInfo: a repeated
+    // group overflows GroupCurly's arithmetic or is a Loop).
+    t("(?<=(ab)+)x", "ababx");
+    t("(?<=(?:a|bc)+)x", "abcx");
+    t("(?<=xa+?)y", "xay");
+    // Lookbehind of variable length: not ported (fancy-regex has fixed-length lookbehind).
+    loud("(?<=a+)b", "aab");
+    loud("(?<=a*)b", "b");
+    loud("(?<=a|bc)x", "bcx");
+    loud("(?<=a{1,3})b", "aaab");
+    loud("(?<=.*)x", "abx");
+    loud("(?<=a+b*)x", "aabx");
+    loud("(?<!a+)b", "aab");
+    // Lookbehind on an input with a supplementary char (Java steps back by UTF-16 units).
+    loud("(?<=.)x", "\uD83D\uDE00x");
+    // Not ported: backreferences, \G, \X, \b{g}, \N{..}.
     loud("(a)\\1", "aa");
     loud("\\1", "x");
     loud("(?<n>a)\\k<n>", "aa");
     t("\\k<n>", "a");
     t("\\kn", "a");
-    loud("a(?=b)", "ab");
-    loud("a(?!b)", "ac");
-    loud("(?<=a)b", "ab");
-    loud("(?<!a)b", "cb");
+    t("a(?=b)", "ab");
+    t("a(?!b)", "ac");
+    t("(?<=a)b", "ab");
+    t("(?<!a)b", "cb");
     loud("\\G", "a");
     loud("\\X", "a");
     loud("\\b{g}", "a");

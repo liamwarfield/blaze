@@ -231,7 +231,7 @@ impl StarlarkTarget {
                     crate::providers::file_provider::FileProvider,
                 >(&self.target)
                 .map(|p| p.get_files_to_build().clone())?;
-                Some(depset_value(&artifacts_to_depset(&files)))
+                Some(depset_value(heap, &artifacts_to_depset(&files)))
             }
             DEFAULT_RUNFILES_FIELD => {
                 let d = default_info();
@@ -371,7 +371,16 @@ impl fmt::Display for StarlarkTarget {
 #[starlark_value(type = "Target")]
 impl<'v> StarlarkValue<'v> for StarlarkTarget {
     // Java: com/google/devtools/build/lib/analysis/configuredtargets/AbstractConfiguredTarget.java:164 AbstractConfiguredTarget.getIndex
-    fn at(&self, index: Value<'v>, _heap: Heap<'v>) -> starlark::Result<Value<'v>> {
+    fn at(&self, index: Value<'v>, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
+        if let ConfiguredTarget::Alias(a) = &self.target {
+            // `actual.getIndex(semantics, key)`: the errors name the actual target.
+            // Java: com/google/devtools/build/lib/rules/AliasConfiguredTarget.java:192 AliasConfiguredTarget.getIndex
+            return StarlarkTarget::new(
+                a.actual.clone(),
+                self.disable_target_default_provider_fields,
+            )
+            .at(index, heap);
+        }
         let (key, printable_name) = self.select_exported_provider(index, "index")?;
         if let Some(declared_provider) = get_info(&self.target, &key) {
             return Ok(Self::owned_to_value(&declared_provider));
@@ -386,6 +395,15 @@ impl<'v> StarlarkValue<'v> for StarlarkTarget {
 
     // Java: com/google/devtools/build/lib/analysis/configuredtargets/AbstractConfiguredTarget.java:176 AbstractConfiguredTarget.containsKey
     fn is_in(&self, other: Value<'v>) -> starlark::Result<bool> {
+        if let ConfiguredTarget::Alias(a) = &self.target {
+            // `actual.containsKey(semantics, key)`.
+            // Java: com/google/devtools/build/lib/rules/AliasConfiguredTarget.java:197 AliasConfiguredTarget.containsKey
+            return StarlarkTarget::new(
+                a.actual.clone(),
+                self.disable_target_default_provider_fields,
+            )
+            .is_in(other);
+        }
         let (key, _) = self.select_exported_provider(other, "query")?;
         Ok(get_info(&self.target, &key).is_some())
     }
@@ -399,6 +417,9 @@ impl<'v> StarlarkValue<'v> for StarlarkTarget {
     }
 
     // Java: com/google/devtools/build/lib/analysis/configuredtargets/AbstractConfiguredTarget.java:127 AbstractConfiguredTarget.getValue
+    // An unknown field gets the interpreter's default message (`getErrorMessageForUnknownField`
+    // returns null for every configured target class).
+    // Java: com/google/devtools/build/lib/rules/AliasConfiguredTarget.java:222 AliasConfiguredTarget.getErrorMessageForUnknownField
     fn get_attr_fallible(
         &self,
         attribute: Hashed<&str>,
@@ -439,6 +460,7 @@ impl<'v> StarlarkValue<'v> for StarlarkTarget {
     }
 
     // Java: AbstractConfiguredTarget.isImmutable (immutable and Starlark-hashable, by identity).
+    // Java: com/google/devtools/build/lib/rules/AliasConfiguredTarget.java:155 AliasConfiguredTarget.isImmutable
     fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
         let id = self.target.identity();
         id.hash(hasher);

@@ -90,6 +90,20 @@ fn report(event: blaze_events::Event) {
     })
 }
 
+/// Posts `postable` to the listener of the environment of the implementation running on this
+/// thread (Java `env.getListener().post(..)` from a `repository_ctx` / `module_ctx` method,
+/// including those, like the `os` field, that cannot reach the thread's payload).
+// Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java SkyFunctionEnvironment.post
+pub(crate) fn post(postable: Arc<dyn blaze_events::Postable>) {
+    LISTENER_ENVS.with(|envs| {
+        let envs = envs.borrow();
+        let env = envs
+            .last()
+            .expect("a Starlark post outside of a repository rule or module extension call");
+        env.listener().post(postable);
+    })
+}
+
 /// The print handler of a repository rule or module extension thread: sends DEBUG events to the
 /// environment's listener as `print()` runs, so that they keep their order relative to what the
 /// implementation reports directly (`execute(quiet = False)` output, progress, warnings).

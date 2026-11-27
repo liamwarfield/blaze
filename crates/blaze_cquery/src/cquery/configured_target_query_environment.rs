@@ -236,6 +236,42 @@ pub fn new_configured_target_query_environment(
     cquery_options: &CqueryOptions,
     label_printer: LabelPrinter,
 ) -> ConfiguredTargetQueryEnvironment {
+    new_configured_target_query_environment_with_settings(
+        keep_going,
+        event_handler,
+        extra_functions,
+        top_level_configurations,
+        transitive_configurations,
+        top_level_aspects,
+        main_repo_target_parser,
+        pkg_path,
+        walkable_graph,
+        cquery_options.to_settings(),
+        label_printer,
+    )
+}
+
+/// Creates the environment with explicit settings (Java `new
+/// ConfiguredTargetQueryEnvironment(..., settings, topLevelArtifactContext, labelPrinter)`, which
+/// the query test helper calls with a null `TopLevelArtifactContext`).
+///
+/// PORT: the `TopLevelArtifactContext` is not held by the environment in Blaze (the files output
+/// formatter takes the output groups from the request), so it is not a parameter.
+// Java: com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryEnvironment.java:100 ConfiguredTargetQueryEnvironment.<init>
+#[allow(clippy::too_many_arguments)]
+pub fn new_configured_target_query_environment_with_settings(
+    keep_going: bool,
+    event_handler: Arc<dyn ExtendedEventHandler>,
+    extra_functions: Vec<Arc<dyn QueryFunction<CqueryNode>>>,
+    top_level_configurations: TopLevelConfigurations,
+    transitive_configurations: IndexMap<String, Arc<BuildConfigurationValue>>,
+    top_level_aspects: &IndexMap<AspectKey, Arc<AspectValue>>,
+    main_repo_target_parser: TargetPatternParser,
+    pkg_path: PathPackageLocator,
+    walkable_graph: Arc<dyn WalkableGraph>,
+    settings: std::collections::HashSet<blaze_query_engine::Setting>,
+    label_printer: LabelPrinter,
+) -> ConfiguredTargetQueryEnvironment {
     let mut env = PostAnalysisQueryEnvironment::new(
         keep_going,
         event_handler,
@@ -245,7 +281,7 @@ pub fn new_configured_target_query_environment(
         main_repo_target_parser,
         pkg_path,
         walkable_graph,
-        cquery_options.to_settings(),
+        settings,
         label_printer,
     );
     // this.accessor = new ConfiguredTargetAccessor(walkableGraphSupplier.get(), this,
@@ -521,34 +557,6 @@ impl TargetAccessor<CqueryNode> for ConfiguredTargetQueryEnvironment {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    // Java: src/test/java/com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQueryTest.java
-    #[test]
-    #[ignore = "needs the ConfiguredTargetQueryHelper analysis harness"]
-    fn test_multiple_top_level_configurations_null_configs() {}
-
-    #[test]
-    #[ignore = "needs the ConfiguredTargetQueryHelper analysis harness"]
-    fn test_implicit_toolchain_binding_contains_toolchain_target() {}
-
-    // Java: src/test/java/com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQuerySemanticsTest.java:767 ConfiguredTargetQuerySemanticsTest.testAspectDepsAppearInCqueryDeps
-    #[test]
-    #[ignore = "needs the BuildViewTestCase harness (blaze_sky_top::testing)"]
-    fn test_aspect_deps_appear_in_cquery_deps() {}
-
-    // Java: src/test/java/com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQuerySemanticsTest.java:839 ConfiguredTargetQuerySemanticsTest.testToolchainPropagatingAspectDepsAppearInCqueryDeps
-    #[test]
-    #[ignore = "needs the BuildViewTestCase harness (blaze_sky_top::testing)"]
-    fn test_toolchain_propagating_aspect_deps_appear_in_cquery_deps() {}
-
-    // Java: src/test/java/com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQuerySemanticsTest.java:949 ConfiguredTargetQuerySemanticsTest.testAspectOnAspectDepsAppearInCqueryDeps
-    #[test]
-    #[ignore = "needs the BuildViewTestCase harness (blaze_sky_top::testing)"]
-    fn test_aspect_on_aspect_deps_appear_in_cquery_deps() {}
-
-    // Java: src/test/java/com/google/devtools/build/lib/query2/cquery/ConfiguredTargetQuerySemanticsTest.java:1078 ConfiguredTargetQuerySemanticsTest.testAspectDepsAppearInCqueryRdeps
-    #[test]
-    #[ignore = "needs the BuildViewTestCase harness (blaze_sky_top::testing)"]
-    fn test_aspect_deps_appear_in_cquery_rdeps() {}
-}
+// The tests of ConfiguredTargetQueryTest, ConfiguredTargetQuerySemanticsTest and
+// ActionGraphQueryTest are ported in crates/blaze_query_testing/tests (on its
+// ConfiguredTargetQueryHelper and ActionGraphQueryHelper ports).

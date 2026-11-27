@@ -120,8 +120,20 @@ impl LowMemoryCheck for ProcMeminfoLowMemoryChecker {
             Ok(fraction_ram_free < FREE_MEMORY_PERCENTAGE_THRESHOLD
                 && free_ram_kb < FREE_MEMORY_KB_ABSOLUTE_THRESHOLD)
         })();
-        // PORT: skipped, logging ("Unable to read memory info.").
-        result.unwrap_or(false)
+        match result {
+            Ok(should_shutdown) => should_shutdown,
+            Err(e) => {
+                // PORT: the cause is the I/O error's text (Java prints the exception's stack
+                // trace).
+                blaze_util::server_logger::warning(
+                    "com.google.devtools.build.lib.server.ServerWatcherRunnable$ProcMeminfoLowMemoryChecker",
+                    "check",
+                    "Unable to read memory info.",
+                    Some(&e.to_string()),
+                );
+                false
+            }
+        }
     }
 }
 
@@ -200,8 +212,12 @@ impl ServerWatcherRunnable {
                     panic!("VerifyException");
                 }
                 if self.shutdown_on_low_sys_mem && self.low_memory_checker.should_shutdown() {
-                    // PORT: skipped, logging ("Available RAM is low. Shutting down idle
-                    // server...").
+                    blaze_util::server_logger::severe(
+                        "com.google.devtools.build.lib.server.ServerWatcherRunnable",
+                        "run",
+                        "Available RAM is low. Shutting down idle server...",
+                        None,
+                    );
                     break;
                 }
                 // Re-run the check every 5 seconds if no other commands have been sent to the
@@ -215,7 +231,11 @@ impl ServerWatcherRunnable {
             was_idle = idle;
             idle = self.command_manager.is_empty();
             if was_idle && idle && self.clock.current_time_millis() >= shutdown_time_millis {
-                // PORT: skipped, logging ("About to shutdown due to idleness").
+                blaze_util::server_logger::info(
+                    "com.google.devtools.build.lib.server.ServerWatcherRunnable",
+                    "run",
+                    "About to shutdown due to idleness",
+                );
                 break;
             }
         }

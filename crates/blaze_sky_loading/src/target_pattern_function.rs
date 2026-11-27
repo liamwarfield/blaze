@@ -414,6 +414,7 @@ pub trait RecursivePackageProvider {
         excluded_subdirectories: &[PathFragment],
     ) -> Result<(), ProviderError>;
 
+    // PORT: skipped, an abstract class: the trait's default methods (no constructor): AbstractRecursivePackageProvider.<init>
     // Java: com/google/devtools/build/lib/pkgcache/AbstractRecursivePackageProvider.java:39 AbstractRecursivePackageProvider.getTarget
     fn get_target(
         &self,
@@ -751,6 +752,11 @@ impl RecursivePackageProvider for EnvironmentBackedRecursivePackageProvider<'_, 
 
 /// A [`RecursivePackageProvider`] over already loaded packages.
 // Java: com/google/devtools/build/lib/pkgcache/RecursivePackageProvider.java:110 RecursivePackageProvider.PackageBackedRecursivePackageProvider
+// PORT: getTarget is the trait's default (AbstractRecursivePackageProvider.getTarget below), the same
+// getPackage(...).getTarget(name).
+// Java: com/google/devtools/build/lib/pkgcache/RecursivePackageProvider.java:154 RecursivePackageProvider.PackageBackedRecursivePackageProvider.getTarget
+// PORT: skipped, the Rust trait has no getBuildFile (the target pattern resolver this provider serves never asks for one): RecursivePackageProvider.PackageBackedRecursivePackageProvider.getBuildFile
+// PORT: skipped, only SkyQueryEnvironment calls it, on GraphBackedRecursivePackageProvider, whose override is ported (graph_backed_recursive_package_provider.rs): RecursivePackageProvider.bulkIsPackage
 pub struct PackageBackedRecursivePackageProvider {
     packages: HashMap<PackageIdentifier, Arc<Package>>,
 }
@@ -762,6 +768,7 @@ impl PackageBackedRecursivePackageProvider {
 }
 
 impl RecursivePackageProvider for PackageBackedRecursivePackageProvider {
+    // Java: com/google/devtools/build/lib/pkgcache/RecursivePackageProvider.java:133 RecursivePackageProvider.PackageBackedRecursivePackageProvider.getPackage
     fn get_package(
         &self,
         _event_handler: &dyn ExtendedEventHandler,
@@ -778,6 +785,7 @@ impl RecursivePackageProvider for PackageBackedRecursivePackageProvider {
         _event_handler: &dyn ExtendedEventHandler,
         package_name: &PackageIdentifier,
     ) -> Result<bool, ProviderError> {
+        // Java: com/google/devtools/build/lib/pkgcache/RecursivePackageProvider.java:149 RecursivePackageProvider.PackageBackedRecursivePackageProvider.isPackage
         Ok(self.packages.contains_key(package_name))
     }
 
@@ -790,6 +798,7 @@ impl RecursivePackageProvider for PackageBackedRecursivePackageProvider {
         _ignored_subdirectories: &IgnoredSubdirectories,
         _excluded_subdirectories: &[PathFragment],
     ) -> Result<(), ProviderError> {
+        // Java: com/google/devtools/build/lib/pkgcache/RecursivePackageProvider.java:160 RecursivePackageProvider.PackageBackedRecursivePackageProvider.streamPackagesUnderDirectory
         panic!("UnsupportedOperationException")
     }
 }

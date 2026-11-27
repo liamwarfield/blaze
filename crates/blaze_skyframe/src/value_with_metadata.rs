@@ -90,6 +90,16 @@ pub(crate) fn no_events() -> NestedSet<StoredReportable> {
 /// `NotComparableSkyValue`) has no separate variant: whether a value is comparable is decided by
 /// its key ([`crate::Key::values_equal`]), which `equals` consults.
 // Java: com/google/devtools/build/skyframe/ValueWithMetadata.java:26 ValueWithMetadata
+// PORT: the accessors are the variant fields (`get_error_info`, `get_transitive_events` match on
+// the variant); a NotComparableValueWithEvents is a ValueWithEvents of a key whose values_equal is
+// false; the variants are never hashed.
+// Java: com/google/devtools/build/skyframe/ValueWithMetadata.java:93 ValueWithMetadata.ValueWithEvents.getErrorInfo
+// Java: com/google/devtools/build/skyframe/ValueWithMetadata.java:99 ValueWithMetadata.ValueWithEvents.getTransitiveEvents
+// Java: com/google/devtools/build/skyframe/ValueWithMetadata.java:142 ValueWithMetadata.NotComparableValueWithEvents.<init>
+// Java: com/google/devtools/build/skyframe/ValueWithMetadata.java:165 ValueWithMetadata.ErrorInfoValue.hasError
+// Java: com/google/devtools/build/skyframe/ValueWithMetadata.java:170 ValueWithMetadata.ErrorInfoValue.getErrorInfo
+// Java: com/google/devtools/build/skyframe/ValueWithMetadata.java:176 ValueWithMetadata.ErrorInfoValue.getTransitiveEvents
+// PORT: skipped, never hashed (values are compared, not used as keys): ValueWithMetadata.ValueWithEvents.hashCode, ValueWithMetadata.ErrorInfoValue.hashCode
 #[derive(Clone)]
 pub(crate) enum ValueWithMetadata {
     /// A value with no error and no events, stored bare.

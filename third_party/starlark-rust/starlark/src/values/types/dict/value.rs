@@ -205,6 +205,44 @@ pub(crate) fn frozen_dict_error() -> anyhow::Error {
     anyhow::anyhow!("trying to mutate a frozen dict value")
 }
 
+/// BLAZE PATCH 0069: Java `AbstractMap.equals(map)` of a dict's `content` against a native value // BLAZE PATCH 0069
+/// that Java implements as a `Map` (`StarlarkValue::java_map_entries`): the same size, and each // BLAZE PATCH 0069
+/// key's value equal to the map's value for that key. `None` if `other` is not such a map. The // BLAZE PATCH 0069
+/// map's entries are made on `heap`, a temporary heap (`dict.equals` has none). // BLAZE PATCH 0069
+fn java_map_equals<'v, 't>( // BLAZE PATCH 0069
+    content: &SmallMap<Value<'v>, Value<'v>>, // BLAZE PATCH 0069
+    other: Value<'v>, // BLAZE PATCH 0069
+    heap: Heap<'t>, // BLAZE PATCH 0069
+) -> crate::Result<Option<bool>> { // BLAZE PATCH 0069
+    // SAFETY: only the lifetime changes. `content` and `other` are borrowed by the caller for the // BLAZE PATCH 0069
+    // whole call, the temporary heap's values die with it, and comparing values stores none. // BLAZE PATCH 0069
+    let (content, other) = unsafe { // BLAZE PATCH 0069
+        ( // BLAZE PATCH 0069
+            transmute!(&SmallMap<Value<'v>, Value<'v>>, &SmallMap<Value<'t>, Value<'t>>, content), // BLAZE PATCH 0069
+            transmute!(Value<'v>, Value<'t>, other), // BLAZE PATCH 0069
+        ) // BLAZE PATCH 0069
+    }; // BLAZE PATCH 0069
+    let Some(entries) = other.get_ref().java_map_entries(heap) else { // BLAZE PATCH 0069
+        return Ok(None); // BLAZE PATCH 0069
+    }; // BLAZE PATCH 0069
+    let mut map = SmallMap::new(); // BLAZE PATCH 0069
+    for (k, v) in entries? { // BLAZE PATCH 0069
+        map.insert_hashed(k.get_hashed()?, v); // BLAZE PATCH 0069
+    } // BLAZE PATCH 0069
+    Ok(Some(equals_small_map(content, &map, |x, y| x.equals(*y))?)) // BLAZE PATCH 0069
+} // BLAZE PATCH 0069
+
+/// BLAZE PATCH 0069: the entries of a native value that Java implements as a `Map` without being // BLAZE PATCH 0069
+/// a `Dict` (`StarlarkValue::java_map_entries`, patch 0068), for code outside this crate that // BLAZE PATCH 0069
+/// handles any Java `Map` (Bazel's `json.encode`, attribute conversion). `None` for a dict and // BLAZE PATCH 0069
+/// for any other value. // BLAZE PATCH 0069
+pub fn java_map_entries<'v>( // BLAZE PATCH 0069
+    x: Value<'v>, // BLAZE PATCH 0069
+    heap: Heap<'v>, // BLAZE PATCH 0069
+) -> Option<crate::Result<Vec<(Value<'v>, Value<'v>)>>> { // BLAZE PATCH 0069
+    x.get_ref().java_map_entries(heap) // BLAZE PATCH 0069
+} // BLAZE PATCH 0069
+
 /// BLAZE PATCH 0018: an immutable dict with the given entries (Java
 /// net/starlark/java/eval/Dict.java:495 `Dict.immutableCopyOf`, via `copyOf(null, ..)`). The
 /// empty dict is the shared frozen empty dict (Java `Dict.empty()`). Otherwise the dict lives on
@@ -633,7 +671,13 @@ where
 
     fn equals(&self, other: Value<'v>) -> crate::Result<bool> {
         match DictRef::from_value(other) {
-            None => Ok(false),
+            // BLAZE PATCH 0069: Java Dict.equals is `contents.equals(o)` (AbstractMap.equals), // BLAZE PATCH 0069
+            // true for any Map with the same entries, such as Bazel's `existing_rule` views. // BLAZE PATCH 0069
+            None => { // BLAZE PATCH 0069
+                let content = self.0.content(); // BLAZE PATCH 0069
+                Heap::temp(|heap| java_map_equals(&content, other, heap)) // BLAZE PATCH 0069
+                    .map(|equal| equal.unwrap_or(false)) // BLAZE PATCH 0069
+            } // BLAZE PATCH 0069
             Some(other_ref) => {
                 // BLAZE PATCH 0063 (round 2): the reads of Java's `x.equals(y)` on a key-tracking `y`.
                 if let Some(tracking) = other.downcast_ref::<MutableDict>() {

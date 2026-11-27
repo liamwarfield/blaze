@@ -250,7 +250,7 @@ impl StarlarkComputedDefaultTemplate {
 
     /// Sets the semantics the callback runs with (Java `new StarlarkCallbackHelper(callback,
     /// thread.getSemantics())`). Required before rules are created.
-    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkCallbackHelper.java StarlarkCallbackHelper.<init>
+    // Java: com/google/devtools/build/lib/packages/StarlarkCallbackHelper.java:52 StarlarkCallbackHelper.<init>
     pub fn with_semantics(mut self, semantics: Arc<StarlarkSemantics>) -> Self {
         self.semantics = Some(semantics);
         self
@@ -387,8 +387,10 @@ impl StarlarkComputedDefaultTemplate {
                 "StarlarkComputedDefaultTemplate without semantics (call with_semantics)"
             )
         };
+        // Java: com/google/devtools/build/lib/packages/StarlarkCallbackHelper.java:64 StarlarkCallbackHelper.call
         // Java: StarlarkCallbackHelper.buildArgumentList: one positional argument per parameter,
         // looked up in the struct of attribute values.
+        // Java: com/google/devtools/build/lib/packages/StarlarkCallbackHelper.java:58 StarlarkCallbackHelper.getParameterNames
         let names = self.callback.get_parameter_names();
         let mut sorted_names: Vec<&str> = attr_values.iter().map(|(k, _)| k.as_str()).collect();
         sorted_names.sort();

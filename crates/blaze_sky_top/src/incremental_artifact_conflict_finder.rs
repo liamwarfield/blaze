@@ -233,15 +233,22 @@ impl IncrementalArtifactConflictFinder {
                 Err(RegisterActionError::Interrupted) => return,
             }
             for output in action.get_outputs() {
-                self.check_output_prefix(&output, bad_action_map);
+                // ActionConflictException aren't expected to be thrown here (badActionMap is
+                // given).
+                let _ = self.check_output_prefix(&output, Some(bad_action_map));
             }
         }
     }
 
-    /// `checkOutputPrefix` with a `badActionMap`: a prefix conflict between `new_artifact` and
-    /// an artifact registered before is recorded for both generating actions.
+    /// `checkOutputPrefix`: a prefix conflict between `new_artifact` and an artifact registered
+    /// before is recorded for both generating actions in `bad_action_map`, or thrown without
+    /// one.
     // Java: com/google/devtools/build/lib/skyframe/IncrementalArtifactConflictFinder.java:357 IncrementalArtifactConflictFinder.checkOutputPrefix
-    fn check_output_prefix(&self, new_artifact: &Artifact, bad_action_map: &mut ActionConflicts) {
+    fn check_output_prefix(
+        &self,
+        new_artifact: &Artifact,
+        bad_action_map: Option<&mut ActionConflicts>,
+    ) -> Result<(), ActionConflictException> {
         let new_artifact_path_fragment = new_artifact.get_exec_path().clone();
         let segments: Vec<String> = new_artifact_path_fragment
             .segments()
@@ -295,6 +302,9 @@ impl IncrementalArtifactConflictFinder {
                         &prior_action,
                         &current_action,
                     );
+                    let Some(bad_action_map) = bad_action_map else {
+                        return Err(exception);
+                    };
                     bad_action_map.put(&prior_action, exception.clone());
                     bad_action_map.put(&current_action, exception);
                     break;
@@ -306,6 +316,46 @@ impl IncrementalArtifactConflictFinder {
                 TrieNode::Leaf(_) => break,
             }
         }
+        Ok(())
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/IncrementalArtifactConflictFinder.java:353 IncrementalArtifactConflictFinder.conflictCheckPerAction
+    pub fn conflict_check_per_action(
+        &self,
+        action: &ActionRef,
+    ) -> Result<(), blaze_analysis::rule::action_conflict_exception::ConflictCheckPerActionError>
+    {
+        use blaze_analysis::rule::action_conflict_exception::ConflictCheckPerActionError;
+        match register_action_in(
+            &mut self.generating_action_map.lock(),
+            &self.action_key_context,
+            action,
+        ) {
+            Ok(()) => {}
+            Err(RegisterActionError::ActionConflict(e)) => {
+                return Err(ConflictCheckPerActionError::ActionConflict(e));
+            }
+            Err(RegisterActionError::Interrupted) => {
+                return Err(ConflictCheckPerActionError::Interrupted);
+            }
+        }
+        for output in action.get_outputs() {
+            self.check_output_prefix(&output, None)
+                .map_err(ConflictCheckPerActionError::ActionConflict)?;
+        }
+        Ok(())
+    }
+}
+
+impl blaze_analysis::rule::action_conflict_exception::ConflictFinder
+    for IncrementalArtifactConflictFinder
+{
+    fn conflict_check_per_action(
+        &self,
+        action: &ActionRef,
+    ) -> Result<(), blaze_analysis::rule::action_conflict_exception::ConflictCheckPerActionError>
+    {
+        IncrementalArtifactConflictFinder::conflict_check_per_action(self, action)
     }
 }
 
@@ -325,5 +375,3 @@ fn get_owning_artifact_from_trie(trie_node: &TrieNode) -> Artifact {
         }
     }
 }
-
-// PORT: skipped, conflictCheckPerAction serves ConflictCheckingMode.UPON_CONFIGURED_OBJECT_CREATION, which a build without incrementality tracking uses (Bazel tracks it by default; the mode stops with unported! in SkyframeBuildView): IncrementalArtifactConflictFinder.conflictCheckPerAction

@@ -63,6 +63,7 @@ fn java_configuration_methods(builder: &mut MethodsBuilder) {
     #[starlark(attribute)]
     fn default_javac_flags_depset<'v>(
         this: &JavaConfigurationValue,
+        heap: Heap<'v>,
     ) -> starlark::Result<Value<'v>> {
         // Java: Depset.of(String.class, commandLineJavacFlags), a NAIVE_LINK_ORDER NestedSet.
         let flags = NestedSetBuilder::wrap(
@@ -72,7 +73,7 @@ fn java_configuration_methods(builder: &mut MethodsBuilder) {
                 .iter()
                 .cloned(),
         );
-        Ok(depset_value(&strings_to_depset(&flags)))
+        Ok(depset_value(heap, &strings_to_depset(&flags)))
     }
 
     /// The value of the strict_java_deps flag.

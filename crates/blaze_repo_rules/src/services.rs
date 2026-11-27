@@ -14,6 +14,7 @@ use blaze_vfs::Path;
 use indexmap::IndexMap;
 
 /// Shared configuration of the repository and module extension SkyFunctions.
+// PORT: skipped, a cache of file system calls (performance only): RepositoryFetchFunction.setSyscallCache
 pub struct RepoServices {
     /// Java `BlazeDirectories` (workspace, output base, install base).
     pub directories: LoadingDirectories,
@@ -23,10 +24,13 @@ pub struct RepoServices {
     /// Java `CommandEnvironment.getNonstrictRepoEnv()` (`nonstrictRepoEnvSupplier`).
     pub nonstrict_repo_env: Arc<IndexMap<String, String>>,
     /// Java `downloadManager`.
+    // Java: com/google/devtools/build/lib/bazel/repository/RepositoryFetchFunction.java:119 RepositoryFetchFunction.setDownloadManager
     pub download_manager: Option<Arc<DownloadManager>>,
     /// Java `timeoutScaling` (`--experimental_scale_timeouts`).
+    // Java: com/google/devtools/build/lib/bazel/repository/RepositoryFetchFunction.java:115 RepositoryFetchFunction.setTimeoutScaling
     pub timeout_scaling: f64,
     /// Java `ProcessWrapper`: `<install_base>/process-wrapper` when it exists.
+    // Java: com/google/devtools/build/lib/bazel/repository/RepositoryFetchFunction.java:123 RepositoryFetchFunction.setProcessWrapper
     pub process_wrapper: Option<Path>,
     /// Java `ProcessWrapper.killDelay`: `LocalExecutionOptions.getLocalSigkillGraceSeconds()`
     /// (`--local_termination_grace_seconds`), or `None` (Java null) when the command has no
@@ -41,9 +45,11 @@ pub struct RepoServices {
     /// Java `RepositoryFetchFunction.repoContentsCache`.
     pub repo_contents_cache: Arc<LocalRepoContentsCache>,
     /// Java `RepositoryFetchFunction.remoteRepoContentsCache` (`setRemoteRepoContentsCache`).
+    // Java: com/google/devtools/build/lib/bazel/repository/RepositoryFetchFunction.java:135 RepositoryFetchFunction.setRemoteRepoContentsCache
     pub remote_repo_contents_cache:
         Option<Arc<dyn crate::repository::remote_helpers::RemoteRepoContentsCache>>,
     /// Java `RepositoryFetchFunction.repositoryRemoteExecutor` (`setRepositoryRemoteExecutor`).
+    // Java: com/google/devtools/build/lib/bazel/repository/RepositoryFetchFunction.java:131 RepositoryFetchFunction.setRepositoryRemoteExecutor
     pub remote_executor:
         Option<Arc<dyn crate::repository::remote_helpers::RepositoryRemoteExecutor>>,
 }

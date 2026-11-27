@@ -602,3 +602,39 @@ mod tests {
         );
     }
 }
+
+/// What `IncrementalArtifactConflictFinder.conflictCheckPerAction` throws.
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum ConflictCheckPerActionError {
+    /// `ActionConflictException`.
+    #[error("{0}")]
+    ActionConflict(ActionConflictException),
+    /// `InterruptedException`.
+    #[error("interrupted")]
+    Interrupted,
+}
+
+/// The part of `skyframe.IncrementalArtifactConflictFinder` the analysis reaches
+/// (`RuleContext.getConflictFinder()`): the conflict check of each action as its configured
+/// object is created, in a build with merged analysis and execution that does not track
+/// incremental state (`ConflictCheckingMode.UPON_CONFIGURED_OBJECT_CREATION`).
+///
+/// PORT: the class lives in blaze_sky_top, above this crate; it implements this trait.
+// Java: com/google/devtools/build/lib/skyframe/IncrementalArtifactConflictFinder.java:353 IncrementalArtifactConflictFinder.conflictCheckPerAction
+pub trait ConflictFinder: Send + Sync {
+    fn conflict_check_per_action(
+        &self,
+        action: &ActionRef,
+    ) -> Result<(), ConflictCheckPerActionError>;
+}
+
+/// `Supplier<IncrementalArtifactConflictFinder>`: the finder of the current build when its
+/// conflict checking mode is `UPON_CONFIGURED_OBJECT_CREATION`, `None` otherwise
+/// (`skyframeExecutor.getCheckerForConflictCheckingMode(UPON_CONFIGURED_OBJECT_CREATION)`).
+// Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:184 SkyframeBuildView.<init>
+pub type ConflictFinderSupplier = Arc<dyn Fn() -> Option<Arc<dyn ConflictFinder>> + Send + Sync>;
+
+/// A supplier of no finder (`() -> null`, `RuleContext.Builder`'s default).
+pub fn no_conflict_finder() -> ConflictFinderSupplier {
+    Arc::new(|| None)
+}

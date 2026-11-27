@@ -22,6 +22,7 @@ pub enum FactValue {
 
 /// User-provided JSON-like data attached to a module extension that is persisted across
 /// reevaluations of the extension. Port of `Facts`.
+// PORT: skipped, static Starlark type checking is not part of starlark-rust's use here (types are parsed, not checked): Facts.getStarlarkType
 // Java: com/google/devtools/build/lib/bazel/bzlmod/Facts.java:53 Facts
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Facts {

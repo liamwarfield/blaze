@@ -375,6 +375,7 @@ impl BzlCompileFunction {
     ) -> Result<Option<BzlCompileValue>, ComputeError> {
         match Self::compute_inline(key, env, self.hash_function)? {
             Ok(v) => Ok(v),
+            // Java: com/google/devtools/build/lib/skyframe/BzlCompileFunction.java:307 BzlCompileFunction.FunctionException.<init>
             // Java: FunctionException(FailedIOException), with the exception's transience.
             Err(e) => {
                 let transience = e.get_transience();

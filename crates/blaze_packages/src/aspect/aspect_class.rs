@@ -15,6 +15,7 @@ use super::StarlarkAspectClass;
 // Java: com/google/devtools/build/lib/packages/AspectClass.java:92 AspectClass
 #[derive(Clone)]
 pub enum AspectClass {
+    // PORT: skipped, no class extends StarlarkNativeAspect in Bazel 9.3.2: StarlarkNativeAspect.repr, StarlarkNativeAspect.getAspectClass, StarlarkNativeAspect.getParamAttributes, StarlarkNativeAspect.getDefaultParametersExtractor
     /// Java `NativeAspectClass` (and `StarlarkNativeAspect`).
     Native(Arc<dyn NativeAspectClass>),
     /// Java `StarlarkAspectClass`.

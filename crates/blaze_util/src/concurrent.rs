@@ -38,6 +38,7 @@
 // PORT: skipped, unused at the pin (no other class refers to it): AbstractShardedVisitor.shardAndScheduleRemainingItems
 // PORT: skipped, unused at the pin (no other class refers to it): AbstractShardedVisitor.visit
 // PORT: skipped, replaced by the evaluator work queue (blaze_skyframe): AddressFreer.run
+// PORT: skipped, replaced by the evaluator work queue (blaze_skyframe): AddressFreer.<init>
 // PORT: skipped, replaced by blaze_cmdline::interner and by-value equality: BlazeInterners.concurrencyLevel
 // PORT: skipped, replaced by blaze_cmdline::interner and by-value equality: BlazeInterners.newWeakInterner
 // PORT: skipped, replaced by blaze_cmdline::interner and by-value equality: BlazeInterners.newStrongInterner
@@ -110,7 +111,9 @@
 // PORT: skipped, replaced by synchronous NestedSet expansion (blaze_collect): MoreFutures.allAsListOrCancelAll
 // PORT: skipped, replaced by synchronous NestedSet expansion (blaze_collect): MoreFutures.waitForFutureAndGet
 // PORT: skipped, replaced by synchronous NestedSet expansion (blaze_collect): MoreFutures.waitForFutureAndGetWithCheckedException
+// PORT: skipped, replaced by the evaluator scoped workers: MultiExecutorQueueVisitor.<init>
 // PORT: skipped, replaced by the evaluator scoped workers: MultiExecutorQueueVisitor.createWithExecutorServices
+// PORT: skipped, documentation annotations with no behaviour (Rust states thread safety through Send and Sync): ThreadSafety.Immutable, ThreadSafety.ThreadSafe, ThreadSafety.ThreadCompatible, ThreadSafety.ThreadHostile, ThreadSafety.ConditionallyThreadSafe, ThreadSafety.ConditionallyThreadCompatible
 // PORT: skipped, replaced by the evaluator scoped workers: MultiExecutorQueueVisitor.execute
 // PORT: skipped, replaced by the evaluator scoped workers: MultiExecutorQueueVisitor.getExecutorServiceByThreadPoolType
 // PORT: skipped, replaced by the evaluator scoped workers: MultiExecutorQueueVisitor.shutdownExecutorService

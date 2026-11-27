@@ -33,6 +33,7 @@ pub const REPOSITORY_ENVIRONMENT_VARIABLE: SkyFunctionName =
 /// `REPOSITORY_ENVIRONMENT_VARIABLE:<name>` (Java `AbstractSkyKey.toString`).
 // Java: com/google/devtools/build/lib/skyframe/RepoEnvironmentFunction.java:66 RepoEnvironmentFunction.Key
 #[derive(Clone, PartialEq, Eq, Hash)]
+// PORT: skipped, a struct key (Key::FUNCTION; no interning): RepoEnvironmentFunction.Key.create, RepoEnvironmentFunction.Key.intern, RepoEnvironmentFunction.Key.functionName, RepoEnvironmentFunction.Key.getSkyKeyInterner
 pub struct RepoEnvironmentKey(pub String);
 
 impl RepoEnvironmentKey {
@@ -65,6 +66,7 @@ impl Key for RepoEnvironmentKey {
     }
 }
 
+// PORT: skipped, the function reads the command's repo environment from the RepoServices it is given (no constructor state): RepoEnvironmentFunction.<init>
 // Java: com/google/devtools/build/lib/skyframe/RepoEnvironmentFunction.java:55 RepoEnvironmentFunction.compute
 pub fn compute(
     repo_env: &Arc<IndexMap<String, String>>,

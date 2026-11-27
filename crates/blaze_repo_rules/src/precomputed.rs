@@ -26,6 +26,7 @@ pub static FORCE_FETCH_CONFIGURE: Precomputed<String> =
 pub static IS_VENDOR_COMMAND: Precomputed<bool> = Precomputed::new("is_vendor_command");
 
 /// `--incompatible_require_repo_extension_metadata`.
+// PORT: skipped, the private constructor of a static-only class: RepoMetadataRequirements.<init>
 // Java: com/google/devtools/build/lib/bazel/repository/RepoMetadataRequirements.java:22 RepoMetadataRequirements.REQUIRE_REPO_EXTENSION_METADATA
 pub static REQUIRE_REPO_EXTENSION_METADATA: Precomputed<RequireRepoExtensionMetadataMode> =
     Precomputed::new("require_repo_extension_metadata");

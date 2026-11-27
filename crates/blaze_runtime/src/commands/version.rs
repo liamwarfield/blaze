@@ -54,9 +54,9 @@ impl BlazeCommand for VersionCommand {
         env: &mut CommandEnvironment,
         options: &OptionsParsingResult,
     ) -> BlazeCommandResult {
-        // PORT: `env.getEventBus().post(new NoBuildEvent())` only reaches the Build Event
-        // Protocol, which is ported for build and test; a BEP file requested for this command
-        // fails loudly before it runs (crate::unported_options).
+        // `env.getEventBus().post(new NoBuildEvent())` reaches only the Build Event Protocol,
+        // which Bazel does not write for this command (BazelBuildEventServiceModule
+        // .ALLOWED_COMMANDS; oracle: no file for --build_event_json_file).
         let info = Self::get_info(
             env.get_runtime().get_product_name(),
             &BlazeVersionInfo::instance(),

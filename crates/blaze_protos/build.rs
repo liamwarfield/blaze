@@ -60,6 +60,8 @@ const PROTOS: &[&str] = &[
     // Well-known types JsonFormat prints specially; compiled so that `Any` can hold them.
     "google/protobuf/wrappers.proto",
     "google/protobuf/field_mask.proto",
+    // The workspace rules log (`--experimental_workspace_rules_log_file`).
+    "src/main/java/com/google/devtools/build/lib/bazel/debug/workspace_log.proto",
 ];
 
 fn main() {

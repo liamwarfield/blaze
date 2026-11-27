@@ -88,11 +88,16 @@ pub trait ArenaSlot: Default + Send + Sync + 'static {
     fn held_count(&self) -> usize {
         0
     }
+
+    /// Whether the slot lasts one command: [`end_command`] drops it after every command (memo
+    /// tables whose entries hold heaps or addresses, decision D7 amended 2026-11-26).
+    const PER_COMMAND: bool = false;
 }
 
 struct Slot {
     type_id: TypeId,
     order: ReleaseOrder,
+    per_command: bool,
     value: Arc<dyn Any + Send + Sync>,
     name: &'static str,
     count: fn(&Arc<dyn Any + Send + Sync>) -> usize,
@@ -127,6 +132,7 @@ impl BuildArena {
         slots.push(Slot {
             type_id,
             order: T::RELEASE_ORDER,
+            per_command: T::PER_COMMAND,
             value: value.clone(),
             name: std::any::type_name::<T>(),
             count: count_of::<T>,
@@ -172,6 +178,28 @@ static CURRENT: LazyLock<Mutex<Current>> = LazyLock::new(|| {
 pub fn slot<T: ArenaSlot>() -> Arc<T> {
     let arena = CURRENT.lock().arena.clone();
     arena.slot::<T>()
+}
+
+/// Drops the per-command slots ([`ArenaSlot::PER_COMMAND`]) of the current arena; they are
+/// created empty again on their next use. The server calls it after every command.
+///
+/// PORT: Blaze-only (decision D7, amended 2026-11-26).
+pub fn end_command() {
+    let arena = CURRENT.lock().arena.clone();
+    let mut dropped = Vec::new();
+    {
+        let mut slots = arena.slots.write();
+        let mut i = 0;
+        while i < slots.len() {
+            if slots[i].per_command {
+                dropped.push(slots.remove(i));
+            } else {
+                i += 1;
+            }
+        }
+    }
+    dropped.sort_by_key(|s| s.order);
+    drop(dropped);
 }
 
 /// A claim on the current arena: while any lease is held, [`release_if_unused`] releases

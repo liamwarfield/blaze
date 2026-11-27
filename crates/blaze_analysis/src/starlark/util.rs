@@ -309,6 +309,7 @@ pub(crate) fn get_filtered_execution_info(
         None => BTreeMap::new(),
         Some(x) => dict_noneable_cast_string_string(x, "execution_requirements")?
             .into_iter()
+            // Java: com/google/devtools/build/lib/packages/TargetUtils.java:312 TargetUtils.filter
             .filter(|(k, _)| legal_exec_info_keys(k))
             .collect(),
     };

@@ -20,6 +20,8 @@ use crate::version::Version;
 /// Specifies that the module should be pinned to a single version, and/or come from a specific
 /// registry, and/or use local patches. Port of `SingleVersionOverride`.
 // Java: com/google/devtools/build/lib/bazel/bzlmod/SingleVersionOverride.java:37 SingleVersionOverride
+// Java: com/google/devtools/build/lib/bazel/bzlmod/SingleVersionOverride.java:55 SingleVersionOverride.getRegistry
+// Java: com/google/devtools/build/lib/bazel/bzlmod/SingleVersionOverride.java:60 SingleVersionOverride.create
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SingleVersionOverride {
     /// The version to pin the module to; empty if it shouldn't be pinned.
@@ -37,6 +39,8 @@ pub struct SingleVersionOverride {
 /// Specifies that the module should still come from a registry, but multiple versions of it
 /// should be allowed to coexist. Port of `MultipleVersionOverride`.
 // Java: com/google/devtools/build/lib/bazel/bzlmod/MultipleVersionOverride.java:27 MultipleVersionOverride
+// Java: com/google/devtools/build/lib/bazel/bzlmod/MultipleVersionOverride.java:37 MultipleVersionOverride.getRegistry
+// Java: com/google/devtools/build/lib/bazel/bzlmod/MultipleVersionOverride.java:42 MultipleVersionOverride.create
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MultipleVersionOverride {
     pub versions: Vec<Version>,
@@ -471,6 +475,8 @@ impl InterimModuleBuilder {
 
 /// A node in the external dependency graph after module resolution. Port of `Module`.
 // Java: com/google/devtools/build/lib/bazel/bzlmod/Module.java:37 Module
+// PORT: skipped, the AutoValue builder is a struct literal at its callers: Module.builder, Module.Builder.setName, Module.Builder.setVersion, Module.Builder.setKey, Module.Builder.setRepoName, Module.Builder.setExecutionPlatformsToRegister, Module.Builder.setToolchainsToRegister, Module.Builder.setDeps
+// PORT: skipped, the AutoValue builder is a struct literal at its callers: Module.Builder.depsBuilder, Module.Builder.setFlagAliases, Module.Builder.addDep, Module.Builder.setRepoSpec, Module.Builder.setExtensionUsages, Module.Builder.extensionUsagesBuilder, Module.Builder.addExtensionUsage
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Module {
     pub name: String,

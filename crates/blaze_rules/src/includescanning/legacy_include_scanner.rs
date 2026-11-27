@@ -321,7 +321,7 @@ impl LegacyIncludeScanner {
     }
 
     /// Locates an included file along the framework search paths. The result is cacheable.
-    // Java: com/google/devtools/build/lib/includescanning/LegacyIncludeScanner.java:155 InclusionCache.locateOnFrameworkPaths
+    // Java: com/google/devtools/build/lib/includescanning/LegacyIncludeScanner.java:243 InclusionCache.locateOnFrameworkPaths
     fn locate_on_framework_paths(
         &self,
         framework_name: &str,

@@ -52,7 +52,7 @@ use crate::skyframe_action_executor::{
 };
 
 /// `ActionExecutionFunction`: executes an action once all its inputs are available.
-// Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:137 ActionExecutionFunction
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:136 ActionExecutionFunction
 pub struct ActionExecutionFunction {
     pub skyframe_action_executor: Arc<SkyframeActionExecutor>,
     pub seam: Arc<dyn AnalysisSeam>,
@@ -60,7 +60,7 @@ pub struct ActionExecutionFunction {
 
 /// `ActionUtils.getActionForLookupData`.
 // PORT: skipped, ActionUtils.<init>: the private constructor of a static utility class.
-// Java: com/google/devtools/build/lib/skyframe/ActionUtils.java:40 ActionUtils.getActionForLookupData
+// Java: com/google/devtools/build/lib/skyframe/ActionUtils.java:26 ActionUtils.getActionForLookupData
 pub fn get_action_for_lookup_data(
     seam: &dyn AnalysisSeam,
     env: &mut Environment<'_>,
@@ -114,13 +114,13 @@ fn to_compute_error(e: ExecutionFailure) -> ComputeError {
 
 /// `new ActionExecutionFunctionException(e)`: used to declare all the exception types that can be
 /// wrapped in the exception thrown by `ActionExecutionFunction.compute`.
-// Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1314 ActionExecutionFunction.ActionExecutionFunctionException
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1315 ActionExecutionFunction.ActionExecutionFunctionException
 fn action_execution_function_exception(e: ActionExecutionException) -> SkyFunctionException {
     // We conservatively assume that the error is transient. We don't have enough information to
     // distinguish non-transient errors (e.g. compilation error from a deterministic compiler)
     // from transient ones (e.g. IO error).
     // isCatastrophic(): actionException.isCatastrophe().
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1328 ActionExecutionFunction.ActionExecutionFunctionException.isCatastrophic
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1329 ActionExecutionFunction.ActionExecutionFunctionException.isCatastrophic
     let catastrophic = e.is_catastrophe();
     SkyFunctionException {
         catastrophic,
@@ -131,7 +131,7 @@ fn action_execution_function_exception(e: ActionExecutionException) -> SkyFuncti
 /// An action's inputs needed for execution. May not just be the result of `Action.getInputs()`.
 /// If the action cache's view of this action contains additional inputs, it will request
 /// metadata for them, so we consider those inputs as dependencies of this action as well.
-// Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:558 ActionExecutionFunction.AllInputs
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:561 ActionExecutionFunction.AllInputs
 struct AllInputs {
     default_inputs: NestedSet<Artifact>,
     action_cache_inputs: Option<Vec<Artifact>>,
@@ -139,7 +139,7 @@ struct AllInputs {
 
 impl AllInputs {
     /// Compute the inputs to request from Skyframe.
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:573 AllInputs.getAllInputs
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:576 AllInputs.getAllInputs
     fn get_all_inputs(&self) -> NestedSet<Artifact> {
         let mut builder = NestedSetBuilder::new_builder(Order::STABLE_ORDER);
         builder.add_transitive(&self.default_inputs);
@@ -176,7 +176,7 @@ struct InputDiscoveryState {
 
 /// Skyframe implementation of `PackageRootResolver`. Should be used only from SkyFunctions,
 /// because it uses `SkyFunction.Environment` for evaluation of `ContainingPackageLookupValue`.
-// Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:584 ActionExecutionFunction.PackageRootResolverWithEnvironment
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:591 ActionExecutionFunction.PackageRootResolverWithEnvironment
 struct PackageRootResolverWithEnvironment<'a, 'b> {
     env: RefCell<&'a mut Environment<'b>>,
     lookup: Option<Arc<dyn ContainingPackageRootLookup>>,
@@ -185,7 +185,7 @@ struct PackageRootResolverWithEnvironment<'a, 'b> {
 }
 
 impl PackageRootResolver for PackageRootResolverWithEnvironment<'_, '_> {
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:594 PackageRootResolverWithEnvironment.findPackageRootsForFiles
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:602 PackageRootResolverWithEnvironment.findPackageRootsForFiles
     fn find_package_roots_for_files(
         &self,
         exec_paths: &[PathFragment],
@@ -504,7 +504,7 @@ impl ActionExecutionFunction {
                 }
                 // Java: catch (UndoneInputsException e) in compute (not counted as an execution
                 // error).
-                // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:206 ActionExecutionFunction.compute
+                // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:175 ActionExecutionFunction.compute
                 Err(CheckInputsFailure::UndoneInputs(undone_inputs)) => {
                     let executor = &*self.skyframe_action_executor;
                     return Ok(Some(ActionExecutionFunctionValue::Reset(
@@ -559,7 +559,7 @@ impl ActionExecutionFunction {
             // That method prints the error in the top-level reporter and also dumps the recorded
             // StdErr for the action. Label can be null in the case of, e.g., the
             // SystemActionOwner (for build-info.txt).
-            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:365 ActionExecutionFunction.computeInternal
+            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:213 ActionExecutionFunction.computeInternal
             Err(ExecutionFailure::Exception(e)) => {
                 return Err(action_execution_function_exception(
                     ActionExecutionException::already_reported(e),
@@ -576,7 +576,7 @@ impl ActionExecutionFunction {
                     SkyKey::new(ActionExecutionKey(action_lookup_data.clone())),
                 ))));
             }
-            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:347 ActionExecutionFunction.computeInternal
+            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:213 ActionExecutionFunction.computeInternal
             Err(ExecutionFailure::LostInputs(e)) => {
                 return Ok(self
                     .handle_lost_inputs(
@@ -748,7 +748,7 @@ impl ActionExecutionFunction {
         }))
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:690 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:664 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
     fn check_cache_and_execute_if_needed(
         &self,
         action: &ActionRef,
@@ -824,14 +824,14 @@ impl ActionExecutionFunction {
         output_metadata_store.prepare_for_action_execution();
 
         if action.discovers_inputs() {
-            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:729 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
+            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:664 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
             let mut discovered_inputs_duration = std::time::Duration::ZERO;
             if state.discovered_inputs.is_none() {
                 // PORT: action.prepareInputDiscovery() is not part of the ported Action protocol;
                 // its only override (CppCompileAction) clears additional inputs left over from an
                 // earlier build, and actions are created fresh for each build here.
                 let discovered_inputs = {
-                    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:736 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
+                    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:664 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
                     let _c = Profiler::instance()
                         .profile(ProfilerTask::DISCOVER_INPUTS, "discoverInputs");
                     let _skyframe_allowed = state.input_artifact_data.with_skyframe_allowed();
@@ -839,7 +839,7 @@ impl ActionExecutionFunction {
                     // execution in this same call uses as well. PORT: Java keeps it in the
                     // SkyKeyComputeState across restarts; here a restart (missing deps) creates
                     // the store, and so the file system, again (see create_action_file_system).
-                    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:740 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
+                    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:664 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
                     executor.discover_inputs(
                         env,
                         action,
@@ -871,7 +871,7 @@ impl ActionExecutionFunction {
             }
 
             // When discover inputs completes, post an event with the duration values.
-            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:769 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
+            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:664 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
             // SpawnMetrics.Builder.forOtherExec().setParseTime(d).setTotalTime(d): toMs is
             // `Ints.saturatedCast(duration.toMillis())`.
             let discovered_inputs_millis =
@@ -899,7 +899,7 @@ impl ActionExecutionFunction {
             output_metadata_store,
             action_start_time,
             action_lookup_data,
-            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:807 ActionPostprocessingImpl.run
+            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:801 ActionPostprocessingImpl.run
             &mut |env, action, input_metadata_provider, output_metadata_store, client_env| {
                 if action.discovers_inputs() {
                     state.discovered_inputs = Some(action.get_inputs());
@@ -929,7 +929,7 @@ impl ActionExecutionFunction {
     /// PORT: Java adds inputs discovered after execution to a separate map
     /// (`lateDiscoveredInputArtifactData`) only because `ActionInputMap` is not thread-safe; here
     /// both go into the same (synchronized) map.
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:845 ActionExecutionFunction.addDiscoveredInputs
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:835 ActionExecutionFunction.addDiscoveredInputs
     fn add_discovered_inputs(
         &self,
         state: &InputDiscoveryState,
@@ -985,7 +985,7 @@ impl ActionExecutionFunction {
                             message.to_string(),
                             execution::Code::DiscoveredInputDoesNotExist,
                         );
-                        // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:503 ActionExecutionFunction.addDiscoveredInputs
+                        // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:835 ActionExecutionFunction.addDiscoveredInputs
                         return Err(ActionExecutionException::already_reported(
                             ActionExecutionException::new(
                                 message,
@@ -1503,7 +1503,7 @@ impl<'a> ActionExecutionFunctionExceptionHandler<'a> {
 
     /// The inputs (and scheduling dependencies) of the action by the key of their generating
     /// action. Source and tree artifacts are their own keys and are left out.
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:977 ActionExecutionFunction.checkInputs (the memoized supplier)
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:968 ActionExecutionFunction.checkInputs (the memoized supplier)
     fn associated_inputs(&self, key: &SkyKey) -> IndexSet<Artifact> {
         self.sky_key_to_derived_artifact_set_for_exceptions
             .get_or_init(|| {
@@ -1595,7 +1595,7 @@ impl<'a> ActionExecutionFunctionExceptionHandler<'a> {
         Ok(some_inputs_missing)
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1437 ActionExecutionFunctionExceptionHandler.handleActionExecutionExceptionFromSkykey
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1438 ActionExecutionFunctionExceptionHandler.handleActionExecutionExceptionFromSkykey
     fn handle_action_execution_exception_from_skykey(
         &mut self,
         key: &SkyKey,
@@ -1663,7 +1663,7 @@ impl<'a> ActionExecutionFunctionExceptionHandler<'a> {
         }
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1486 ActionExecutionFunctionExceptionHandler.accumulateMissingFileArtifactValue
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1485 ActionExecutionFunctionExceptionHandler.accumulateMissingFileArtifactValue
     fn accumulate_missing_file_artifact_value(
         &mut self,
         input: &Artifact,
@@ -1683,7 +1683,7 @@ impl<'a> ActionExecutionFunctionExceptionHandler<'a> {
     }
 
     /// `Err` if there is any accumulated exception from the inputs.
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1493 ActionExecutionFunctionExceptionHandler.maybeThrowException
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:1494 ActionExecutionFunctionExceptionHandler.maybeThrowException
     fn maybe_throw_exception(&mut self) -> Result<(), ActionExecutionException> {
         for missing_input in &self.missing_artifact_causes {
             self.skyframe_action_executor.print_error(

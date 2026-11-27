@@ -79,20 +79,28 @@ impl<'v> StarlarkValue<'v> for StarlarkRunfiles {
         Some(RES.methods())
     }
 
-    fn get_attr(&self, attribute: &str, _heap: Heap<'v>) -> Option<Value<'v>> {
+    fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         match attribute {
             // Java: com/google/devtools/build/lib/analysis/Runfiles.java:228 Runfiles.getArtifactsForStarlark
-            "files" => Some(depset_value(&artifacts_to_depset(self.0.get_artifacts()))),
+            "files" => Some(depset_value(
+                heap,
+                &artifacts_to_depset(self.0.get_artifacts()),
+            )),
             // Java: com/google/devtools/build/lib/analysis/Runfiles.java:238 Runfiles.getSymlinksForStarlark
-            "symlinks" => Some(depset_value(&symlinks_to_depset(self.0.get_symlinks()))),
+            "symlinks" => Some(depset_value(
+                heap,
+                &symlinks_to_depset(self.0.get_symlinks()),
+            )),
             // Java: com/google/devtools/build/lib/analysis/Runfiles.java:405 Runfiles.getRootSymlinksForStarlark
-            "root_symlinks" => Some(depset_value(&symlinks_to_depset(
-                self.0.get_root_symlinks(),
-            ))),
+            "root_symlinks" => Some(depset_value(
+                heap,
+                &symlinks_to_depset(self.0.get_root_symlinks()),
+            )),
             // Java: com/google/devtools/build/lib/analysis/Runfiles.java:247 Runfiles.getEmptyFilenamesForStarlark
-            "empty_filenames" => Some(depset_value(&strings_to_depset(
-                &self.0.get_empty_filenames_for_starlark(),
-            ))),
+            "empty_filenames" => Some(depset_value(
+                heap,
+                &strings_to_depset(&self.0.get_empty_filenames_for_starlark()),
+            )),
             _ => None,
         }
     }

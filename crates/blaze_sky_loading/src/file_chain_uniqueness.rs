@@ -15,6 +15,7 @@ use crate::sky_functions;
 
 /// The value of the uniqueness functions. Java: `EmptySkyValue.INSTANCE`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+// Java: com/google/devtools/build/skyframe/EmptySkyValue.java:26 EmptySkyValue.<init>
 pub struct EmptySkyValue;
 
 /// Creates a canonicalized representation of the cycle specified by `cycle`. `cycle` must be

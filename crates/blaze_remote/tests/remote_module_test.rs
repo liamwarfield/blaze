@@ -934,15 +934,16 @@ fn invalid_tls_certificate_fails_calls_not_setup() {
     );
 }
 
+/// Not a Java test: `--remote_max_connections` sizes the channel's `DynamicConnectionPool`
+/// (`RemoteModule.setup` → `ReferenceCountedChannel`), which the port once refused.
 #[test]
-#[should_panic(expected = "not ported yet: DynamicConnectionPool")]
-fn remote_max_connections_fails_loudly() {
+fn remote_max_connections_sizes_the_connection_pool() {
     let env = TestEnv::new();
     let (_cache_server, _impl) = create_fake_server(cache_only_caps());
     let mut remote_options = Options::<RemoteOptions>::get_defaults();
     remote_options.remote_cache = Some(target(&_cache_server));
     remote_options.remote_max_connections = 5;
-    let _ = before_command(&env, remote_options);
+    before_command(&env, remote_options).unwrap();
 }
 
 /// Review 2026-11-19 R12: with a gRPC cache, `setup` installs the ByteStream uploader factory

@@ -159,6 +159,21 @@ impl<'v> StarlarkValue<'v> for PackageSpecificationProvider {
         Some(RES.methods())
     }
 
+    // Java: com/google/devtools/build/lib/packages/NativeInfo.java:97 NativeInfo.equals
+    fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
+        crate::info::native_info_equals(self, &PACKAGE_SPECIFICATION_INFO.key(), other)
+    }
+
+    // Java: com/google/devtools/build/lib/packages/NativeInfo.java:115 NativeInfo.hashCode
+    fn write_hash(&self, hasher: &mut starlark_map::StarlarkHasher) -> starlark::Result<()> {
+        crate::info::native_info_write_hash(self, &PACKAGE_SPECIFICATION_INFO.key(), hasher)
+    }
+
+    // Java: com/google/devtools/build/lib/packages/NativeInfo.java:125 NativeInfo.repr
+    fn collect_repr(&self, collector: &mut String) {
+        crate::info::native_info_collect_repr(self, collector)
+    }
+
     fn provide(&'v self, demand: &mut Demand<'_, 'v>) {
         demand.provide_value(InfoProviderKey(PACKAGE_SPECIFICATION_INFO.key()));
         demand.provide_value(DeeplyImmutable);

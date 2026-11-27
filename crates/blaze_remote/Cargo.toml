@@ -55,6 +55,9 @@ hyper-util = { workspace = true, features = ["client-legacy"] }
 # features as tonic's `tls-ring` and `tls-webpki-roots`: no new crates).
 tokio-rustls = { version = "0.26.1", default-features = false, features = ["logging", "tls12", "ring"] }
 webpki-roots = "1.0.10"
+# The HTTP cache's non-blocking connect (`Bootstrap.connect`), started when a channel is
+# acquired (already in the lock file, through tokio's dependencies).
+socket2 = "0.6"
 
 [build-dependencies]
 tonic-build.workspace = true

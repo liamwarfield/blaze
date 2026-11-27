@@ -15,9 +15,7 @@ use blaze_optdefs::command::common_command_options::CommonCommandOptions;
 use blaze_optdefs::command::execution_graph_module::ExecutionGraphModuleExecutionGraphOptions;
 use blaze_optdefs::misc::build_event_service_options::BuildEventServiceOptions;
 use blaze_optdefs::misc::build_event_stream_options::BuildEventStreamOptions;
-use blaze_optdefs::misc::debugging_options::DebuggingOptions;
 use blaze_optdefs::misc::remote_options::RemoteOptions;
-use blaze_optdefs::misc::starlark_debugger_options::StarlarkDebuggerOptions;
 
 use crate::command::CommandAnnotation;
 use crate::options_result::OptionsParsingResult;
@@ -26,26 +24,6 @@ use crate::options_result::OptionsParsingResult;
 /// not ported. With the default value of every option this returns without effect.
 pub(crate) fn check_unported_options(command: &CommandAnnotation, options: &OptionsParsingResult) {
     let command_name = command.name();
-
-    // SkyframeActionExecutor.archivedTreeArtifactsEnabledForMnemonic: the executor does not
-    // create archived tree artifacts, which is what the default filter (`-.*`) asks for.
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:420 SkyframeActionExecutor.archivedTreeArtifactsEnabledForMnemonic
-    if command.build_phase.executes()
-        && let Some(core_options) =
-            options.get_options::<blaze_optdefs::fragment::core_options::CoreOptions>()
-    {
-        let defaults = blaze_options::Options::<
-            blaze_optdefs::fragment::core_options::CoreOptions,
-        >::get_defaults();
-        if core_options.archived_artifacts_mnemonics_filter
-            != defaults.archived_artifacts_mnemonics_filter
-        {
-            blaze_util::unported!(
-                "SkyframeActionExecutor.archivedTreeArtifactsEnabledForMnemonic",
-                "--archived_tree_artifact_mnemonics_filter"
-            );
-        }
-    }
 
     // RemoteModule.beforeCommand: the remote cache, remote execution, the disk cache and the
     // remote output service act on the actions a command executes; the remote downloader on the
@@ -114,29 +92,9 @@ pub(crate) fn check_unported_options(command: &CommandAnnotation, options: &Opti
         );
     }
 
-    // StarlarkDebuggerModule.beforeCommand: the Starlark debug server.
-    // Java: com/google/devtools/build/lib/starlarkdebug/module/StarlarkDebuggerModule.java:36 StarlarkDebuggerModule.beforeCommand
-    if options
-        .get_options::<StarlarkDebuggerOptions>()
-        .is_some_and(|o| o.debug_starlark)
-    {
-        blaze_util::unported!(
-            "StarlarkDebuggerModule.beforeCommand",
-            "--experimental_skylark_debug"
-        );
-    }
+    // StarlarkDebuggerModule.beforeCommand: ported (bazel_modules.rs).
 
-    // WorkspaceRuleModule.beforeCommand: the log of workspace rule events.
-    // Java: com/google/devtools/build/lib/bazel/debug/WorkspaceRuleModule.java:40 WorkspaceRuleModule.beforeCommand
-    if options
-        .get_options::<DebuggingOptions>()
-        .is_some_and(|o| o.workspace_rules_log_file.is_some())
-    {
-        blaze_util::unported!(
-            "WorkspaceRuleModule.beforeCommand",
-            "--experimental_workspace_rules_log_file"
-        );
-    }
+    // WorkspaceRuleModule.beforeCommand: ported (bazel_modules.rs).
 
     if let Some(common_options) = options.get_options::<CommonCommandOptions>() {
         // ThreadDumpModule.beforeCommand: periodic thread dumps of the server.
@@ -152,6 +110,8 @@ pub(crate) fn check_unported_options(command: &CommandAnnotation, options: &Opti
 
 #[cfg(test)]
 mod tests {
+    use blaze_optdefs::misc::debugging_options::DebuggingOptions;
+    use blaze_optdefs::misc::starlark_debugger_options::StarlarkDebuggerOptions;
     use blaze_options::{OptionsClass, OptionsParser};
 
     use super::*;

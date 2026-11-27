@@ -58,6 +58,7 @@ pub enum Type {
     StringNoIntern,
     // Java: com/google/devtools/build/lib/packages/Type.java:288 Type.BOOLEAN
     Boolean,
+    // PORT: skipped, the private constructor of a static-only class: Types.<init>
     // Java: com/google/devtools/build/lib/packages/Types.java:36 Types.STRING_LIST
     StringList,
     // Java: com/google/devtools/build/lib/packages/Types.java:40 Types.STRING_SET
@@ -256,6 +257,7 @@ impl Type {
     /// Converts a legal Starlark value `x` into a value of this type. `what` describes `x` in
     /// error messages (Java `Object what`, `None` is Java null); `label_converter` must be given
     /// to parse non-canonical label strings.
+    // Java: com/google/devtools/build/lib/packages/Type.java:143 Type.convert
     // Java: com/google/devtools/build/lib/packages/Type.java:110 Type.convert
     pub fn convert<'v>(
         self,
@@ -287,6 +289,15 @@ impl Type {
         label_converter: Option<&LabelConverter>,
         heap: Option<Heap<'v>>,
     ) -> Result<AttrValue, ConversionException> {
+        // A native `Map` that is not a dict (`Starlark.type` "Map": Bazel's `existing_rule` views)
+        // makes its entries on a heap. A BUILD file's attribute values are converted without one
+        // (`selectable_convert`); the converted value keeps none of them, so a temporary heap
+        // serves.
+        if heap.is_none() && x.get_type() == "Map" {
+            return Heap::temp(|temp| {
+                convert_on_temporary_heap(self, x, what, label_converter, temp)
+            });
+        }
         match self {
             Type::Integer => convert_integer(x, what).map(AttrValue::Int),
             Type::Boolean => convert_boolean(x, what, label_converter).map(AttrValue::Bool),
@@ -378,13 +389,18 @@ impl Type {
             | Type::LabelListDict => {
                 // `o.entrySet()`: a key-tracking dict (`ctx.var`) records every key.
                 starlark::values::dict::dict_record_all_keys_accessed(x);
-                let Some(o) = DictRef::from_value(x) else {
-                    return Err(ConversionException::of_type(self, x, what));
+                // Java `x instanceof Map`: a dict or a native map (Bazel's `existing_rule` views).
+                let input: Vec<(Value<'v>, Value<'v>)> = match DictRef::from_value(x) {
+                    Some(o) => o.iter().collect(),
+                    None => match java_map_entry_list(x, Some(heap)) {
+                        Some(entries) => entries?,
+                        None => return Err(ConversionException::of_type(self, x, what)),
+                    },
                 };
                 let key_type = self.get_key_type().unwrap();
                 let value_type = self.get_value_type().unwrap();
-                let mut result: Vec<(Value<'v>, Value<'v>)> = Vec::with_capacity(o.len());
-                for (k, v) in o.iter() {
+                let mut result: Vec<(Value<'v>, Value<'v>)> = Vec::with_capacity(input.len());
+                for (k, v) in input {
                     let k2 = key_type.copy_and_lift_starlark_value(
                         k,
                         Some(&"dict key element"),
@@ -882,6 +898,33 @@ fn convert_tristate(
     }
 }
 
+/// [`Type::convert_impl`] of `x` with a temporary heap for the entries of a native `Map`.
+fn convert_on_temporary_heap<'v, 't>(
+    type_: Type,
+    x: Value<'v>,
+    what: Option<&dyn fmt::Display>,
+    label_converter: Option<&LabelConverter>,
+    heap: Heap<'t>,
+) -> Result<AttrValue, ConversionException> {
+    // SAFETY: only the lifetime changes. `x` is alive for the whole call; the values made on
+    // `heap` die with it, and the result (an `AttrValue` of strings, labels and numbers) holds
+    // none of them.
+    let x = unsafe { std::mem::transmute::<Value<'v>, Value<'t>>(x) };
+    type_.convert_impl(x, what, label_converter, Some(heap))
+}
+
+/// Java `x instanceof Map` for a value that is not a dict: a native value Java implements as a
+/// `Map` (Bazel's `existing_rule` views, starlark-rust patch 0069), with its `entrySet()`; `None`
+/// for any other value.
+/// PORT: a conversion without a heap comes from native code, which never holds such a value.
+fn java_map_entry_list<'v>(
+    x: Value<'v>,
+    heap: Option<Heap<'v>>,
+) -> Option<Result<Vec<(Value<'v>, Value<'v>)>, ConversionException>> {
+    let entries = starlark::values::dict::java_map_entries(x, heap?)?;
+    Some(entries.map_err(|e| ConversionException::new(blaze_starlark::error::bare_message(&e))))
+}
+
 /// The elements of a Java `Iterable` (list, tuple) or `Depset`, or `None` if `x` is neither.
 fn iterable_elements<'v>(
     x: Value<'v>,
@@ -910,6 +953,10 @@ fn iterable_elements<'v>(
     starlark::values::dict::dict_record_all_keys_accessed(x);
     if let Some(d) = DictRef::from_value(x) {
         return Ok(Some(d.keys().collect()));
+    }
+    // Bazel's `existing_rule` views are Java `StarlarkIterable`s over their keys.
+    if let Some(entries) = java_map_entry_list(x, heap) {
+        return Ok(Some(entries?.into_iter().map(|(k, _)| k).collect()));
     }
     match x.get_type() {
         // range is a Java Iterable; starlark-rust iterates it only with a heap.
@@ -1003,16 +1050,20 @@ fn convert_dict<'v>(
     // Java: com/google/devtools/build/lib/packages/Type.java:574 (`o.entrySet()`): a key-tracking
     // dict (`ctx.var`) records every key.
     starlark::values::dict::dict_record_all_keys_accessed(x);
-    let Some(o) = DictRef::from_value(x) else {
-        return Err(ConversionException::of_type(type_, x, what));
+    // Java `x instanceof Map`: a dict or a native map (Bazel's `existing_rule` views).
+    let input: Vec<(Value<'v>, Value<'v>)> = match DictRef::from_value(x) {
+        Some(o) => o.iter().collect(),
+        None => match java_map_entry_list(x, heap) {
+            Some(entries) => entries?,
+            None => return Err(ConversionException::of_type(type_, x, what)),
+        },
     };
     let key_type = type_.get_key_type().unwrap();
     let value_type = type_.get_value_type().unwrap();
     // It's possible that #convert() calls transform non-equal keys into equal ones so we can't
     // just use ImmutableMap.Builder() here (that throws on collisions); IndexMap::insert keeps
     // the first position and the last value, as LinkedHashMap.put.
-    let mut entries: Vec<(AttrValue, AttrValue)> = Vec::with_capacity(o.len());
-    let input: Vec<(Value<'v>, Value<'v>)> = o.iter().collect();
+    let mut entries: Vec<(AttrValue, AttrValue)> = Vec::with_capacity(input.len());
     for (k, v) in &input {
         entries.push((
             key_type.convert_impl(*k, Some(&"dict key element"), label_converter, heap)?,

@@ -349,6 +349,11 @@ pub struct RepoRuleId {
 }
 
 impl RepoRuleId {
+    // PORT: the AutoBuilder is `new` / `new_nullable` (a lockfile id may lack the .bzl label).
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/RepoRuleId.java:36 RepoRuleId.builder
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/RepoRuleId.java:47 RepoRuleId.Builder.bzlFileLabel
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/RepoRuleId.java:51 RepoRuleId.Builder.ruleName
+    // PORT: skipped, no Rust caller copies or half-builds an id: RepoRuleId.toBuilder, RepoRuleId.Builder.isRuleNameSet
     pub fn new(bzl_file_label: Label, rule_name: impl Into<String>) -> RepoRuleId {
         RepoRuleId {
             bzl_file_label: Some(bzl_file_label),
@@ -442,6 +447,7 @@ pub static GIT_REPOSITORY: LazyLock<RepoRuleId> = LazyLock::new(|| {
     )
 });
 
+// PORT: skipped, the private constructor of a static-only class: LocalPathRepoSpecs.<init>
 /// `LocalPathRepoSpecs.LOCAL_REPOSITORY`.
 // Java: com/google/devtools/build/lib/bazel/bzlmod/LocalPathRepoSpecs.java:27 LocalPathRepoSpecs.LOCAL_REPOSITORY
 pub static LOCAL_REPOSITORY: LazyLock<RepoRuleId> = LazyLock::new(|| {

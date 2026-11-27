@@ -207,6 +207,7 @@ impl PartialEq for RepoDefinitionValue {
 /// SkyKey for [`RepoDefinitionValue`]. `Debug` prints `REPO_DEFINITION:@@name`.
 // Java: com/google/devtools/build/lib/bazel/repository/RepoDefinitionValue.java:58 RepoDefinitionValue.Key
 #[derive(Clone, PartialEq, Eq, Hash)]
+// PORT: skipped, a struct key (Key::FUNCTION; no interning): RepoDefinitionValue.Key.create, RepoDefinitionValue.Key.functionName, RepoDefinitionValue.Key.getSkyKeyInterner
 pub struct RepoDefinitionKey(pub RepositoryName);
 
 impl RepoDefinitionKey {

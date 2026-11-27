@@ -46,6 +46,62 @@ pub use java_starlark_common::java_common_internal_value;
 //   com/google/devtools/build/lib/starlarkbuildapi/java/JavaRuntimeInfoApi.java
 //   com/google/devtools/build/lib/starlarkbuildapi/java/JavaToolchainStarlarkApiProviderApi.java
 //   com/google/devtools/build/lib/starlarkbuildapi/java/JavaModuleFlagsProviderApi.java
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaAnnotationProcessingApi.usesAnnotationProcessing
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaAnnotationProcessingApi.getGenClassJar
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaAnnotationProcessingApi.getGenSourceJar
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaAnnotationProcessingApi.getTransitiveGenClassJarsForStarlark
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaAnnotationProcessingApi.getTransitiveGenSourceJarsForStarlark
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaAnnotationProcessingApi.getProcessorClasspathForStarlark
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaAnnotationProcessingApi.getProcessorClassNamesList
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaCompilationInfoProviderApi.getJavacOptsStarlark
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaCompilationInfoProviderApi.getRuntimeClasspath
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaCompilationInfoProviderApi.getCompilationClasspath
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaCompilationInfoProviderApi.getBootClasspathList
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaInfoApi.isNeverlink
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaInfoApi.getTransitiveRuntimeJars
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaInfoApi.getTransitiveCompileTimeJars
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaInfoApi.getCompileTimeJars
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaInfoApi.getFullCompileTimeJars
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaInfoApi.headerCompilationDirectDeps
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaInfoApi.getSourceJars
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaInfoApi.getOutputJars
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaInfoApi.getGenJarsProvider
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaInfoApi.getCompilationInfoProvider
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaInfoApi.getRuntimeOutputJars
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaInfoApi.getTransitiveSourceJars
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaInfoApi.getTransitiveNativeLibrariesForStarlark
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaInfoApi.getCcLinkParamInfo
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaInfoApi.getJavaModuleFlagsInfo
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaInfoApi.getTransitiveFullCompileJars
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaInfoApi.getCompileTimeJavaDependencies
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaInfoApi.getJavaConstraintsStarlark
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaModuleFlagsProviderApi.getAddExports
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaModuleFlagsProviderApi.getAddOpens
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaRuleOutputJarsProviderApi.getJavaOutputs
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaRuleOutputJarsProviderApi.getJdeps
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaRuleOutputJarsProviderApi.getNativeHeaders
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaRuntimeInfoApi.javaHome
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaRuntimeInfoApi.javaBinaryExecPath
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaRuntimeInfoApi.javaHomeRunfilesPath
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaRuntimeInfoApi.javaBinaryRunfilesPath
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaRuntimeInfoApi.starlarkJavaBaseInputs
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaRuntimeInfoApi.starlarkHermeticInputs
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaRuntimeInfoApi.libCtSym
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaRuntimeInfoApi.libModules
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaRuntimeInfoApi.defaultCDS
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaRuntimeInfoApi.starlarkHermeticStaticLibs
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaRuntimeInfoApi.version
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaToolchainStarlarkApiProviderApi.getSourceVersion
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaToolchainStarlarkApiProviderApi.getTargetVersion
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaToolchainStarlarkApiProviderApi.getToolchainLabel
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaToolchainStarlarkApiProviderApi.getSingleJar
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaToolchainStarlarkApiProviderApi.getStarlarkBootclasspath
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaToolchainStarlarkApiProviderApi.getStarlarkJvmOptions
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaToolchainStarlarkApiProviderApi.getIjar
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaToolchainStarlarkApiProviderApi.getJacocoRunner
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaToolchainStarlarkApiProviderApi.getStarlarkTools
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaToolchainStarlarkApiProviderApi.getJavaRuntime
+// PORT: skipped, no implementation under src/main/java at the pin (see above): JavaToolchainStarlarkApiProviderApi.getProguardAllowlister
 
 use std::sync::Arc;
 

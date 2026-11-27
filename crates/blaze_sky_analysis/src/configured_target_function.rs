@@ -128,6 +128,9 @@ impl ConfiguredTargetFunction {
         // PORT: skipped, the environment wrapper only releases and reacquires that semaphore around dependency fetches (scheduling, nothing a build shows): StateInformingSkyFunctionEnvironment.<init> StateInformingSkyFunctionEnvironment.getValue StateInformingSkyFunctionEnvironment.getValueOrThrow StateInformingSkyFunctionEnvironment.valuesMissing StateInformingSkyFunctionEnvironment.getValuesAndExceptions StateInformingSkyFunctionEnvironment.getListener StateInformingSkyFunctionEnvironment.inErrorBubbling
         // PORT: skipped, same wrapper: StateInformingSkyFunctionEnvironment.getTemporaryDirectDeps StateInformingSkyFunctionEnvironment.injectVersionForNonHermeticFunction StateInformingSkyFunctionEnvironment.registerDependencies StateInformingSkyFunctionEnvironment.dependOnFuture StateInformingSkyFunctionEnvironment.getLookupHandleForPreviouslyRequestedDeps StateInformingSkyFunctionEnvironment.getState StateInformingSkyFunctionEnvironment.getMaxTransitiveSourceVersionSoFar StateInformingSkyFunctionEnvironment.Informee.inform
         let mut state = DependencyResolverState::new(self.store_transitive_packages);
+        state
+            .transitive_state
+            .set_prerequisite_packages(services.prerequisite_packages.get().cloned());
 
         // computeTargetAndConfiguration
         let configured_target_key =
@@ -503,7 +506,10 @@ fn create_configured_target(
     // PORT: the Starlark exec transition is not loaded here (the bundled exec transition is
     // applied by function_transition_util), so StarlarkExecTransitionLoadingException cannot
     // occur.
-    let factory = ConfiguredTargetFactory::new(services.rule_class_provider.clone());
+    let factory = ConfiguredTargetFactory::with_conflict_finder(
+        services.rule_class_provider.clone(),
+        services.conflict_finder.clone(),
+    );
     // Java: the CachingAnalysisEnvironment holds `env` (getSkyframeEnv()); it is lent to the
     // factory call (see blaze_analysis::skyframe_env).
     let created = blaze_analysis::skyframe_env::with_skyframe_env(env, || {

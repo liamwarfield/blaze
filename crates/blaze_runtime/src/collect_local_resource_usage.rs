@@ -23,7 +23,7 @@ const BUCKET_DURATION: Duration = Duration::from_secs(1);
 const LOCAL_RESOURCES_COLLECT_SLEEP_INTERVAL: Duration = Duration::from_millis(200);
 
 /// `ResourceEstimator` (the resource manager's estimation of used CPU and memory).
-// Java: com/google/devtools/build/lib/actions/ResourceEstimator.java:17 ResourceEstimator
+// Java: com/google/devtools/build/lib/actions/ResourceEstimator.java:21 ResourceEstimator
 pub trait ResourceEstimator: Send + Sync {
     fn get_used_cpu(&self) -> f64;
     fn get_used_memory_in_mb(&self) -> f64;
@@ -53,7 +53,7 @@ struct State {
 }
 
 /// Thread to collect local resource usage data and log into JSON profile.
-// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:57 CollectLocalResourceUsage
+// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:58 CollectLocalResourceUsage
 pub struct CollectLocalResourceUsage {
     worker_process_metrics_collector: &'static WorkerProcessMetricsCollector,
     resource_estimator: Option<Arc<dyn ResourceEstimator>>,
@@ -74,7 +74,7 @@ impl CollectLocalResourceUsage {
     /// PORT: Java's `BugReporter` is only used by the JVM heap collector (skipped). The Skyframe
     /// graph (`--experimental_collect_skyframe_counts_in_profiler`) and the resource estimator are
     /// `None` when the caller has none (see `start`).
-    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:85 CollectLocalResourceUsage.<init>
+    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:92 CollectLocalResourceUsage.<init>
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         worker_process_metrics_collector: &'static WorkerProcessMetricsCollector,
@@ -119,12 +119,13 @@ impl CollectLocalResourceUsage {
         }
     }
 
-    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:136 CollectLocalResourceUsage.createLocalCollectors
+    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:131 CollectLocalResourceUsage.createLocalCollectors
     fn create_local_collectors(&self) -> Vec<Box<dyn CounterSeriesCollector>> {
         let mut collectors: Vec<Box<dyn CounterSeriesCollector>> = Vec::new();
         collectors.push(Box::new(LocalCpuUsageCollector::new()));
-        // PORT: skipped, JVM only: LocalMemoryUsageCollector ("Memory usage (Bazel)", the JVM's
-        // heap and non-heap usage from MemoryMXBean).
+        // LocalMemoryUsageCollector ("Memory usage (Bazel)") reports the JVM's heap and
+        // non-heap usage from MemoryMXBean.
+        // PORT: skipped, JVM only (see above): CollectLocalResourceUsage.LocalMemoryUsageCollector.<init>, CollectLocalResourceUsage.LocalMemoryUsageCollector.collect
         collectors.push(Box::new(SystemCpuUsageCollector::new()));
         collectors.push(Box::new(SystemMemoryUsageCollector));
 
@@ -168,7 +169,7 @@ impl CollectLocalResourceUsage {
         collectors
     }
 
-    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:256 CollectLocalResourceUsage.logCollectedData
+    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:225 CollectLocalResourceUsage.logCollectedData
     fn log_collected_data(&self) {
         let mut state = self.state.lock();
         if !state.profiling_started {
@@ -212,7 +213,7 @@ impl CollectLocalResourceUsage {
 }
 
 /// `addRange(type, startTime, previousElapsed, nextElapsed, value)` on the state.
-// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:290 CollectLocalResourceUsage.addRange
+// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:253 CollectLocalResourceUsage.addRange
 fn add_range(
     time_series: &mut Option<Vec<(CounterSeriesTask, TimeSeries)>>,
     type_: &CounterSeriesTask,
@@ -237,12 +238,12 @@ fn add_range(
 }
 
 impl LocalResourceCollector for CollectLocalResourceUsage {
-    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:116 CollectLocalResourceUsage.start
+    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:121 CollectLocalResourceUsage.start
     fn start(&self) {
         let local_collectors = self.create_local_collectors();
         let state = self.state.clone();
         let wake = self.wake.clone();
-        // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:182 CollectLocalResourceUsage.Collector.run
+        // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:177 CollectLocalResourceUsage.Collector.run
         let run = move || {
             let stopwatch;
             let start_time;
@@ -301,6 +302,7 @@ impl LocalResourceCollector for CollectLocalResourceUsage {
             }
         };
         // collector.setDaemon(true); collector.start().
+        // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:172 CollectLocalResourceUsage.Collector.<init>
         let handle = std::thread::Builder::new()
             .name("collect-local-resources".to_string())
             // A plain Java thread: an exception reaches the default uncaught exception handler.
@@ -313,12 +315,12 @@ impl LocalResourceCollector for CollectLocalResourceUsage {
         st.collector_thread = Some(handle);
     }
 
-    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:122 CollectLocalResourceUsage.registerCounterSeriesCollector
+    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:127 CollectLocalResourceUsage.registerCounterSeriesCollector
     fn register_counter_series_collector(&self, collector: Box<dyn CounterSeriesCollector>) {
         self.state.lock().collectors.push(collector);
     }
 
-    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:240 CollectLocalResourceUsage.stop
+    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:210 CollectLocalResourceUsage.stop
     fn stop(&self) {
         let handle = {
             let mut st = self.state.lock();
@@ -339,7 +341,7 @@ impl LocalResourceCollector for CollectLocalResourceUsage {
     }
 }
 
-// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:306 CollectLocalResourceUsage.LocalCpuUsageCollector
+// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:269 CollectLocalResourceUsage.LocalCpuUsageCollector
 struct LocalCpuUsageCollector {
     previous_cpu_time_nanos: i64,
 }
@@ -361,7 +363,7 @@ impl LocalCpuUsageCollector {
 }
 
 impl CounterSeriesCollector for LocalCpuUsageCollector {
-    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:319 CollectLocalResourceUsage.LocalCpuUsageCollector.collect
+    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:282 CollectLocalResourceUsage.LocalCpuUsageCollector.collect
     fn collect(&mut self, delta_nanos: f64, consumer: &mut dyn FnMut(&CounterSeriesTask, f64)) {
         let next_cpu_time_nanos = get_process_cpu_time_nanos();
         let cpu_level = (next_cpu_time_nanos - self.previous_cpu_time_nanos) as f64 / delta_nanos;
@@ -401,7 +403,7 @@ fn read_total_ticks() -> Option<Ticks> {
     })
 }
 
-// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:354 CollectLocalResourceUsage.SystemCpuUsageCollector
+// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:320 CollectLocalResourceUsage.SystemCpuUsageCollector
 struct SystemCpuUsageCollector {
     num_processors: i32,
     /// The JDK's `counters.cpuTicks` (initialized by `perfInit` on the first call).
@@ -457,7 +459,7 @@ fn system_cpu_usage() -> CounterSeriesTask {
 }
 
 impl CounterSeriesCollector for SystemCpuUsageCollector {
-    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:366 CollectLocalResourceUsage.SystemCpuUsageCollector.collect
+    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:332 CollectLocalResourceUsage.SystemCpuUsageCollector.collect
     fn collect(&mut self, _delta_nanos: f64, consumer: &mut dyn FnMut(&CounterSeriesTask, f64)) {
         let mut system_cpu_load = self.get_cpu_load();
         if system_cpu_load.is_nan() {
@@ -473,11 +475,11 @@ impl CounterSeriesCollector for SystemCpuUsageCollector {
     }
 }
 
-// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:386 CollectLocalResourceUsage.SystemMemoryUsageCollector
+// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:353 CollectLocalResourceUsage.SystemMemoryUsageCollector
 struct SystemMemoryUsageCollector;
 
 impl CounterSeriesCollector for SystemMemoryUsageCollector {
-    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:395 CollectLocalResourceUsage.SystemMemoryUsageCollector.collect
+    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:363 CollectLocalResourceUsage.SystemMemoryUsageCollector.collect
     fn collect(&mut self, _delta_nanos: f64, consumer: &mut dyn FnMut(&CounterSeriesTask, f64)) {
         let mut system_memory_usage_mb: i64 = -1;
         // On Linux we get a better estimate by using /proc/meminfo. See
@@ -517,13 +519,13 @@ impl CounterSeriesCollector for SystemMemoryUsageCollector {
     }
 }
 
-// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:422 CollectLocalResourceUsage.TotalWorkerMemoryUsageCollector
+// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:387 CollectLocalResourceUsage.TotalWorkerMemoryUsageCollector
 struct TotalWorkerMemoryUsageCollector {
     worker_process_metrics_collector: &'static WorkerProcessMetricsCollector,
 }
 
 impl CounterSeriesCollector for TotalWorkerMemoryUsageCollector {
-    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:434 CollectLocalResourceUsage.TotalWorkerMemoryUsageCollector.collect
+    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:399 CollectLocalResourceUsage.TotalWorkerMemoryUsageCollector.collect
     fn collect(&mut self, _delta_nanos: f64, consumer: &mut dyn FnMut(&CounterSeriesTask, f64)) {
         let worker_memory_usage_mb: i32 = {
             let _c = Profiler::instance().profile_info("Worker metrics collection");
@@ -545,7 +547,7 @@ impl CounterSeriesCollector for TotalWorkerMemoryUsageCollector {
     }
 }
 
-// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:447 CollectLocalResourceUsage.PerMnemonicWorkerMemoryUsageCollector
+// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:412 CollectLocalResourceUsage.PerMnemonicWorkerMemoryUsageCollector
 struct PerMnemonicWorkerMemoryUsageCollector {
     worker_process_metrics_collector: &'static WorkerProcessMetricsCollector,
 }
@@ -553,7 +555,7 @@ struct PerMnemonicWorkerMemoryUsageCollector {
 const SERIES_LANE_NAME: &str = "Per-mnemonic worker memory usage";
 
 impl CounterSeriesCollector for PerMnemonicWorkerMemoryUsageCollector {
-    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:468 CollectLocalResourceUsage.PerMnemonicWorkerMemoryUsageCollector.collect
+    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:432 CollectLocalResourceUsage.PerMnemonicWorkerMemoryUsageCollector.collect
     fn collect(&mut self, _delta_nanos: f64, consumer: &mut dyn FnMut(&CounterSeriesTask, f64)) {
         for collector in self
             .worker_process_metrics_collector
@@ -561,6 +563,9 @@ impl CounterSeriesCollector for PerMnemonicWorkerMemoryUsageCollector {
         {
             let _c = Profiler::instance().profile_info(collector.get_mnemonic());
             consumer(
+                // getWorkerMemoryUsageSeries(mnemonic): the static map only caches the task,
+                // which is a value (equal for equal fields).
+                // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:423 CollectLocalResourceUsage.PerMnemonicWorkerMemoryUsageCollector.getWorkerMemoryUsageSeries
                 &CounterSeriesTask::new(
                     SERIES_LANE_NAME,
                     collector.get_mnemonic(),
@@ -572,11 +577,11 @@ impl CounterSeriesCollector for PerMnemonicWorkerMemoryUsageCollector {
     }
 }
 
-// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:484 CollectLocalResourceUsage.SystemLoadAverageCollector
+// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:447 CollectLocalResourceUsage.SystemLoadAverageCollector
 struct SystemLoadAverageCollector;
 
 impl CounterSeriesCollector for SystemLoadAverageCollector {
-    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:494 CollectLocalResourceUsage.SystemLoadAverageCollector.collect
+    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:457 CollectLocalResourceUsage.SystemLoadAverageCollector.collect
     fn collect(&mut self, _delta_nanos: f64, consumer: &mut dyn FnMut(&CounterSeriesTask, f64)) {
         // OperatingSystemMXBean.getSystemLoadAverage(): getloadavg(3), the last minute.
         let mut loadavg = [0f64; 1];
@@ -596,11 +601,11 @@ impl CounterSeriesCollector for SystemLoadAverageCollector {
     }
 }
 
-// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:502 CollectLocalResourceUsage.SystemNetworkUsageCollector
+// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:465 CollectLocalResourceUsage.SystemNetworkUsageCollector
 struct SystemNetworkUsageCollector;
 
 impl CounterSeriesCollector for SystemNetworkUsageCollector {
-    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:514 CollectLocalResourceUsage.SystemNetworkUsageCollector.collect
+    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:478 CollectLocalResourceUsage.SystemNetworkUsageCollector.collect
     fn collect(&mut self, delta_nanos: f64, consumer: &mut dyn FnMut(&CounterSeriesTask, f64)) {
         let system_network_usages =
             NetworkMetricsCollector::instance().collect_system_network_usages(delta_nanos);
@@ -625,13 +630,13 @@ impl CounterSeriesCollector for SystemNetworkUsageCollector {
     }
 }
 
-// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:524 CollectLocalResourceUsage.ResourceManagerEstimationCollector
+// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:488 CollectLocalResourceUsage.ResourceManagerEstimationCollector
 struct ResourceManagerEstimationCollector {
     resource_estimator: Arc<dyn ResourceEstimator>,
 }
 
 impl CounterSeriesCollector for ResourceManagerEstimationCollector {
-    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:541 CollectLocalResourceUsage.ResourceManagerEstimationCollector.collect
+    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:505 CollectLocalResourceUsage.ResourceManagerEstimationCollector.collect
     fn collect(&mut self, _delta_nanos: f64, consumer: &mut dyn FnMut(&CounterSeriesTask, f64)) {
         let estimated_cpu_usage = self.resource_estimator.get_used_cpu();
         let estimated_memory_usage_in_mb = self.resource_estimator.get_used_memory_in_mb();
@@ -654,11 +659,11 @@ impl CounterSeriesCollector for ResourceManagerEstimationCollector {
     }
 }
 
-// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:550 CollectLocalResourceUsage.PressureStallIndicatorCollector
+// Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:513 CollectLocalResourceUsage.PressureStallIndicatorCollector
 struct PressureStallIndicatorCollector;
 
 impl CounterSeriesCollector for PressureStallIndicatorCollector {
-    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:577 CollectLocalResourceUsage.PressureStallIndicatorCollector.collect
+    // Java: com/google/devtools/build/lib/profiler/CollectLocalResourceUsage.java:541 CollectLocalResourceUsage.PressureStallIndicatorCollector.collect
     fn collect(&mut self, _delta_nanos: f64, consumer: &mut dyn FnMut(&CounterSeriesTask, f64)) {
         // The pressure stall indicator for full CPU metric is not defined.
         let pressure_stall_full_io = read_pressure_stall_indicator("io", "full");
@@ -715,8 +720,11 @@ impl CounterSeriesCollector for PressureStallIndicatorCollector {
 /// Reads the Pressure Staller Indicator file for a given type and returns the double value for
 /// `avg10`, or -1 if we couldn't read that value.
 ///
-/// PORT: `lib/util/ResourceUsage` is not ported yet; this is its `readPressureStallIndicator`
-/// (resource `memory` / `io` / `cpu`, metric `full` / `some`). The value is a Java `float`.
+/// `lib/util/ResourceUsage.readPressureStallIndicator`, the only method of that class with a
+/// caller at the pin (resource `memory` / `io` / `cpu`, metric `full` / `some`). The value is a
+/// Java `float`.
+// PORT: skipped, the resource and metric are passed as their strings: ResourceUsage.PressureStallIndicatorResource.<init>, ResourceUsage.PressureStallIndicatorResource.getResource, ResourceUsage.PressureStallIndicatorMetric.<init>, ResourceUsage.PressureStallIndicatorMetric.getMetric
+// PORT: skipped, no caller at the pin: ResourceUsage.<init>, ResourceUsage.getAvailableProcessors, ResourceUsage.getTotalPhysicalMemorySize, ResourceUsage.getOsArchitecture, ResourceUsage.getOsName, ResourceUsage.getOsVersion, ResourceUsage.getHeapMemoryInit, ResourceUsage.getNonHeapMemoryInit, ResourceUsage.getHeapMemoryMax, ResourceUsage.getNonHeapMemoryMax, ResourceUsage.measureCurrentResourceUsage, ResourceUsage.getCurrentCpuUtilizationInMs, ResourceUsage.getAvailableMemory, ResourceUsage.Measurement.timeInMs, ResourceUsage.Measurement.cpuUtilizationInMs
 // Java: com/google/devtools/build/lib/util/ResourceUsage.java:166 ResourceUsage.readPressureStallIndicator
 fn read_pressure_stall_indicator(resource: &str, metric: &str) -> f64 {
     let file_name = format!("/proc/pressure/{resource}");

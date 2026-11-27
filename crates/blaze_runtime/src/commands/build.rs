@@ -543,6 +543,10 @@ fn run_build_with_bep(
             .get_options::<blaze_optdefs::fragment::core_options::CoreOptions>()
             .map(|o| o.experimental_writable_outputs)
             .unwrap_or(false),
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:420 SkyframeActionExecutor.archivedTreeArtifactsEnabledForMnemonic
+        archived_artifacts_mnemonics_filter: options
+            .get_options::<blaze_optdefs::fragment::core_options::CoreOptions>()
+            .map(|o| o.archived_artifacts_mnemonics_filter.clone()),
         output_filter: reporter_output_filter.clone(),
         // RemoteModule.registerSpawnStrategies / registerActionContexts / executorInit.
         remote: remote
@@ -566,6 +570,23 @@ fn run_build_with_bep(
                         .as_ref(),
                 )
             }),
+        // ExecutionTool: module.registerSpawnStrategies(builder, env) for each module (Bazel's
+        // own register theirs in executor_setup; their trait method is empty).
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:151 ExecutionTool.<init>
+        module_spawn_strategy_registrations: env
+            .get_runtime()
+            .get_blaze_modules()
+            .iter()
+            .map(|module| {
+                let module = module.clone();
+                Arc::new(
+                    move |builder: &mut blaze_exec::exec::spawn_strategy_registry::SpawnStrategyRegistryBuilder,
+                          exec_env: &blaze_exec::exec::exec_command_environment::ExecCommandEnvironment| {
+                        module.register_spawn_strategies(builder, exec_env)
+                    },
+                ) as blaze_exec::exec::executor_setup::ModuleSpawnStrategyRegistration
+            })
+            .collect(),
     };
     let summary_for_contexts = Arc::new(test_summary_options.clone());
     let workspace_for_contexts = workspace.clone();
@@ -728,6 +749,7 @@ fn run_build_with_bep(
     let watchdog: Arc<parking_lot::Mutex<Option<Arc<ActionExecutionInactivityWatchdog>>>> =
         Arc::new(parking_lot::Mutex::new(None));
     let is_building_exclusive_artifacts = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let mut execution_progress_receiver_setup = None;
     if skyframe_executor.get_execution().is_some() {
         let skyframe_progress_receiver = skyframe_executor.get_progress_receiver().clone();
         let skyframe_action_executor = skyframe_executor
@@ -738,7 +760,7 @@ fn run_build_with_bep(
         let progress_report_interval = build_request_options.progress_report_interval;
         let watchdog = watchdog.clone();
         let is_building_exclusive_artifacts = is_building_exclusive_artifacts.clone();
-        env.get_event_bus().register(Arc::new(
+        let setup = Arc::new(
             blaze_buildtool::buildtool::execution_progress_receiver::ExecutionProgressReceiverSetup::new(
                 env.get_event_bus().clone(),
                 Box::new(move |execution_progress_receiver| {
@@ -783,7 +805,9 @@ fn run_build_with_bep(
                     new_watchdog.start();
                 }),
             ),
-        ));
+        );
+        env.get_event_bus().register(setup.clone());
+        execution_progress_receiver_setup = Some(setup);
     }
 
     let execution_phase = RuntimeExecutionPhase {
@@ -852,6 +876,7 @@ fn run_build_with_bep(
         tracks_state_for_incrementality: env.tracks_state_for_incrementality(),
         is_run_command: request.command_name == "run",
         top_level_target_analysis_watcher: parking_lot::Mutex::new(None),
+        execution_progress_receiver_setup,
     };
     let post_processor = ExecutionToolConstruction {
         execution_phase: &execution_phase,
@@ -1832,6 +1857,10 @@ struct RuntimeExecutionPhase {
     is_run_command: bool,
     /// The merged phase's `TopLevelTargetAnalysisWatcher`, while it is registered.
     top_level_target_analysis_watcher: parking_lot::Mutex<Option<Arc<TopLevelTargetAnalysisWatcher>>>,
+    /// The build's `ExecutionProgressReceiverSetup` (a build that executes).
+    execution_progress_receiver_setup: Option<
+        Arc<blaze_buildtool::buildtool::execution_progress_receiver::ExecutionProgressReceiverSetup>,
+    >,
 }
 
 impl RuntimeExecutionPhase {
@@ -2003,7 +2032,17 @@ impl RuntimeExecutionPhase {
                     &test_completion_key,
                     config,
                     reporter.clone(),
-                )?;
+                );
+            // SkyframeExecutor.runExclusiveTest, finally:
+            // cleanUpAfterSingleEvaluationWithActionExecution.
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1995 SkyframeExecutor.runExclusiveTest
+            if let Some(execution) = skyframe_executor.get_execution() {
+                blaze_buildtool::buildtool::execution_tool::clean_up_after_single_evaluation_with_action_execution(
+                    &execution.prepared.executor,
+                    &*reporter,
+                );
+            }
+            let test_run_result = test_run_result?;
             // Java: com/google/devtools/build/lib/buildtool/SkyframeBuilder.java:228 SkyframeBuilder.buildArtifacts
             blaze_util::check_state!(
                 test_run_result.has_error() || !test_run_result.values.is_empty(),
@@ -2252,7 +2291,6 @@ impl RuntimeExecutionPhase {
     // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:245 SkyframeErrorProcessor.processExecutionErrors
     // Java: com/google/devtools/build/lib/buildtool/SkyframeBuilder.java:119 SkyframeBuilder.buildArtifacts
     // PORT: skipped, the builder's parts are the prepared execution state (blaze_buildtool ExecutionToolConfig, the action executor's cache checker, file cache and prefetcher): SkyframeBuilder.<init> SkyframeBuilder.getActionCacheChecker SkyframeBuilder.getFileCache SkyframeBuilder.getActionOutputDirectoryHelper SkyframeBuilder.getActionInputPrefetcher
-    // PORT: skipped, without merged analysis and execution Java's progress receiver counts the exclusive tests' status artifacts; Blaze registers ExecutionTool's receiver (count 0) for every build, so the "[done / total]" totals of a non-merged build with exclusive tests are lower (open item): SkyframeBuilder.countTestActions
     fn uses_process_errors(&self, merged: bool) -> bool {
         merged
             || self
@@ -2309,6 +2347,14 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         // ExecutionTool.prepareForExecution of the path without merged analysis and execution
         // (Skymeld runs it from BuildView.update: `prepare_for_execution`).
         set_salt_and_delete_actions_if_changed(skyframe_executor);
+        // RemoteModule.executorInit's RemoteLeaseExtension, now that the evaluator and the action
+        // cache exist.
+        if let Some(remote) = &self.remote {
+            remote.install_lease_extension(
+                skyframe_executor.get_evaluator(),
+                state.prepared.action_cache.as_ref(),
+            );
+        }
 
         // Without merged analysis and execution, ExecutionTool.executeBuild plants the symlink
         // forest of the exec root ("plantSymlinkForest"); Skymeld planted it incrementally
@@ -2477,6 +2523,19 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:426 ExecutionTool.executeBuild
         self.announce_entering_dir_if_emacs(&exec_root);
 
+        // new ExecutionProgressReceiver(countTestActions(exclusiveTests), eventBus): the exclusive
+        // tests are `analysisResult.getExclusiveTests()` and `getExclusiveIfLocalTests()` without
+        // the skipped targets (ExecutionTool.executeBuild), the BuildDriverKeys of those types.
+        // Java: com/google/devtools/build/lib/buildtool/SkyframeBuilder.java:133 SkyframeBuilder.buildArtifacts
+        if let Some(setup) = &self.execution_progress_receiver_setup {
+            setup.set_exclusive_tests_count(count_test_actions(
+                analysis_result.get_targets_to_build(),
+                keys_to_execute.iter().filter(|key| {
+                    key.test_type == TestType::EXCLUSIVE
+                        || key.test_type == TestType::EXCLUSIVE_IF_LOCAL
+                }),
+            ));
+        }
         let evaluated = evaluate_build_driver_keys(
             skyframe_executor.get_evaluator(),
             &keys_to_execute,
@@ -2484,6 +2543,23 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             &state.config,
             reporter.clone(),
         );
+        // SkyframeExecutor.buildArtifacts, finally: cleanUpAfterSingleEvaluationWithActionExecution
+        // (the rewind strategy posts PostableActionRewindingStats).
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1969 SkyframeExecutor.buildArtifacts
+        if let Some(execution) = skyframe_executor.get_execution() {
+            blaze_buildtool::buildtool::execution_tool::clean_up_after_single_evaluation_with_action_execution(
+                &execution.prepared.executor,
+                &*reporter,
+            );
+        }
+        // cleanUpAfterSingleEvaluationWithActionExecution: setExecutionProgressReceiver(null). The
+        // exclusive tests then run without it (SkyframeExecutor.runExclusiveTest), so the
+        // progress totals stay those of the main evaluation, which counted their test actions
+        // (countTestActions).
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2511 SkyframeExecutor.cleanUpAfterSingleEvaluationWithActionExecution
+        skyframe_executor
+            .get_progress_receiver()
+            .set_execution_progress_receiver(None);
         // An interrupt still reaches the finalizations below, with buildCompleted false: the
         // action cache is not saved and the targets built so far are shown.
         // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:492 ExecutionTool.executeBuild
@@ -2565,22 +2641,6 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             watchdog.stop();
         }
 
-        // ExecutionTool.nonCatastrophicFinalizations: announceLeavingDirIfEmacs(), then
-        // `if (buildCompleted) saveActionCache(actionCache)`.
-        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:542 ExecutionTool.nonCatastrophicFinalizations
-        self.announce_leaving_dir_if_emacs(&exec_root);
-        if !interrupted {
-            // RemoteOutputService.onExecutionPhaseCompleteEvent → LeaseService
-            // .finalizeExecution (Java: after the save, on the server's in-memory cache).
-            if let Some(remote) = &self.remote {
-                remote.finalize_execution(
-                    state.prepared.action_cache.as_deref(),
-                    skyframe_executor.get_evaluator(),
-                );
-            }
-            state.prepared.save_action_cache(reporter.as_ref());
-        }
-
         // SkyframeErrorProcessor.processResult of the evaluation (SkyframeBuilder.buildArtifacts).
         // Without --keep_going it throws, and Java reaches the finally block below ("Show
         // results") with the exception pending.
@@ -2651,6 +2711,30 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                 }
             }
         };
+
+        // ExecutionTool.nonCatastrophicFinalizations, after SkyframeBuilder.buildArtifacts
+        // processed the result: announceLeavingDirIfEmacs(), then `if (buildCompleted)` the
+        // "Building complete." progress event and saveActionCache(actionCache). buildCompleted is
+        // set when buildArtifacts returned or threw BuildFailedException / TestExecException; an
+        // interrupt leaves it false.
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:476 ExecutionTool.executeBuild
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:534 ExecutionTool.nonCatastrophicFinalizations
+        let build_completed = !interrupted;
+        self.announce_leaving_dir_if_emacs(&exec_root);
+        if build_completed {
+            reporter.handle(&Event::progress("Building complete."));
+        }
+        if build_completed {
+            // RemoteOutputService.onExecutionPhaseCompleteEvent → LeaseService
+            // .finalizeExecution (Java: after the save, on the server's in-memory cache).
+            if let Some(remote) = &self.remote {
+                remote.finalize_execution(
+                    state.prepared.action_cache.as_deref(),
+                    skyframe_executor.get_evaluator(),
+                );
+            }
+            state.prepared.save_action_cache(reporter.as_ref());
+        }
 
         // ExecutionTool.nonCatastrophicFinalizations ("Show results").
         // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:534 ExecutionTool.nonCatastrophicFinalizations
@@ -2950,6 +3034,32 @@ impl ExecutionPhase for RuntimeExecutionPhase {
     }
 }
 
+/// The test status artifacts of the exclusive tests: the targets of `analysis_result`'s targets to
+/// build whose top-level label is that of one of `exclusive_test_keys`.
+// Java: com/google/devtools/build/lib/buildtool/SkyframeBuilder.java:298 SkyframeBuilder.countTestActions
+fn count_test_actions<'a>(
+    targets_to_build: &[ConfiguredTarget],
+    exclusive_test_keys: impl Iterator<Item = &'a BuildDriverKey>,
+) -> i32 {
+    let labels: Vec<blaze_cmdline::Label> = exclusive_test_keys
+        .filter_map(|key| key.action_lookup_key.get_label())
+        .collect();
+    let mut count = 0;
+    for target in targets_to_build {
+        if !labels.contains(&target.get_original_label()) {
+            continue;
+        }
+        // TestProvider.getTestStatusArtifacts(testTarget).size()
+        let view = configured_target_views(std::slice::from_ref(target))
+            .pop()
+            .expect("one view per configured target");
+        if let Some(test_params) = view.get_test_params() {
+            count += test_params.test_status_artifacts.len() as i32;
+        }
+    }
+    count
+}
+
 /// `AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher`: the modules' hooks for each
 /// top-level entity as the merged phase analyzes it. Only `RemoteModule` implements them at the
 /// pin.
@@ -2993,13 +3103,12 @@ impl blaze_events::EventBus for TopLevelTargetAnalysisWatcher {
                     )
                 });
             remote.after_single_test_analysis(view.get_configured_target());
-        } else if blaze_sky_exec::events::downcast_event::<
+        } else if let Some(e) = blaze_sky_exec::events::downcast_event::<
             blaze_sky_top::analysis_phase_runner::AspectAnalyzedEvent,
         >(&event)
-        .is_some()
         {
             // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:327 AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.handleAspectAnalyzed
-            remote.after_single_aspect_analysis();
+            remote.after_single_aspect_analysis(&e.configured_aspect, &self.output_groups);
         }
     }
 }
@@ -3095,6 +3204,13 @@ impl blaze_sky_top::skyframe_build_view::SkymeldExecutionHooks for RuntimeExecut
     ) -> Result<(), BuildToolError> {
         self.prepare_incremental_package_roots(skyframe_executor)?;
         set_salt_and_delete_actions_if_changed(skyframe_executor);
+        // RemoteModule.executorInit's RemoteLeaseExtension (see execute_build).
+        if let (Some(remote), Some(state)) = (&self.remote, skyframe_executor.get_execution()) {
+            remote.install_lease_extension(
+                skyframe_executor.get_evaluator(),
+                state.prepared.action_cache.as_ref(),
+            );
+        }
         // The end of prepareForExecution: announceEnteringDirIfEmacs().
         // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:358 ExecutionTool.prepareForExecution
         if let Some(state) = skyframe_executor.get_execution() {
@@ -3194,6 +3310,9 @@ impl blaze_sky_top::skyframe_build_view::SkymeldExecutionHooks for RuntimeExecut
     /// `RemoteModule.coverageArtifactsKnown`.
     // Java: com/google/devtools/build/lib/analysis/BuildView.java:941 BuildView.memoizedGetCoverageArtifactsHelper
     // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1062 RemoteModule.coverageArtifactsKnown
+    // PORT: the event is not posted; its one subscriber is called directly:
+    // Java: com/google/devtools/build/lib/analysis/test/CoverageArtifactsKnownEvent.java:24 CoverageArtifactsKnownEvent.<init>
+    // Java: com/google/devtools/build/lib/analysis/test/CoverageArtifactsKnownEvent.java:28 CoverageArtifactsKnownEvent.create
     fn get_coverage_report_artifacts(
         &self,
         skyframe_executor: &SkyframeExecutor,

@@ -67,8 +67,8 @@ pub trait ActionContextRegistry: Send + Sync {
 /// registry. `getOptions()` (`executor.getOptions()`) is read by actions only for
 /// `CppCompileAction`'s `BuildLanguageOptions.experimentalSiblingRepositoryLayout`, which the C++
 /// rules register as a context (`blaze_rules` `experimental_sibling_repository_layout`).
-// Java: com/google/devtools/build/lib/actions/ActionContext.java:46 ActionContext.ActionContextRegistry.getContext
-// Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:449 ActionExecutionContext.getContext
+// Java: com/google/devtools/build/lib/actions/ActionContext.java:47 ActionContext.ActionContextRegistry.getContext
+// Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:451 ActionExecutionContext.getContext
 // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:416 ActionExecutionContext.getOptions
 pub fn get_context<T: Send + Sync + 'static>(
     registry: &(impl ActionContextRegistry + ?Sized),
@@ -97,22 +97,29 @@ pub fn get_context<T: Send + Sync + 'static>(
 /// two reads they make are methods. `None` is Java's missing value (`valuesMissing()`): the caller
 /// returns null and the node restarts.
 // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:516 ActionExecutionContext.getEnvironmentForDiscoveringInputs
+///
+/// Each read is `Ok(None)` when a value is missing (a Skyframe restart) and
+/// `Err(ExecException::Interrupted)` when the read was interrupted (Java's `InterruptedException`
+/// out of `getValuesAndExceptions`, which `discoverInputs` throws on).
 pub trait DiscoveryEnvironment {
     /// The `TreeArtifactValue`s of `trees` (`env.getValuesAndExceptions(trees)`), in order.
     fn get_tree_artifact_values(
         &mut self,
         trees: &[blaze_actions::Artifact],
-    ) -> Option<Vec<Arc<crate::actions::TreeArtifactValue>>>;
+    ) -> Result<Option<Vec<Arc<crate::actions::TreeArtifactValue>>>, crate::actions::ExecException>;
 
     /// `ActionExecutionValue.getDiscoveredModules()` of the values of `modules`' generating
     /// actions (`env.getValuesAndExceptions(generatingActionKeys)`), in order.
     fn get_discovered_modules(
         &mut self,
         modules: &[blaze_actions::Artifact],
-    ) -> Option<Vec<blaze_collect::NestedSet<blaze_actions::Artifact>>>;
+    ) -> Result<
+        Option<Vec<blaze_collect::NestedSet<blaze_actions::Artifact>>>,
+        crate::actions::ExecException,
+    >;
 }
 
-// Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:64 ActionExecutionContext
+// Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:50 ActionExecutionContext
 pub trait ActionExecutionContext: ActionContextRegistry {
     /// `getEnvironmentForDiscoveringInputs()`: runs `f` with the Skyframe environment of the
     /// node that discovers the action's inputs. Only a context made for input discovery has one.
@@ -148,8 +155,8 @@ pub trait ActionExecutionContext: ActionContextRegistry {
 
     /// `getPathResolver().convertPath(path)`: `path` on the action file system
     /// (`TransformResolver`), or `path` itself (`IdentityResolver`).
-    // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:124 TransformResolver.convertPath
-    // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:86 IdentityResolver.convertPath
+    // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:119 TransformResolver.convertPath
+    // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:88 IdentityResolver.convertPath
     // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:409 ActionExecutionContext.getPathResolver
     // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:38 ArtifactPathResolver.convertPath
     // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:45 ArtifactPathResolver.forExecRoot
@@ -184,7 +191,7 @@ pub trait ActionExecutionContext: ActionContextRegistry {
     ///
     /// Seam: the posted events hold the action itself, which only the action executor owns, so
     /// the executor builds and posts them.
-    // Java: com/google/devtools/build/lib/exec/SpawnRunner.java:116 SpawnRunner.ProgressStatus.postTo
+    // Java: com/google/devtools/build/lib/exec/SpawnRunner.java:117 SpawnRunner.ProgressStatus.postTo
     fn post_progress(&self, action: &dyn ActionExecutionMetadata, progress: &ProgressStatus);
 
     /// `getActionInputPrefetcher().prefetchFiles(owner, inputs, metadataProvider, MEDIUM,
@@ -205,7 +212,7 @@ pub trait ActionExecutionContext: ActionContextRegistry {
                 match prefetcher.prefetch_files(owner, inputs, input_metadata_provider) {
                     Ok(()) => Ok(()),
                     // Futures.catchingAsync(..., BulkTransferException.class, ...)
-                    // Java: com/google/devtools/build/lib/exec/AbstractSpawnStrategy.java:285 SpawnExecutionContextImpl.prefetchInputs
+                    // Java: com/google/devtools/build/lib/exec/AbstractSpawnStrategy.java:273 SpawnExecutionContextImpl.prefetchInputs
                     Err(e) => match e
                         .get_ref()
                         .and_then(|inner| inner.downcast_ref::<BulkTransferError>())
@@ -238,7 +245,7 @@ pub trait ActionExecutionContext: ActionContextRegistry {
                     },
                 }
             }
-            // Java: com/google/devtools/build/lib/actions/ActionInputPrefetcher.java:28 ActionInputPrefetcher.NONE
+            // Java: com/google/devtools/build/lib/actions/ActionInputPrefetcher.java:24 ActionInputPrefetcher.NONE
             None => Ok(()),
         }
     }
@@ -332,7 +339,7 @@ pub trait ActionExecutionContext: ActionContextRegistry {
 ///
 /// PORT: `BulkTransferException` lives in `lib/remote/common` (blaze_remote); this is the part
 /// `AbstractSpawnStrategy.prefetchInputs` reads.
-// Java: com/google/devtools/build/lib/remote/common/BulkTransferException.java:36 BulkTransferException
+// Java: com/google/devtools/build/lib/remote/common/BulkTransferException.java:37 BulkTransferException
 #[derive(Debug)]
 pub struct BulkTransferError {
     /// `getMessage()`.
@@ -352,7 +359,7 @@ impl std::error::Error for BulkTransferError {}
 impl BulkTransferError {
     /// `getLostArtifacts(actionInputResolver)`: non-empty if and only if all suppressed
     /// exceptions are cache misses of files the resolver knows.
-    // Java: com/google/devtools/build/lib/remote/common/BulkTransferException.java:83 BulkTransferException.getLostArtifacts
+    // Java: com/google/devtools/build/lib/remote/common/BulkTransferException.java:84 BulkTransferException.getLostArtifacts
     pub fn get_lost_artifacts(
         &self,
         action_input_resolver: &dyn Fn(&blaze_vfs::PathFragment) -> Option<ActionInputRef>,
@@ -645,7 +652,7 @@ impl From<io::Error> for SpawnCacheError {
 }
 
 /// `SpawnCache.CacheHandle`: the result of a cache lookup.
-// Java: com/google/devtools/build/lib/exec/SpawnCache.java:138 SpawnCache.CacheHandle
+// Java: com/google/devtools/build/lib/exec/SpawnCache.java:114 SpawnCache.CacheHandle
 pub trait CacheHandle: Send {
     /// `hasResult()`.
     fn has_result(&self) -> bool;
@@ -661,7 +668,7 @@ pub trait CacheHandle: Send {
 
 /// A cache that can lookup a SpawnResult given a Spawn, and can also upload the results of an
 /// executed spawn to the cache.
-// Java: com/google/devtools/build/lib/exec/SpawnCache.java:33 SpawnCache
+// Java: com/google/devtools/build/lib/exec/SpawnCache.java:32 SpawnCache
 pub trait SpawnCache: Send + Sync {
     /// `lookup(spawn, context)`. The handle may borrow the spawn and its context (Java's
     /// handles capture them); it is used and dropped while both are alive.
@@ -678,7 +685,7 @@ pub trait SpawnCache: Send + Sync {
 }
 
 /// `SpawnCache.NO_RESULT_NO_STORE`.
-// Java: com/google/devtools/build/lib/exec/SpawnCache.java:36 SpawnCache.NO_RESULT_NO_STORE
+// Java: com/google/devtools/build/lib/exec/SpawnCache.java:34 SpawnCache.NO_RESULT_NO_STORE
 #[derive(Debug, Default)]
 pub struct NoResultNoStore;
 
@@ -699,7 +706,7 @@ impl CacheHandle for NoResultNoStore {
 }
 
 /// `SpawnCache.success(result)`: a handle with a result that must not be stored.
-// Java: com/google/devtools/build/lib/exec/SpawnCache.java:64 SpawnCache.success
+// Java: com/google/devtools/build/lib/exec/SpawnCache.java:63 SpawnCache.success
 pub fn success(result: SpawnResult) -> Box<dyn CacheHandle> {
     struct Success(SpawnResult);
     impl CacheHandle for Success {
@@ -720,7 +727,7 @@ pub fn success(result: SpawnResult) -> Box<dyn CacheHandle> {
 }
 
 /// `SpawnCache.NoSpawnCache`.
-// Java: com/google/devtools/build/lib/exec/SpawnCache.java:111 SpawnCache.NoSpawnCache
+// Java: com/google/devtools/build/lib/exec/SpawnCache.java:91 SpawnCache.NoSpawnCache
 #[derive(Debug)]
 pub struct NoSpawnCache {
     _private: (),
@@ -737,7 +744,7 @@ impl SpawnCache for NoSpawnCache {
 }
 
 /// `SpawnCache.NO_CACHE`.
-// Java: com/google/devtools/build/lib/exec/SpawnCache.java:131 SpawnCache.NO_CACHE
+// Java: com/google/devtools/build/lib/exec/SpawnCache.java:101 SpawnCache.NO_CACHE
 pub fn no_cache() -> Arc<dyn SpawnCache> {
     static NO_CACHE: std::sync::OnceLock<Arc<dyn SpawnCache>> = std::sync::OnceLock::new();
     NO_CACHE
@@ -755,7 +762,7 @@ pub fn is_no_cache(cache: &Arc<dyn SpawnCache>) -> bool {
 /// PORT: Java keeps references to the spawn, its input metadata provider, action file system and
 /// `FileOutErr`; a posted value must own its data here, so the event keeps the parts of the spawn
 /// and its owning action that consumers read (mnemonic, owner, primary output, progress message).
-// Java: com/google/devtools/build/lib/actions/SpawnExecutedEvent.java:28 SpawnExecutedEvent
+// Java: com/google/devtools/build/lib/actions/SpawnExecutedEvent.java:25 SpawnExecutedEvent
 #[derive(Debug, Clone)]
 pub struct SpawnExecutedEvent {
     spawn_mnemonic: String,
@@ -771,7 +778,7 @@ pub struct SpawnExecutedEvent {
 impl SpawnExecutedEvent {
     /// `new SpawnExecutedEvent(spawn, inputMetadataProvider, actionFileSystem, fileOutErr,
     /// result, startTimeInstant, spawnIdentifier)`.
-    // Java: com/google/devtools/build/lib/actions/SpawnExecutedEvent.java:37 SpawnExecutedEvent.<init>
+    // Java: com/google/devtools/build/lib/actions/SpawnExecutedEvent.java:34 SpawnExecutedEvent.<init>
     pub fn new(
         spawn: &dyn Spawn,
         result: SpawnResult,
@@ -829,7 +836,7 @@ impl SpawnExecutedEvent {
         self.start_time_instant
     }
     /// `getSpawnIdentifier()`.
-    // Java: com/google/devtools/build/lib/actions/SpawnExecutedEvent.java:87 SpawnExecutedEvent.getSpawnIdentifier
+    // Java: com/google/devtools/build/lib/actions/SpawnExecutedEvent.java:88 SpawnExecutedEvent.getSpawnIdentifier
     pub fn get_spawn_identifier(&self) -> Option<&str> {
         self.spawn_identifier.as_deref()
     }

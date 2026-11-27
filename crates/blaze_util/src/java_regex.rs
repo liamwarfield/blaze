@@ -36,7 +36,18 @@
 //!   shape of `RegexFilter.takeUnionOfRegexes` (`(?:(?>a)|(?>b))`). Elsewhere (followed by
 //!   anything, inside a quantified group, or under `Matcher.matches()`, which requires the end of
 //!   the input after them) they are `unported!`.
-//! - `unported!`: backreferences (`\1`, `\k<name>`), lookahead and lookbehind, `\G`, `\X`,
+//! - Lookahead (`(?=..)`, `(?!..)`) and lookbehind (`(?<=..)`, `(?<!..)`): a pattern with
+//!   one is compiled with `fancy-regex`, a backtracking engine that tries alternatives and
+//!   quantifier choices in Java's order and hands the parts without lookaround to the `regex`
+//!   crate. A lookbehind whose maximum length JDK 25's `TreeInfo` cannot bound (its `int`
+//!   arithmetic included: `(ab)+` overflows, a repeated non-deterministic group is a `Loop`) is
+//!   Java's syntax error; one whose minimum and maximum lengths differ is `unported!` (Java tries
+//!   each start between them, fancy-regex has fixed-width lookbehind only), and so is a
+//!   lookbehind on an input with a supplementary char (Java steps back by UTF-16 units). A
+//!   quantified lookaround is the assertion once (minimum 1 or more) or nothing (minimum 0), as
+//!   Java's `Curly` stops after a zero-length iteration. [`translate`] and [`compile`] (the
+//!   `regex` crate) refuse lookaround loudly.
+//! - `unported!`: backreferences (`\1`, `\k<name>`), `\G`, `\X`,
 //!   `\b{g}`, `\N{name}`, Unicode blocks and scripts (`\p{InGreek}`, `\p{IsLatin}`,
 //!   `\p{sc=..}`), the `java*` properties, surrogate code units on their own, a class whose
 //!   members follow an intersection's left operand (Java mutates that operand), and the flags
@@ -55,8 +66,9 @@
 //! crate compiles `\A(?:p)\z` for `matches()`. The input is matched by chars (Java: by code
 //! points; a supplementary char is one char in both). Remaining PORT points: a syntax error
 //! found by the crate after translation (its size limits, e.g. a repetition count over its
-//! limit, which Java accepts) carries the crate's text; a lookbehind whose length Java cannot
-//! bound (a syntax error in Java) is `unported!` like any lookbehind.
+//! limit, which Java accepts) carries the crate's text; a lookbehind that holds a backreference
+//! is `unported!` (backreferences are), where Java reports that its length has no obvious
+//! maximum.
 
 use std::collections::HashMap;
 use std::fmt;
@@ -150,6 +162,12 @@ impl std::error::Error for PatternSyntaxException {}
 pub fn translate(pattern: &str, flags: i32) -> Result<String, String> {
     match Translation::new(pattern, flags) {
         Ok(t) => {
+            if t.lookaround {
+                unported(
+                    pattern,
+                    "lookaround in the regex crate's syntax (use Pattern)",
+                );
+            }
             if let Some(what) = find_span_issue(&t.root) {
                 unported(pattern, &what);
             }
@@ -181,10 +199,10 @@ fn unported(pattern: &str, what: &str) -> ! {
 pub struct Pattern {
     pattern: String,
     flags: i32,
-    find: Regex,
+    find: Engine,
     /// `Err` holds the construct that is `unported!` under `matches()` (an atomic group or a
     /// possessive quantifier that ends the pattern).
-    matches: Result<Regex, String>,
+    matches: Result<Engine, String>,
     /// A construct whose `find()` span is `unported!` (see [`find_span_issue`]); `is_match` and
     /// `matches` are exact.
     find_span: Option<String>,
@@ -204,9 +222,14 @@ impl Pattern {
         let find_source = translation
             .emit(Mode::Find)
             .unwrap_or_else(|what| unported(pattern, &what));
-        let find = Regex::new(&find_source).map_err(|e| e.to_string())?;
+        let lookaround = translation.lookaround;
+        let find = Engine::new(pattern, &find_source, lookaround)?;
         let matches = match translation.emit(Mode::Matches) {
-            Ok(source) => Ok(Regex::new(&format!(r"\A(?:{source})\z")).map_err(|e| e.to_string())?),
+            Ok(source) => Ok(Engine::new(
+                pattern,
+                &format!(r"\A(?:{source})\z"),
+                lookaround,
+            )?),
             Err(what) => Err(what),
         };
         Ok(Pattern {
@@ -237,7 +260,10 @@ impl Pattern {
     /// The translated pattern for `find()`, without the checks of [`Pattern::find`] (its spans
     /// can differ from Java's where [`Pattern::find`] is `unported!`).
     pub fn regex(&self) -> &Regex {
-        &self.find
+        match &self.find {
+            Engine::Regex(regex) => regex,
+            Engine::Fancy(_) => unported(&self.pattern, "lookaround through regex::Regex"),
+        }
     }
 
     /// `matcher(input).find()`: the `start()` and `end()` of the first match, as byte offsets
@@ -250,21 +276,77 @@ impl Pattern {
                 &format!("{what} under Matcher.find() with start()/end()"),
             );
         }
-        self.find.find(input).map(|m| (m.start(), m.end()))
+        self.find.find(&self.pattern, input)
     }
 
     /// `matcher(input).find()`.
     pub fn is_match(&self, input: &str) -> bool {
         self.guards.check(&self.pattern, input);
-        self.find.is_match(input)
+        self.find.is_match(&self.pattern, input)
     }
 
     /// `matcher(input).matches()`.
     pub fn matches(&self, input: &str) -> bool {
         self.guards.check(&self.pattern, input);
         match &self.matches {
-            Ok(regex) => regex.is_match(input),
+            Ok(engine) => engine.is_match(&self.pattern, input),
             Err(what) => unported(&self.pattern, &format!("{what} under Matcher.matches()")),
+        }
+    }
+}
+
+/// The engine a translated pattern runs on.
+#[derive(Clone)]
+enum Engine {
+    Regex(Regex),
+    /// A pattern with lookaround: `fancy-regex` runs it by backtracking (Java's order) and
+    /// hands the parts without lookaround to the `regex` crate.
+    Fancy(fancy_regex::Regex),
+}
+
+impl Engine {
+    fn new(pattern: &str, source: &str, lookaround: bool) -> Result<Engine, String> {
+        if !lookaround {
+            return Regex::new(source)
+                .map(Engine::Regex)
+                .map_err(|e| e.to_string());
+        }
+        // Java has no backtracking limit.
+        match fancy_regex::RegexBuilder::new(source)
+            .backtrack_limit(usize::MAX)
+            .build()
+        {
+            Ok(regex) => Ok(Engine::Fancy(regex)),
+            // fancy-regex steps back over a lookbehind by a fixed width; Java also accepts a
+            // lookbehind of bounded, variable width.
+            Err(fancy_regex::Error::CompileError(e))
+                if matches!(e, fancy_regex::CompileError::LookBehindNotConst) =>
+            {
+                unported(pattern, "lookbehind of variable width")
+            }
+            Err(e) => unported(
+                pattern,
+                &format!("lookaround: fancy-regex rejects {source:?}: {e}"),
+            ),
+        }
+    }
+
+    fn is_match(&self, pattern: &str, input: &str) -> bool {
+        match self {
+            Engine::Regex(regex) => regex.is_match(input),
+            Engine::Fancy(regex) => regex
+                .is_match(input)
+                .unwrap_or_else(|e| unported(pattern, &format!("lookaround: {e}"))),
+        }
+    }
+
+    fn find(&self, pattern: &str, input: &str) -> Option<(usize, usize)> {
+        match self {
+            Engine::Regex(regex) => regex.find(input).map(|m| (m.start(), m.end())),
+            Engine::Fancy(regex) => regex
+                .find(input)
+                .unwrap_or_else(|e| unported(pattern, &format!("lookaround: {e}")))
+                .map(|m| (m.start(), m.end())),
         }
     }
 }
@@ -294,6 +376,9 @@ struct Guards {
     multiline_caret: bool,
     /// `\b` or `\B`.
     bound: bool,
+    /// A lookbehind: Java's `Behind` steps back by UTF-16 units (`BehindS`, for a pattern with
+    /// a supplementary char, by code points), fancy-regex by chars.
+    lookbehind: bool,
 }
 
 /// Java's line terminators other than `\n` (`Pattern.Dollar`, `Caret`).
@@ -326,6 +411,13 @@ impl Guards {
                 pattern,
                 "MULTILINE '^' (Java never matches it at the end of the input) on an input that \
                  is empty or ends in '\\n'",
+            );
+        }
+        if self.lookbehind && input.chars().any(|c| c as u32 > 0xFFFF) {
+            unported(
+                pattern,
+                "lookbehind (Java steps back by UTF-16 units) on an input with a supplementary \
+                 char",
             );
         }
         if self.bound && NON_SPACING_MARK.is_match(input) {
@@ -363,9 +455,10 @@ enum Qtype {
 
 /// The parsed pattern. Leaves are already in the crate's syntax.
 enum Node {
-    /// Crate syntax for one item (a char, a slice of chars, a class, an anchor); `Raw("")` is
-    /// the empty slice.
+    /// Crate syntax for one item (a char, a class, an anchor); `Raw("")` is the empty slice.
     Raw(String),
+    /// Crate syntax for a slice of two or more chars (`Pattern.newSlice`), and its length.
+    Slice(String, i32),
     Concat(Vec<Node>),
     Alt(Vec<Node>),
     Group {
@@ -386,6 +479,11 @@ enum GroupKind {
     Named(String),
     NonCapturing,
     Atomic,
+    /// `(?=..)`, `(?!..)` (`behind` false) and `(?<=..)`, `(?<!..)` (`behind` true).
+    Look {
+        behind: bool,
+        negative: bool,
+    },
 }
 
 /// A parsed pattern, ready to be written for either [`Mode`].
@@ -394,6 +492,9 @@ struct Translation {
     /// The first construct the parser found that is `unported!` in every mode.
     unported: Option<String>,
     guards: Guards,
+    /// The pattern has a lookahead or lookbehind: it is compiled with `fancy-regex` (a
+    /// backtracking engine, like Java's) instead of the `regex` crate.
+    lookaround: bool,
 }
 
 impl Translation {
@@ -404,6 +505,7 @@ impl Translation {
             unported: parser.unported.or_else(|| assertion_loop_issue(&root)),
             root,
             guards: parser.guards,
+            lookaround: parser.lookaround,
         })
     }
 
@@ -439,6 +541,7 @@ fn empty_shape(node: &Node) -> (bool, bool) {
             );
             (zero_width, true)
         }
+        Node::Slice(..) => (false, true),
         Node::Concat(items) => {
             let mut nullable = true;
             let mut last = true;
@@ -456,6 +559,11 @@ fn empty_shape(node: &Node) -> (bool, bool) {
             let last = shapes[..n - 1].iter().all(|(n, _)| !n) && shapes[n - 1].1;
             (nullable, !nullable || last)
         }
+        // A lookaround matches the empty string only.
+        Node::Group {
+            kind: GroupKind::Look { .. },
+            ..
+        } => (true, true),
         Node::Group { body, .. } => empty_shape(body),
         Node::Repeat {
             body,
@@ -491,7 +599,12 @@ fn is_zero_width_assertion(s: &str) -> bool {
 fn can_consume(node: &Node) -> bool {
     match node {
         Node::Raw(s) => !s.is_empty() && !is_zero_width_assertion(s),
+        Node::Slice(..) => true,
         Node::Concat(items) | Node::Alt(items) => items.iter().any(can_consume),
+        Node::Group {
+            kind: GroupKind::Look { .. },
+            ..
+        } => false,
         Node::Group { body, .. } => can_consume(body),
         Node::Repeat { body, max, .. } => *max != Some(0) && can_consume(body),
     }
@@ -500,7 +613,12 @@ fn can_consume(node: &Node) -> bool {
 fn contains_assertion(node: &Node) -> bool {
     match node {
         Node::Raw(s) => is_zero_width_assertion(s),
+        Node::Slice(..) => false,
         Node::Concat(items) | Node::Alt(items) => items.iter().any(contains_assertion),
+        Node::Group {
+            kind: GroupKind::Look { .. },
+            ..
+        } => true,
         Node::Group { body, .. } | Node::Repeat { body, .. } => contains_assertion(body),
     }
 }
@@ -515,7 +633,7 @@ fn contains_assertion(node: &Node) -> bool {
 // Java: java/util/regex/Pattern.java Pattern.Loop.match
 fn assertion_loop_issue(node: &Node) -> Option<String> {
     match node {
-        Node::Raw(_) => None,
+        Node::Raw(_) | Node::Slice(..) => None,
         Node::Concat(items) | Node::Alt(items) => items.iter().find_map(assertion_loop_issue),
         Node::Group { body, .. } => assertion_loop_issue(body),
         Node::Repeat { body, max, .. } => {
@@ -535,6 +653,209 @@ fn assertion_loop_issue(node: &Node) -> Option<String> {
     }
 }
 
+/// `Pattern.TreeInfo`: what `study` learns about a node chain (lengths in chars; `int`
+/// arithmetic, which wraps).
+// Java: java/util/regex/Pattern.java Pattern.TreeInfo
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TreeInfo {
+    min_length: i32,
+    max_length: i32,
+    max_valid: bool,
+    deterministic: bool,
+}
+
+impl TreeInfo {
+    // Java: java/util/regex/Pattern.java Pattern.TreeInfo.reset
+    fn new() -> TreeInfo {
+        TreeInfo {
+            min_length: 0,
+            max_length: 0,
+            max_valid: true,
+            deterministic: true,
+        }
+    }
+}
+
+/// `Pattern.MAX_REPS`.
+const MAX_REPS: i32 = 0x7FFF_FFFF;
+
+/// The Java node a leaf of the crate's syntax stands for: an anchor or the empty slice (no
+/// length), `\R` (`LineEnding`) or a `CharProperty`.
+fn leaf_lengths(s: &str) -> Option<(i32, i32)> {
+    if s.is_empty() || is_zero_width_assertion(s) {
+        None
+    } else if s == LINE_ENDING {
+        Some((1, 2))
+    } else {
+        Some((1, 1))
+    }
+}
+
+/// Whether `node` is a `CharProperty` (a char, a class, `.`), which a greedy `*`, `+` or
+/// `{n,}` turns into a `CharPropertyGreedy` (`Pattern.curly`).
+fn is_char_property(node: &Node) -> bool {
+    matches!(node, Node::Raw(s) if leaf_lengths(s) == Some((1, 1)))
+}
+
+/// `study` of a node chain: `chain[0]` followed by the rest, as Java's `next` links run (a
+/// group's body continues into what follows the group; a `Branch` studies what follows it from
+/// a reset `TreeInfo`; a repetition studies its atom alone).
+// Java: java/util/regex/Pattern.java Pattern.Node.study
+// Java: java/util/regex/Pattern.java Pattern.CharProperty.study
+// Java: java/util/regex/Pattern.java Pattern.SliceNode.study
+// Java: java/util/regex/Pattern.java Pattern.LineEnding.study
+// Java: java/util/regex/Pattern.java Pattern.Ques.study
+// Java: java/util/regex/Pattern.java Pattern.CharPropertyGreedy.study
+// Java: java/util/regex/Pattern.java Pattern.Loop.study
+fn study(chain: &[&Node], info: &mut TreeInfo) {
+    let Some((node, rest)) = chain.split_first() else {
+        return;
+    };
+    match node {
+        Node::Raw(s) => {
+            if let Some((min, max)) = leaf_lengths(s) {
+                info.min_length = info.min_length.wrapping_add(min);
+                info.max_length = info.max_length.wrapping_add(max);
+            }
+            study(rest, info);
+        }
+        Node::Slice(_, len) => {
+            info.min_length = info.min_length.wrapping_add(*len);
+            info.max_length = info.max_length.wrapping_add(*len);
+            study(rest, info);
+        }
+        Node::Concat(items) => {
+            let flat: Vec<&Node> = items.iter().chain(rest.iter().copied()).collect();
+            study(&flat, info);
+        }
+        Node::Alt(alternatives) => {
+            let atoms: Vec<Option<&Node>> = alternatives.iter().map(Some).collect();
+            study_branch(&atoms, rest, info);
+        }
+        // Pos, Neg, Behind, NotBehind: Node.study (the condition is not studied).
+        Node::Group {
+            kind: GroupKind::Look { .. },
+            ..
+        } => study(rest, info),
+        // GroupHead and GroupTail: Node.study. An atomic group is a Ques(INDEPENDENT), which
+        // studies its atom and then what follows.
+        Node::Group { body, .. } => {
+            let mut flat: Vec<&Node> = vec![&**body];
+            flat.extend(rest.iter().copied());
+            study(&flat, info);
+        }
+        Node::Repeat {
+            body,
+            min,
+            max,
+            qtype,
+        } => {
+            let cmax = max.unwrap_or(MAX_REPS);
+            let is_group = matches!(**body, Node::Group { .. }) && !is_look(body);
+            if *min == 0 && cmax == 1 {
+                if is_group && *qtype != Qtype::Possessive {
+                    // A group's `?`: Branch(group, null).
+                    study_branch(&[Some(&**body), None], rest, info);
+                } else {
+                    // Ques
+                    let min_length = info.min_length;
+                    study(&[&**body], info);
+                    info.min_length = min_length;
+                    info.deterministic = false;
+                    study(rest, info);
+                }
+            } else if *qtype == Qtype::Greedy && max.is_none() && is_char_property(body) {
+                // CharPropertyGreedy
+                info.min_length = info.min_length.wrapping_add(*min);
+                if info.max_valid {
+                    info.max_length = info.max_length.wrapping_add(MAX_REPS);
+                }
+                info.deterministic = false;
+                study(rest, info);
+            } else if is_group && *qtype != Qtype::Possessive && {
+                let mut group = TreeInfo::new();
+                study(&[&**body], &mut group);
+                !group.deterministic
+            } {
+                // A non-deterministic group: Loop or LazyLoop, which do not study what
+                // follows.
+                info.max_valid = false;
+                info.deterministic = false;
+            } else {
+                // Curly, or GroupCurly for a deterministic group: the same arithmetic.
+                study_curly(body, *min, cmax, info);
+                study(rest, info);
+            }
+        }
+    }
+}
+
+fn is_look(node: &Node) -> bool {
+    matches!(
+        node,
+        Node::Group {
+            kind: GroupKind::Look { .. },
+            ..
+        }
+    )
+}
+
+// Java: java/util/regex/Pattern.java Pattern.Curly.study
+// Java: java/util/regex/Pattern.java Pattern.GroupCurly.study
+fn study_curly(atom: &Node, cmin: i32, cmax: i32, info: &mut TreeInfo) {
+    let min_l = info.min_length;
+    let max_l = info.max_length;
+    let max_v = info.max_valid;
+    let detm = info.deterministic;
+    *info = TreeInfo::new();
+    study(&[atom], info);
+    let mut temp = info.min_length.wrapping_mul(cmin).wrapping_add(min_l);
+    if temp < min_l {
+        temp = 0xFFF_FFFF; // arbitrary large number
+    }
+    info.min_length = temp;
+    if max_v & info.max_valid {
+        let temp = info.max_length.wrapping_mul(cmax).wrapping_add(max_l);
+        info.max_length = temp;
+        if temp < max_l {
+            info.max_valid = false;
+        }
+    } else {
+        info.max_valid = false;
+    }
+    if info.deterministic && cmin == cmax {
+        info.deterministic = detm;
+    } else {
+        info.deterministic = false;
+    }
+}
+
+// Java: java/util/regex/Pattern.java Pattern.Branch.study
+fn study_branch(atoms: &[Option<&Node>], rest: &[&Node], info: &mut TreeInfo) {
+    let mut min_l = info.min_length;
+    let mut max_l = info.max_length;
+    let mut max_v = info.max_valid;
+    let mut min_l2 = i32::MAX; // arbitrary large enough num
+    let mut max_l2 = -1;
+    for atom in atoms {
+        *info = TreeInfo::new();
+        if let Some(atom) = atom {
+            study(&[atom], info);
+        }
+        min_l2 = min_l2.min(info.min_length);
+        max_l2 = max_l2.max(info.max_length);
+        max_v &= info.max_valid;
+    }
+    min_l = min_l.wrapping_add(min_l2);
+    max_l = max_l.wrapping_add(max_l2);
+    *info = TreeInfo::new();
+    study(rest, info);
+    info.min_length = info.min_length.wrapping_add(min_l);
+    info.max_length = info.max_length.wrapping_add(max_l);
+    info.max_valid &= max_v;
+    info.deterministic = false;
+}
+
 /// The first construct whose `Matcher.find()` span the crate does not reproduce: a greedy
 /// repetition (`*`, `+`, `{n,m}` with `m >= 2`) whose body can match the empty string before
 /// trying a non-empty match (`(?:a*|b)*`, `(?:\s*|#.*)*`, `(?:x??)*`). Java ends the loop when an
@@ -546,8 +867,13 @@ fn assertion_loop_issue(node: &Node) -> Option<String> {
 // Java: java/util/regex/Pattern.java Pattern.Loop.match
 fn find_span_issue(node: &Node) -> Option<String> {
     match node {
-        Node::Raw(_) => None,
+        Node::Raw(_) | Node::Slice(..) => None,
         Node::Concat(items) | Node::Alt(items) => items.iter().find_map(find_span_issue),
+        // Only whether a lookaround's body matches counts, not how far.
+        Node::Group {
+            kind: GroupKind::Look { .. },
+            ..
+        } => None,
         Node::Group { body, .. } => find_span_issue(body),
         Node::Repeat {
             body, max, qtype, ..
@@ -578,7 +904,7 @@ fn find_span_issue(node: &Node) -> Option<String> {
 /// the ends of unquantified groups and alternatives, and the pattern is used with `find()`).
 fn emit(node: &Node, tail: bool, out: &mut String) -> Result<(), String> {
     match node {
-        Node::Raw(s) => out.push_str(s),
+        Node::Raw(s) | Node::Slice(s, _) => out.push_str(s),
         Node::Concat(items) => {
             for (i, item) in items.iter().enumerate() {
                 emit(item, tail && i + 1 == items.len(), out)?;
@@ -610,6 +936,19 @@ fn emit(node: &Node, tail: bool, out: &mut String) -> Result<(), String> {
                     // The first way the group matches ends the match, as in Java.
                     out.push_str("(?:");
                 }
+                // fancy-regex syntax (see `Translation::lookaround`). The body's match is not
+                // the end of the pattern's match.
+                GroupKind::Look { behind, negative } => {
+                    out.push_str(match (behind, negative) {
+                        (false, false) => "(?=",
+                        (false, true) => "(?!",
+                        (true, false) => "(?<=",
+                        (true, true) => "(?<!",
+                    });
+                    emit(body, false, out)?;
+                    out.push(')');
+                    return Ok(());
+                }
             }
             emit(body, tail, out)?;
             out.push(')');
@@ -620,6 +959,18 @@ fn emit(node: &Node, tail: bool, out: &mut String) -> Result<(), String> {
             max,
             qtype,
         } => {
+            if is_look(body) {
+                // A quantified lookaround is a Curly over a zero-width node, whose loop stops
+                // after an iteration that matched the empty string (Curly.match0): with a
+                // minimum of 0 the assertion may be skipped, so it never decides a match (nor a
+                // span, which starts at the same place either way); with a minimum of 1 or
+                // more it must hold once.
+                // Java: java/util/regex/Pattern.java Pattern.Curly.match0
+                if *min > 0 {
+                    emit(body, false, out)?;
+                }
+                return Ok(());
+            }
             if *qtype == Qtype::Possessive && !tail {
                 return Err("possessive quantifier followed by more of the pattern".into());
             }
@@ -855,6 +1206,8 @@ struct Parser {
     named_groups: HashMap<String, i32>,
     unported: Option<String>,
     guards: Guards,
+    /// A lookahead or lookbehind was parsed.
+    lookaround: bool,
 }
 
 const ZERO: u32 = 0;
@@ -875,6 +1228,7 @@ impl Parser {
             named_groups: HashMap::new(),
             unported: None,
             guards: Guards::default(),
+            lookaround: false,
         }
     }
 
@@ -965,7 +1319,7 @@ impl Parser {
         }
         if self.has(LITERAL) {
             let chars: Vec<u32> = self.temp[..self.pattern_length].to_vec();
-            return Ok(Node::Raw(self.new_slice(&chars)));
+            return Ok(Node::Slice(self.new_slice(&chars), chars.len() as i32));
         }
         let root = self.expr()?;
         if self.pattern_length != self.cursor {
@@ -1221,7 +1575,7 @@ impl Parser {
         if buffer.len() == 1 {
             Ok(Node::Raw(self.single_node(buffer[0])))
         } else {
-            Ok(Node::Raw(self.new_slice(&buffer)))
+            Ok(Node::Slice(self.new_slice(&buffer), buffer.len() as i32))
         }
     }
 
@@ -1910,8 +2264,11 @@ impl Parser {
                 '=' | '!' => {
                     // (?=xxx) and (?!xxx) lookahead
                     body = self.expr()?;
-                    self.mark_unported("lookahead");
-                    kind = GroupKind::NonCapturing;
+                    self.lookaround = true;
+                    kind = GroupKind::Look {
+                        behind: false,
+                        negative: c == ch('!'),
+                    };
                 }
                 '>' => {
                     // (?>xxx) independent group
@@ -1936,8 +2293,29 @@ impl Parser {
                         kind = GroupKind::Named(name);
                     } else {
                         body = self.expr()?;
-                        self.mark_unported("lookbehind");
-                        kind = GroupKind::NonCapturing;
+                        // TreeInfo: the body's maximum length must be bounded.
+                        let mut info = TreeInfo::new();
+                        study(&[&body], &mut info);
+                        if !info.max_valid {
+                            return Err(self.error(
+                                "Look-behind group does not have an obvious maximum length",
+                            ));
+                        }
+                        if info.min_length != info.max_length {
+                            // Java tries each start from `i - minLength` down to
+                            // `i - maxLength` (with these lengths as computed, overflow
+                            // included); fancy-regex has fixed-width lookbehind only.
+                            self.mark_unported(format!(
+                                "lookbehind of variable length ({}..{})",
+                                info.min_length, info.max_length
+                            ));
+                        }
+                        self.lookaround = true;
+                        self.guards.lookbehind = true;
+                        kind = GroupKind::Look {
+                            behind: true,
+                            negative: c == ch('!'),
+                        };
                     }
                 }
                 '$' | '@' => return Err(self.error("Unknown group type")),

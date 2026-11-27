@@ -977,6 +977,8 @@ struct ConvertedTransitions(Mutex<Vec<(String, Arc<StarlarkDefinedConfigTransiti
 impl blaze_util::build_arena::ArenaSlot for ConvertedTransitions {
     const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
         blaze_util::build_arena::ReleaseOrder::Memo;
+    // Decision D7 (amended 2026-11-26): its entries hold module values; one command.
+    const PER_COMMAND: bool = true;
 }
 
 /// The `StarlarkDefinedConfigTransition` of a loading-phase transition object held in a

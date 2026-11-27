@@ -33,9 +33,9 @@ use crate::keys::{ActionExecutionKey, ArtifactKey, ArtifactNestedSetKey, artifac
 use crate::skyframe_action_executor::{ActionInputMetadata, SkyframeActionExecutor};
 
 // Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindStrategy.java:94 ActionRewindStrategy.MAX_REPEATED_LOST_INPUTS
-pub(crate) const MAX_REPEATED_LOST_INPUTS: usize = 20;
+pub const MAX_REPEATED_LOST_INPUTS: usize = 20;
 // Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindStrategy.java:95 ActionRewindStrategy.MAX_ACTION_REWIND_EVENTS
-pub(crate) const MAX_ACTION_REWIND_EVENTS: usize = 5;
+pub const MAX_ACTION_REWIND_EVENTS: usize = 5;
 // Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindStrategy.java:96 ActionRewindStrategy.MAX_LOST_INPUTS_RECORDED
 pub(crate) const MAX_LOST_INPUTS_RECORDED: usize = 5;
 

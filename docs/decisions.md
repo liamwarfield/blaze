@@ -755,3 +755,37 @@ Each entry: date, decision, why, who decided.
   of 13,858, regressed 0 (label `guard-8ecc520`); daemon 13,858 matching, 56 allowed, of 13,860,
   regressed 0 (label `guardd-8ecc520`). Same figures as at a673e29. (The two entries above
   carry times root estimated too late; they were written between 01:15 and 01:30.) Root.
+- 2026-11-27, 02:50. Referee batch 4 audited: PASS with conditions K1-K4
+  (docs/reviews/2026-11-27-audit-referee-4.md). K1 (hashes of the 12 files) and K2 (no
+  "final shutdown is not checked" note in the base) checked by root; the batch is committed
+  after checkpoint 47. D1-D3 of that audit go into the next referee change. Rulings the same
+  night: `Facts.getIndex` on a missing key stays `unported!` (a Java null leaking into Starlark
+  is not reproduced; no interpreter patch for it; declared deviation); the wasm methods live on
+  a second context type chosen from the semantics (W-5), accepted. Sweep's census of
+  `unported!` sites: 388 in production code, 6 reachable by an ordinary build, 113 by a flag,
+  rare input or interrupt, 135 not reachable at the pin, 128 in running threads' areas
+  (`~/.cache/blaze/work/sweep-2/unported-classified.tsv`). Root.
+- 2026-11-27, 03:00. Correction to root's reading of the server-mode suite run of 8ecc520: the
+  seven timeouts are not established as a Blaze defect. The execution implementer could not
+  reproduce the analysis hangs (hand loops, the seven targets twice, one whole run of its own
+  without them); during root's run the incremental thread's randomized test ran beside it and
+  the agents' slice was often over MemoryHigh. Two of the seven are a harness defect (the
+  tests' shared, writable repository cache; `external_integration_test` deferred downloads).
+  Consequences: a suite run needs the machine otherwise quiet (root checks the job slice for
+  other units before starting, and records the slice's memory events before and after); a
+  harness batch B is started for the cache isolation and the three open harness problems, to
+  be audited; a whole-suite run is root's to start, agents run focused targets only. Root.
+- 2026-11-27, 04:05. The machine was restarted at about 04:00 (an orderly shutdown in the
+  journal; not started by root). Checkpoint 47 had not gone out: the first job raced the
+  agents' edits twice between its tree check and its commit and was then stopped at the
+  harness's time limit; nothing was pushed. Root's checkpoint job is now snapshot-based
+  (`~/.cache/blaze/work/root-runs/checkpoint2.sh`): it copies the tree into a separate
+  worktree, commits there, checks and builds that commit, and moves `main` only if the check
+  passes. After the restart: limits re-applied (`scripts/cpu-cap apply`), keeper restarted as
+  the user unit `blaze-keeper` (ends by itself after eight hours), eight implementer threads
+  resumed by themselves, the harness thread resumed by message. Harness batch B audited PASS
+  with conditions (docs/reviews/2026-11-27-audit-harness-b.md); H-1 and H-2 are being fixed
+  before the commit. Ruling: a function that was running when a timeout killed its shard is
+  failed (lost), source `log`; functions that never started stay unmeasured. A new oracle
+  baseline (`oracle-9.3.2-v2.json`, three runs, per-action repository cache) follows the
+  auditor's conditions; old labels are not scored against it. Root.

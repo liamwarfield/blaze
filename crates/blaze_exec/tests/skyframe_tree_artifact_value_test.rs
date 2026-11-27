@@ -126,9 +126,77 @@ fn creates_correct_value() {
     assert_eq!(metadata.get_size(), 0);
 }
 
+/// `ArchivedTreeArtifact.createForTree(specialArtifact)` for a tree under the test's `bin` root:
+/// `bin/:archived_tree_artifacts/<root-relative path>.zip` (`embedDerivedTreeRoot` of the root
+/// `bin`).
+fn create_archived_tree_artifact(parent: &ActionInputRef) -> ActionInputRef {
+    let root_relative = parent
+        .get_exec_path()
+        .relative_to(&PathFragment::create("bin"));
+    ActionInputRef::new(FakeArtifact {
+        exec_path: PathFragment::create("bin/:archived_tree_artifacts")
+            .get_relative(&PathFragment::create(&format!("{root_relative}.zip"))),
+        tree: false,
+        parent: Some(parent.clone()),
+        parent_relative_path: None,
+    })
+}
+
 #[test]
-#[ignore = "needs ArchivedTreeArtifact.createForTree (archived tree artifacts are not ported)"]
-fn creates_correct_value_with_archived_representation() {}
+fn creates_correct_value_with_archived_representation() {
+    let parent = create_tree_artifact("bin/tree");
+    let child1 = create_tree_output(&parent, "child1");
+    let child2 = create_tree_output(&parent, "child2");
+    let archived_tree_artifact = create_archived_tree_artifact(&parent);
+    let child1_metadata = metadata_with_id(1);
+    let child2_metadata = metadata_with_id(2);
+    let archived_artifact_metadata = metadata_with_id(3);
+
+    let tree = TreeArtifactValue::build(
+        vec![
+            (child1.clone(), child1_metadata.clone()),
+            (child2.clone(), child2_metadata.clone()),
+        ],
+        Some((
+            archived_tree_artifact.clone(),
+            archived_artifact_metadata.clone(),
+        )),
+        None,
+    );
+
+    assert_eq!(tree.get_children(), vec![child1.clone(), child2.clone()]);
+    assert_eq!(
+        tree.child_values,
+        vec![
+            (child1.clone(), child1_metadata),
+            (child2.clone(), child2_metadata)
+        ]
+    );
+    let child_paths: Vec<PathFragment> = tree
+        .child_values
+        .iter()
+        .map(|(child, _)| {
+            child
+                .as_artifact()
+                .unwrap()
+                .get_parent_relative_path()
+                .unwrap()
+        })
+        .collect();
+    assert_eq!(
+        child_paths,
+        vec![
+            PathFragment::create("child1"),
+            PathFragment::create("child2")
+        ]
+    );
+    let metadata = tree.metadata.as_ref().unwrap();
+    assert!(metadata.get_digest().is_some());
+    assert_eq!(
+        tree.archived_representation,
+        Some((archived_tree_artifact, archived_artifact_metadata))
+    );
+}
 
 #[test]
 fn creates_correct_value_with_resolved_path() {

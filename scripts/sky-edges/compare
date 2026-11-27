@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""Compares the dependency edges of CONFIGURED_TARGET nodes after a build. See `compare help`."""
+
+import os
+import re
+import shutil
+import subprocess
+import sys
+
+USAGE = """\
+usage: scripts/sky-edges/compare <workspace-template> [--blaze <binary>] [--targets <t>...]
+       scripts/sky-edges/compare help
+
+Copies the BUILD/MODULE files of <workspace-template> (bazel-* links left out) to
+~/.cache/blaze/work/ea-7/edges-ws, then for the oracle and Blaze (default target/debug/blaze)
+runs, in one daemon-mode server each (--max_idle_secs=60, output user root
+~/.cache/blaze/work/ea-7/edges-ur-<side>):
+
+  build --jobs=4 <targets>          (default //bar:al //foo:x)
+  dump --skyframe=deps
+  shutdown
+
+and prints the edges `CONFIGURED_TARGET:<key> -> <dep key>` present on one side only (keys with
+configuration hashes as printed; both sides share the workspace path). The dumps are kept as
+~/.cache/blaze/work/ea-7/edges-deps-<side>.out.
+
+Run it inside `systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0`.
+"""
+
+HOME = os.path.expanduser("~")
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+WORK = f"{HOME}/.cache/blaze/work/ea-7"
+WS = f"{WORK}/edges-ws"
+ORACLE = f"{HOME}/.cache/blaze/oracle/bazel-9.3.2-linux-x86_64"
+
+
+def copy_workspace(template):
+    if os.path.exists(WS):
+        shutil.rmtree(WS)
+    def ignore(d, names):
+        return [n for n in names if n.startswith("bazel-")]
+    shutil.copytree(template, WS, ignore=ignore, symlinks=True)
+
+
+def run(side, binary, targets):
+    env = dict(os.environ, BLAZE_SERVER_MODE="daemon")
+    base = [binary, "--max_idle_secs=60", f"--output_user_root={WORK}/edges-ur-{side}",
+            "--nohome_rc", "--nosystem_rc"]
+    subprocess.run(base + ["build", "--jobs=4", f"--repository_cache={HOME}/.cache/blaze/repo-cache"]
+                   + targets, cwd=WS, env=env, capture_output=True)
+    out = subprocess.run(base + ["dump", "--skyframe=deps"], cwd=WS, env=env,
+                         capture_output=True, text=True).stdout
+    subprocess.run(base + ["shutdown"], cwd=WS, env=env, capture_output=True)
+    with open(f"{WORK}/edges-deps-{side}.out", "w") as f:
+        f.write(out)
+    return out
+
+
+def edges(dump):
+    result = set()
+    node = None
+    for line in dump.splitlines():
+        if line and not line.startswith(" "):
+            node = line if line.startswith("CONFIGURED_TARGET:") else None
+        elif node and line.startswith("    "):
+            result.add(f"{node} -> {line.strip()}")
+    return result
+
+
+def main(argv):
+    if not argv or argv[0] in ("help", "--help"):
+        print(USAGE)
+        return 0
+    template = argv[0]
+    blaze = os.path.join(REPO, "target/debug/blaze")
+    targets = ["//bar:al", "//foo:x"]
+    args = argv[1:]
+    while args:
+        a = args.pop(0)
+        if a == "--blaze" and args:
+            blaze = args.pop(0)
+        elif a == "--targets":
+            targets = args
+            args = []
+        else:
+            print(USAGE)
+            return 2
+    os.makedirs(WORK, exist_ok=True)
+    copy_workspace(template)
+    oracle = edges(run("oracle", ORACLE, targets))
+    ours = edges(run("blaze", blaze, targets))
+    for e in sorted(oracle - ours):
+        print(f"oracle only: {e}")
+    for e in sorted(ours - oracle):
+        print(f"blaze only:  {e}")
+    print(f"{len(oracle)} oracle edges, {len(ours)} blaze edges, "
+          f"{len(oracle - ours)} oracle-only, {len(ours - oracle)} blaze-only")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

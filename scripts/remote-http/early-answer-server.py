@@ -15,7 +15,9 @@ MODE snappy: a store whose GET answers carry `Content-Encoding: snappy` (the fra
 MODE snappy-bad: snappy, with a reserved unskippable chunk (type 0x02) after the identifier.
 MODE slow: a store that reads the body of a PUT at 64 KiB per second (logs when the client
             closes the connection, or when the body is complete, in seconds after the head).
-With CERT_PEM and KEY_PEM the server speaks TLS. Every request is logged to LOG (method, path, length, authorization)."""
+With CERT_PEM and KEY_PEM the server speaks TLS. Every request is logged to LOG (method, path, length, authorization),
+each line with a suffix ` @<ms since the first connection> c<connection number>`; each accepted connection is
+logged as `  accept`."""
 import os, socket, ssl, sys, threading, time, struct
 if len(sys.argv) < 2 or sys.argv[1] in ("help", "-h", "--help"):
     print(__doc__)
@@ -49,8 +51,14 @@ def snappy_frame(data, bad):
             body = bytes([6, 5 << 2]) + tail
         out += chunk(0x00, b"\0\0\0\0" + body)
     return out
+T0 = []
+local = threading.local()
 def note(s):
+    now = time.monotonic()
     with lock:
+        if not T0:
+            T0.append(now)
+        s = "%s @%.1fms c%s" % (s, (now - T0[0]) * 1000, getattr(local, "conn", "?"))
         open(log, "a").write(s + "\n")
 def serve(c):
     f = c.makefile("rb")
@@ -127,7 +135,9 @@ else:
     s = socket.socket(); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     s.bind(("127.0.0.1", int(port)))
 s.listen(64)
-def handshake_and_serve(c):
+def handshake_and_serve(c, n):
+    local.conn = n
+    note("  accept")
     if tls is not None:
         try:
             c = tls.wrap_socket(c, server_side=True)
@@ -136,6 +146,8 @@ def handshake_and_serve(c):
             c.close()
             return
     serve(c)
+accepted = 0
 while True:
     c, _ = s.accept()
-    threading.Thread(target=handshake_and_serve, args=(c,), daemon=True).start()
+    accepted += 1
+    threading.Thread(target=handshake_and_serve, args=(c, accepted), daemon=True).start()

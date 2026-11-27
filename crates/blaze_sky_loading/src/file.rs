@@ -27,6 +27,7 @@ use crate::pkgcache::PathPackageLocator;
 use crate::sky_functions;
 
 /// Key for [`FileFunction`]. `Debug` prints `FILE:<rooted path>`.
+// PORT: skipped, a newtype key (Key::FUNCTION; no interning): FileKey.create, FileKey.intern, FileKey.functionName, FileKey.getSkyKeyInterner
 // Java: com/google/devtools/build/lib/skyframe/FileKey.java:28 FileKey
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct FileKey(pub RootedPath);
@@ -63,6 +64,7 @@ impl Key for FileKey {
 
 /// Separates path and cycle from a combined list: elements before the first one matching
 /// `start_of_cycle`, and the rest.
+// PORT: skipped, the private constructor of a static-only class: CycleUtils.<init>
 // Java: com/google/devtools/build/lib/skyframe/CycleUtils.java:27 CycleUtils.splitIntoPathAndChain
 pub(crate) fn split_into_path_and_chain<S: Clone>(
     start_of_cycle: impl Fn(&S) -> bool,

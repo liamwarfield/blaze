@@ -39,3 +39,4 @@ pub use crate::values::dict::value::dict_is_immutable; // BLAZE PATCH 0018
 pub use crate::values::dict::value::alloc_immutable_key_tracking_dict; // BLAZE PATCH 0063
 pub use crate::values::dict::value::dict_accessed_keys; // BLAZE PATCH 0063
 pub use crate::values::dict::value::dict_record_all_keys_accessed; // BLAZE PATCH 0063
+pub use crate::values::dict::value::java_map_entries; // BLAZE PATCH 0069

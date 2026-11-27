@@ -30,7 +30,8 @@ use blaze_exec::exec::bin_tools::BinTools;
 use blaze_exec::exec::evaluation_stack::on_evaluation_stack;
 use blaze_exec::exec::exec_command_environment::ExecCommandEnvironment;
 use blaze_exec::exec::executor_setup::{
-    RemoteModuleContributions, build_spawn_strategy_registry_with_remote,
+    ModuleSpawnStrategyRegistration, RemoteModuleContributions,
+    build_spawn_strategy_registry_with_modules,
 };
 use blaze_exec::exec::spawn_log_context::SpawnLogContext;
 use blaze_exec::exec::spawn_strategy_registry::AbruptExitException;
@@ -96,6 +97,11 @@ pub struct ExecutionToolConfig {
     pub action_temps_directory: Path,
     /// `--experimental_writable_outputs` (`CoreOptions.experimentalWritableOutputs`).
     pub writable_outputs: bool,
+    /// `--archived_tree_artifact_mnemonics_filter` (`CoreOptions.archivedArtifactsMnemonicsFilter`),
+    /// which `SkyframeActionExecutor.archivedTreeArtifactsEnabledForMnemonic` reads; `None` is the
+    /// default (`-.*`).
+    pub archived_artifacts_mnemonics_filter:
+        Option<blaze_optdefs::common::regex_filter::RegexFilter>,
     /// The reporter's `OutputFilter` from `--output_filter` / `--auto_output_filter`
     /// (`Reporter.setOutputFilter`); `None` is `OutputFilter.OUTPUT_EVERYTHING`.
     pub output_filter: Option<Arc<dyn OutputFilter>>,
@@ -103,6 +109,10 @@ pub struct ExecutionToolConfig {
     /// prefetcher, remote output tree, action execution salt); the default is a command without
     /// any remote option.
     pub remote: RemoteModuleContributions,
+    /// The `registerSpawnStrategies` of the runtime's modules other than Bazel's built-in ones,
+    /// in module order (none in the `blaze` binary; a test's modules).
+    // Java: com/google/devtools/build/lib/runtime/BlazeModule.java:329 BlazeModule.registerSpawnStrategies
+    pub module_spawn_strategy_registrations: Vec<ModuleSpawnStrategyRegistration>,
 }
 
 /// `BuildSummaryStatsModule` + the `UiStateTracker` counters, as an event-bus subscriber.
@@ -625,7 +635,15 @@ pub fn prepare_for_execution_with_action_cache(
     sandbox_module.before_command(&env);
     let mut contexts = ActionContexts::default();
     let mut spawn_strategy_registry_error = None;
-    match build_spawn_strategy_registry_with_remote(&env, &mut sandbox_module, &config.remote) {
+    // build_spawn_strategy_registry_with_remote (the default strategy policy) with the other
+    // modules' registrations.
+    match build_spawn_strategy_registry_with_modules(
+        &env,
+        &mut sandbox_module,
+        &config.remote,
+        &blaze_protos::blaze::strategy_policy::StrategyPolicy::default(),
+        &config.module_spawn_strategy_registrations,
+    ) {
         Ok(registry) => contexts.spawn_strategy_registry = Some(Arc::new(registry)),
         Err(e) => spawn_strategy_registry_error = Some(e),
     }
@@ -685,6 +703,9 @@ pub fn prepare_for_execution_with_action_cache(
     .with_lost_inputs_policy(config.remote.lost_inputs_policy.clone());
     if let Some(output_filter) = &config.output_filter {
         executor = executor.with_output_filter(output_filter.clone());
+    }
+    if let Some(filter) = &config.archived_artifacts_mnemonics_filter {
+        executor = executor.with_archived_artifacts_mnemonics_filter(filter.clone());
     }
     let executor = Arc::new(executor);
     Ok(PreparedExecution {
@@ -910,6 +931,22 @@ pub fn evaluate_artifacts(
         ..EvaluationContext::default()
     };
     evaluator.evaluate(&roots, &ctx)
+}
+
+/// Called after a single Skyframe evaluation that involves action execution: the rewind
+/// strategy posts the build's `PostableActionRewindingStats` and forgets its records.
+///
+/// PORT: Java also drops the execution progress receiver and calls
+/// `skyframeActionExecutor.executionOver()`, which only release references here (Blaze drops
+/// the executor's per-evaluation state with the evaluation).
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2510 SkyframeExecutor.cleanUpAfterSingleEvaluationWithActionExecution
+pub fn clean_up_after_single_evaluation_with_action_execution(
+    executor: &SkyframeActionExecutor,
+    event_handler: &dyn ExtendedEventHandler,
+) {
+    executor
+        .action_rewind_strategy()
+        .reset(executor, event_handler);
 }
 
 /// Asks the Skyframe evaluator to run a single exclusive test (the `TestCompletionKey` of one

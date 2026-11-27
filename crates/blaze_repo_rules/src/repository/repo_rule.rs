@@ -22,6 +22,7 @@ pub const LEGACY_BUILTIN_ATTRIBUTES: [&str; 4] = ["name", "tags", "deprecation",
 /// A repository rule (Java record `RepoRule`). Immutable; built once per exported
 /// `repository_rule` value.
 // Java: com/google/devtools/build/lib/bazel/repository/RepoRule.java:46 RepoRule
+// PORT: skipped, the record builder is a struct literal at its caller: RepoRule.builder, RepoRule.Builder.transitiveBzlDigest, RepoRule.Builder.recordedRepoMappingEntries, RepoRule.Builder.impl, RepoRule.Builder.doc, RepoRule.Builder.local, RepoRule.Builder.configure, RepoRule.Builder.remotable, RepoRule.Builder.environ
 pub struct RepoRule {
     pub id: RepoRuleId,
     pub transitive_bzl_digest: Vec<u8>,

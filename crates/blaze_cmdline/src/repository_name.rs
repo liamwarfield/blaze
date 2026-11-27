@@ -20,6 +20,7 @@ use crate::string_utilities::sanitize_control_chars;
 /// [`RepositoryName::create`] are interned. A name may also be "not visible" (see
 /// [`RepositoryName::to_non_visible`]): it then remembers the context repo it was requested from
 /// and renders as `@@[unknown repo 'x' requested from @@ctx]`.
+// PORT: skipped, serialization for remote analysis caching (not ported, ruling 2026-11-19 (1)): RepositoryName.repositoryNameCodec, RepositoryName.Codec.getEncodedClass, RepositoryName.Codec.serialize, RepositoryName.Codec.deserialize
 // Java: com/google/devtools/build/lib/cmdline/RepositoryName.java:45 RepositoryName
 #[derive(Clone)]
 pub struct RepositoryName(Arc<RepositoryNameInner>);

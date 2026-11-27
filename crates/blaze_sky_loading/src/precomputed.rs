@@ -27,6 +27,7 @@ pub static VENDOR_DIRECTORY: Precomputed<Option<std::path::PathBuf>> =
 // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:88 PrecomputedValue.BUILD_ID
 pub static BUILD_ID: Precomputed<String> = Precomputed::new("build_id");
 
+// PORT: skipped, registered at the pin but no function or command requests ACTION_ENVIRONMENT_VARIABLE (ActionEnvironmentFunction.key and getEnvironmentView have no caller): ActionEnvironmentFunction.compute, ActionEnvironmentFunction.key, ActionEnvironmentFunction.Key.<init>, ActionEnvironmentFunction.Key.create, ActionEnvironmentFunction.Key.intern, ActionEnvironmentFunction.Key.functionName, ActionEnvironmentFunction.Key.getSkyKeyInterner, ActionEnvironmentFunction.getEnvironmentView
 /// The `--action_env` variables, in order; `None` for a variable inherited from the client
 /// (Java's `LinkedHashMap` with null values). Injected by every command (`SkyframeExecutor.sync`);
 /// Java's `ActionEnvironmentFunction` reads it.

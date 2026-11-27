@@ -35,7 +35,7 @@ all-model quota remains; the user watches it and sends the pause.
   | `b216603` | `blaze-b216603` | 168 | 2,729 |
   | `b216603`, server mode (opt-in) | `blaze-b216603-daemon` | 190 | 2,774 |
   | `8ecc520` | `blaze-8ecc520` | 169 | 2,715 (9 lost against `b216603`: one `unported!` of the Skymeld port; assigned) |
-  | `8ecc520`, server mode (opt-in) | `blaze-8ecc520-daemon` | 190 | 2,779 (7 targets timed out on a hang in the server, 51 functions unmeasured; assigned) |
+  | `8ecc520`, server mode (opt-in) | `blaze-8ecc520-daemon` | 190 | 2,779 (disturbed run: 7 targets timed out while another heavy job ran beside it; not reproduced; to be measured again) |
 
   Failures of the last runs by family: `~/.cache/blaze/work/root-runs/8ecc520-failures/by-family.tsv`
   (one process) and `8ecc520-daemon-failures/by-family.tsv` (server mode).
@@ -60,8 +60,8 @@ all-model quota remains; the user watches it and sends the pause.
 
 ## Next, in this order
 
-1. The hang in server mode and the Skymeld `unported!`; then a checkpoint and a suite run in
-   both modes. Best measured so far: server mode at `38cd662`, 2,803 of 2,878.
+1. A checkpoint with the Skymeld conflict-checking port, then a suite run in both modes with
+   nothing else heavy on the machine (the server-mode run of `8ecc520` was disturbed). Best measured so far: server mode at `38cd662`, 2,803 of 2,878.
 2. Re-reviews owed: remote round 9 (running), rewinding round 4 (IS-2, IS-3), patches round 2
    (0068), incremental builds round 3 (when its implementer reports); first reviews of Skymeld,
    `mobile-install`, hash functions as they land.

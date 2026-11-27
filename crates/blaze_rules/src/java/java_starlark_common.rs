@@ -430,10 +430,15 @@ fn create_compilation_action<'v>(
         )));
     };
     if !extra_args_elems.is_empty() {
-        // Java: extraCommandLineArgs.add(args.build(mainRepoMapping)) for each Args.
+        // Java: extraCommandLineArgs.add(args.build(mainRepoMapping)) for each Args, at once.
+        // PORT: an Args object is built only from frozen values here (ctx.actions keeps a copy
+        // alive and creates its actions after freezing, StarlarkActionFactory's pending
+        // actions); this action would have to be created the same way. No rules_java version
+        // passes extra_args (the six in the shared repository cache call
+        // create_compilation_action without it), so the empty default is all a build sees.
         blaze_util::unported!(
             "JavaStarlarkCommon.createCompilationAction",
-            "extra_args (Args.build of a Starlark Args object outside an action)"
+            "extra_args (Args.build of a Starlark Args object before the rule's module is frozen)"
         );
     }
     let source_files_list: Vec<Artifact> = if source_files.is_none() {
@@ -801,10 +806,10 @@ fn java_common_methods(builder: &mut MethodsBuilder) {
             .filter(|a| !excluded_set.contains(*a))
             .cloned()
             .collect();
-        Ok(depset_value(&artifacts_to_depset(&NestedSetBuilder::wrap(
-            Order::STABLE_ORDER,
-            filtered,
-        ))))
+        Ok(depset_value(
+            eval.heap(),
+            &artifacts_to_depset(&NestedSetBuilder::wrap(Order::STABLE_ORDER, filtered)),
+        ))
     }
 
     // Java: com/google/devtools/build/lib/rules/java/JavaStarlarkCommon.java:354 JavaStarlarkCommon.checkProviderInstances

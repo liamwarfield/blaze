@@ -1,42 +1,64 @@
 category	rust_file	rust_line	marker
-UNRESOLVED: Bazel file not found	crates/blaze_sky_analysis/src/producers/errors.rs	127	// Java: com/google/devtools/build/lib/util/DetailedExitCodeComparator.java:44 DetailedExitCodeComparator.chooseMoreImportantWithFirstIfTie
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	36	// Java: com/google/devtools/starlark/common/DocstringUtils.java:77 DocstringUtils.parseDocstring
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	45	// Java: com/google/devtools/starlark/common/DocstringUtils.java:85 DocstringUtils.DocstringInfo
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	61	// Java: com/google/devtools/starlark/common/DocstringUtils.java:141 DocstringInfo.isSingleLineDocstring
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	68	// Java: com/google/devtools/starlark/common/DocstringUtils.java:157 DocstringUtils.ParameterDoc
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	78	// Java: com/google/devtools/starlark/common/DocstringUtils.java:463 DocstringUtils.DocstringParseError
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	90	// Java: com/google/devtools/starlark/common/DocstringUtils.java:474 DocstringParseError.toString
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	96	// Java: com/google/devtools/starlark/common/DocstringUtils.java:345 DocstringParser.paramLineMatcher
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	106	// Java: com/google/devtools/starlark/common/DocstringUtils.java:349 DocstringParser.attributesSeparator
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	110	// Java: com/google/devtools/starlark/common/DocstringUtils.java:176 DocstringUtils.DocstringParser
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	126	// Java: com/google/devtools/starlark/common/DocstringUtils.java:200 DocstringParser.<init>
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	143	// Java: com/google/devtools/starlark/common/DocstringUtils.java:212 DocstringParser.nextLine
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	156	// Java: com/google/devtools/starlark/common/DocstringUtils.java:224 DocstringParser.eof
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	161	// Java: com/google/devtools/starlark/common/DocstringUtils.java:228 DocstringParser.getIndentation
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	166	// Java: com/google/devtools/starlark/common/DocstringUtils.java:236 DocstringParser.error
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	171	// Java: com/google/devtools/starlark/common/DocstringUtils.java:240 DocstringParser.error
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	180	// Java: com/google/devtools/starlark/common/DocstringUtils.java:244 DocstringParser.parseArgumentSection
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	198	// Java: com/google/devtools/starlark/common/DocstringUtils.java:256 DocstringParser.parse
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	272	// Java: com/google/devtools/starlark/common/DocstringUtils.java:315 DocstringParser.checkSectionStart
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	281	// Java: com/google/devtools/starlark/common/DocstringUtils.java:322 DocstringParser.checkForNonStandardDeprecation
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	295	// Java: com/google/devtools/starlark/common/DocstringUtils.java:351 DocstringParser.parseParameters
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	363	// Java: com/google/devtools/starlark/common/DocstringUtils.java:407 DocstringParser.parseContinuedParamDescription
+UNRESOLVED: Bazel file not found	crates/blaze_starlarkdocextract/src/docstring_utils.rs	391	// Java: com/google/devtools/starlark/common/DocstringUtils.java:430 DocstringParser.parseSectionAfterHeading
 UNRESOLVED: name not in file, line not in a method	crates/blaze_actions/src/analysis/actions/lazy_write_nested_set_of_tuple_action.rs	53	// Java: net/starlark/java/eval/Tuple.java Tuple.get
 UNRESOLVED: name not in file, line not in a method	crates/blaze_actions/src/analysis/starlark/args.rs	688	// Java: com/google/devtools/build/lib/analysis/starlark/Args.java:138 RegisteredArgs
-UNRESOLVED: name not in file, line not in a method	crates/blaze_analysis/src/config/ordered_set_multimap.rs	24	// Java: com/google/devtools/build/lib/util/OrderedSetMultimap.java:56 OrderedSetMultimap.put
-UNRESOLVED: name not in file, line not in a method	crates/blaze_analysis/src/config/ordered_set_multimap.rs	33	// Java: com/google/devtools/build/lib/util/OrderedSetMultimap.java:64 OrderedSetMultimap.putAll
+UNRESOLVED: name not in file, line not in a method	crates/blaze_analysis/src/config/ordered_set_multimap.rs	26	// Java: com/google/devtools/build/lib/util/OrderedSetMultimap.java:56 OrderedSetMultimap.put
+UNRESOLVED: name not in file, line not in a method	crates/blaze_analysis/src/config/ordered_set_multimap.rs	35	// Java: com/google/devtools/build/lib/util/OrderedSetMultimap.java:64 OrderedSetMultimap.putAll
 UNRESOLVED: name not in file, line not in a method	crates/blaze_analysis/src/configuredtargets/target_value.rs	52	// Java: com/google/devtools/build/lib/starlarkbuildapi/core/TransitiveInfoCollectionApi.java LABEL_FIELD / FILES_FIELD
 UNRESOLVED: name not in file, line not in a method	crates/blaze_analysis/src/starlark/starlark_action.rs	101	// Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java getMnemonic
 UNRESOLVED: name not in file, line not in a method	crates/blaze_exec/src/actions/exec_exception.rs	165	// Java: com/google/devtools/build/lib/actions/LostInputsExecException.java LostInputsExecException.LostArtifacts
 UNRESOLVED: name not in file, line not in a method	crates/blaze_exec/src/worker/singleplex_worker.rs	67	// Java: com/google/devtools/build/lib/worker/SandboxedWorker.java:49 SandboxedWorker.WorkerSandboxOptions.equals
 UNRESOLVED: name not in file, line not in a method	crates/blaze_packages/src/builtins/autoload_symbols.rs	1072	// Java: net/starlark/java/eval/StarlarkCallable.java StarlarkCallable.repr (`<function NAME>`)
 UNRESOLVED: name not in file, line not in a method	crates/blaze_packages/src/package/rule_visibility.rs	280	// Java: com/google/devtools/build/lib/packages/PackageGroupsRuleVisibility.java:25 PackageGroupsRuleVisibility.toString
-UNRESOLVED: name not in file, line not in a method	crates/blaze_packages/src/starlark_defs/util.rs	341	// Java: net/starlark/java/eval/BuiltinFunction.java BuiltinFunction.getArgumentVector
+UNRESOLVED: name not in file, line not in a method	crates/blaze_packages/src/starlark_defs/util.rs	346	// Java: net/starlark/java/eval/BuiltinFunction.java BuiltinFunction.getArgumentVector
 UNRESOLVED: name not in file, line not in a method	crates/blaze_repo_rules/src/registration.rs	111	// Java: com/google/devtools/build/lib/bazel/BazelRepositoryModule.java BazelRepositoryModule.getSkyFunctions
 UNRESOLVED: name not in file, line not in a method	crates/blaze_repo_rules/src/repository/repo_definition.rs	34	// Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java SkyFunctions.REPO_DEFINITION
-UNRESOLVED: name not in file, line not in a method	crates/blaze_runtime/src/commands/bep.rs	610	// Java: com/google/devtools/build/lib/causes/LoadingFailedCause.java:52 LoadingFailedCause.getIdProto
+UNRESOLVED: name not in file, line not in a method	crates/blaze_runtime/src/commands/bep.rs	665	// Java: com/google/devtools/build/lib/causes/LoadingFailedCause.java:52 LoadingFailedCause.getIdProto
 UNRESOLVED: name not in file, line not in a method	crates/blaze_sky_loading/src/project_function.rs	393	// Java: com/google/devtools/build/lib/analysis/Project.java ReservedGlobals.PROJECT
 UNRESOLVED: name not in file, line not in a method	crates/blaze_sky_loading/src/transitive_target.rs	29	// Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:72 SkyFunctions.TRANSITIVE_TARGET
-UNRESOLVED: name not in file, line not in a method	crates/blaze_sky_top/src/cycles_reporter.rs	355	// Java: com/google/devtools/build/lib/pkgcache/PackageProvider.java:36 TargetProvider.getTarget
+UNRESOLVED: name not in file, line not in a method	crates/blaze_sky_top/src/cycles_reporter.rs	371	// Java: com/google/devtools/build/lib/pkgcache/PackageProvider.java:36 TargetProvider.getTarget
+UNRESOLVED: name not in file, line not in a method	crates/blaze_sky_top/src/incremental.rs	510	// Java: com/google/devtools/build/skyframe/InMemoryMemoizingEvaluator.java:212 InMemoryMemoizingEvaluator.delete
 UNRESOLVED: no path, member not found	crates/blaze_analysis/src/providers/package_specification_provider.rs	84	// Java: Optional.ofNullable(targetContext.getConfiguration()).
-UNRESOLVED: no path, member not found	crates/blaze_analysis/src/rule/rule_context.rs	2180	// Java: Joiner.on(",").join(descriptors) (AspectDescriptor.toString() is
+UNRESOLVED: no path, member not found	crates/blaze_analysis/src/rule/rule_context.rs	2214	// Java: Joiner.on(",").join(descriptors) (AspectDescriptor.toString() is
 UNRESOLVED: no path, member not found	crates/blaze_cc_features/src/actions.rs	204	/// Java: `OS.valueOf(name)`; `None` where Java throws `IllegalArgumentException`.
 UNRESOLVED: no path, member not found	crates/blaze_cc_features/src/artifact_category.rs	38	/// Java: `ArtifactCategory.values()`, in declaration order.
 UNRESOLVED: no path, member not found	crates/blaze_cc_features/src/artifact_category.rs	92	/// Java: `ArtifactCategory.valueOf(name)`; `None` where Java throws
 UNRESOLVED: no path, member not found	crates/blaze_cc_features/src/cc_starlark_internal.rs	64	/// Java: `ArtifactCategory.valueOf(category)`; unknown names throw `IllegalArgumentException`.
-UNRESOLVED: no path, member not found	crates/blaze_cc_features/src/link.rs	82	/// Java: `LinkTargetType.values()`.
+UNRESOLVED: no path, member not found	crates/blaze_cc_features/src/link.rs	65	/// Java: `LinkTargetType.values()`.
 UNRESOLVED: no path, member not found	crates/blaze_exec/src/bin/blaze-test-replay.rs	694	// Java: SkyframeActionExecutor.prepareScheduleExecuteAndCompleteAction: action.prepare,
 UNRESOLVED: no path, member not found	crates/blaze_options/tests/common/test_options.rs	26	/// Java: TestOptions.ToListConverter (used by test_list_converters).
-UNRESOLVED: no path, member not found	crates/blaze_packages/src/build/starlark_native_module.rs	833	// Java: BuildType.LICENSE.convertOptional (None -> null).
+UNRESOLVED: no path, member not found	crates/blaze_packages/src/build/starlark_native_module.rs	917	// Java: BuildType.LICENSE.convertOptional (None -> null).
 UNRESOLVED: no path, member not found	crates/blaze_sky_exec/src/action_template_expansion_value.rs	67	// Java: BasicActionLookupValue.toString: toStringHelper(this).add("actions", actions)
-UNRESOLVED: no path, member not found	crates/blaze_sky_exec/src/recursive_filesystem_traversal_function.rs	309	// Java: HasDigest.ByteStringDigest.toString is Object's; not reached by output.
-UNRESOLVED: no path, member not found	crates/blaze_sky_exec/src/skyframe_action_executor.rs	514	/// Java: `ActionLogBufferPathGenerator.actionUniquifier`.
-UNRESOLVED: no path, member not found	crates/blaze_skyframe/src/environment.rs	274	/// Java: Environment.valuesMissing
-UNRESOLVED: no path, member not found	crates/blaze_skyframe/src/environment.rs	360	/// Java: Environment.getValue. `Ok(None)` means the dependency is unavailable (error, cycle,
-UNRESOLVED: no path, member not found	crates/blaze_skyframe/src/environment.rs	381	/// Java: Environment.getValueOrThrow(key, E.class). With keep_going or during error bubbling,
-UNRESOLVED: no path, member not found	crates/blaze_skyframe/src/environment.rs	422	/// Java: Environment.getValueOrThrow(key, E1.class, E2.class, ...). `catch` inspects the
-UNRESOLVED: no path, member not found	crates/blaze_skyframe/src/lib.rs	282	/// Java: `SkyValue.equals` as used by `DirtyBuildingState.unchangedFromLastBuild` and
+UNRESOLVED: no path, member not found	crates/blaze_sky_exec/src/recursive_filesystem_traversal_function.rs	314	// Java: HasDigest.ByteStringDigest.toString is Object's; not reached by output.
+UNRESOLVED: no path, member not found	crates/blaze_sky_exec/src/skyframe_action_executor.rs	633	/// Java: `ActionLogBufferPathGenerator.actionUniquifier`.
+UNRESOLVED: no path, member not found	crates/blaze_skyframe/src/environment.rs	291	/// Java: Environment.valuesMissing
+UNRESOLVED: no path, member not found	crates/blaze_skyframe/src/environment.rs	383	/// Java: Environment.getValue. `Ok(None)` means the dependency is unavailable (error, cycle,
+UNRESOLVED: no path, member not found	crates/blaze_skyframe/src/environment.rs	406	/// Java: Environment.getValueOrThrow(key, E.class). With keep_going or during error bubbling,
+UNRESOLVED: no path, member not found	crates/blaze_skyframe/src/environment.rs	457	/// Java: Environment.getValueOrThrow(key, E1.class, E2.class, ...). `catch` inspects the
+UNRESOLVED: no path, member not found	crates/blaze_skyframe/src/lib.rs	294	/// Java: `SkyValue.equals` as used by `DirtyBuildingState.unchangedFromLastBuild` and
 UNRESOLVED: no path, member not found	crates/blaze_skyframe/src/tests.rs	740	/// Java: TestUtils.WAIT_TIMEOUT_SECONDS.
 UNRESOLVED: no path, member not found	crates/blaze_skyframe/src/tests/memoizing_evaluator_test.rs	4007	/// Java: `TestUtils.WAIT_TIMEOUT_MILLISECONDS`.
-pathless: AMBIGUOUS (several files define it)	crates/blaze_sky_loading/src/globs.rs	680	// Java: ResultSink.acceptGlobError keeps the first error of all globs.
+pathless: AMBIGUOUS (several files define it)	crates/blaze_sky_loading/src/globs.rs	719	// Java: ResultSink.acceptGlobError keeps the first error of all globs.
 stale path (file moved), by file name: UNRESOLVED: name not in file, line not in a method	crates/blaze_analysis/src/configured_target_value.rs	62	// Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetValue.java:34 ConfiguredTargetValue.getTransitivePackages
-stale path (file moved), by file name: UNRESOLVED: name not in file, line not in a method	crates/blaze_runtime/src/commands/run.rs	709	// Java: com/google/devtools/build/lib/exec/local/LocalOutputService.java LocalOutputService.stagesTopLevelRunfiles
+stale path (file moved), by file name: UNRESOLVED: name not in file, line not in a method	crates/blaze_runtime/src/commands/run.rs	710	// Java: com/google/devtools/build/lib/exec/local/LocalOutputService.java LocalOutputService.stagesTopLevelRunfiles

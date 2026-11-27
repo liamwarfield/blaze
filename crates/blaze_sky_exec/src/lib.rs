@@ -57,7 +57,7 @@ use crate::test_completion_function::UnrunnableTestReporter;
 /// Registers the execution SkyFunctions (`ACTION_EXECUTION`, `ARTIFACT`, `ARTIFACT_NESTED_SET`,
 /// `RECURSIVE_FILESYSTEM_TRAVERSAL`, `TARGET_COMPLETION`, `ASPECT_COMPLETION`,
 /// `TEST_COMPLETION`, `BUILD_DRIVER`) on `builder`.
-// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:600 SkyframeExecutor.skyFunctions
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:760 SkyframeExecutor.skyFunctions
 pub fn register_execution_functions(
     builder: EvaluatorBuilder,
     executor: Arc<SkyframeActionExecutor>,
@@ -106,7 +106,7 @@ pub fn register_execution_functions(
                 function: blaze_skyframe::typed::<ArtifactKey, _>(move |k, env| {
                     artifact_function::compute_artifact(&artifact_executor, &*seam_artifact, k, env)
                 }),
-                // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:372 ArtifactFunction.extractTag
+                // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:373 ArtifactFunction.extractTag
                 tag: |k: &blaze_skyframe::SkyKey| {
                     k.downcast::<ArtifactKey>()
                         .map(|k| blaze_cmdline::Label::print(k.0.get_owner().as_ref()))

@@ -1,5 +1,6 @@
 //! Port of `lib/remote/LeaseService.java`.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use blaze_exec::actions::cache::ActionCache;
@@ -8,43 +9,61 @@ use blaze_exec::actions::cache::ActionCache;
 ///
 /// PORT: `memoizingEvaluator` is the caller's: [`LeaseService::finalize_execution`] gets
 /// `memoizingEvaluator.delete(...)` of the Skyframe values with remote metadata as a callback
-/// (the predicate needs `ActionExecutionValue`, which this crate does not know). The lease
-/// extension (`--experimental_remote_cache_lease_extension`, `RemoteLeaseExtension`) is not
-/// ported and fails loudly when requested.
+/// (the predicate needs `ActionExecutionValue`, which this crate does not know).
 // Java: com/google/devtools/build/lib/remote/LeaseService.java:30 LeaseService
 pub struct LeaseService {
     lease_extension_started: AtomicBool,
+    /// `leaseExtension`.
+    ///
+    /// PORT: Java creates it with the service in `executorInit`; Blaze creates the
+    /// `SkyframeExecutor` and loads the action cache it needs later, so it is set once those
+    /// exist ([`LeaseService::set_lease_extension`]), before the first action is finalized.
+    lease_extension: std::sync::OnceLock<Arc<dyn LeaseExtension>>,
     has_missing_action_inputs: AtomicBool,
 }
 
+/// An interface whose implementations extend the leases of remote outputs referenced by
+/// skyframe.
+// Java: com/google/devtools/build/lib/remote/LeaseService.java:73 LeaseService.LeaseExtension
+pub trait LeaseExtension: Send + Sync {
+    fn start(&self);
+
+    fn stop(&self);
+}
+
 impl LeaseService {
-    /// `new LeaseService(memoizingEvaluator, actionCacheSupplier, leaseExtension)`;
-    /// `lease_extension` is whether `RemoteModule.executorInit` created a `RemoteLeaseExtension`
-    /// (`--experimental_remote_cache_lease_extension`).
+    /// `new LeaseService(memoizingEvaluator, actionCacheSupplier, leaseExtension)`.
     // Java: com/google/devtools/build/lib/remote/LeaseService.java:37 LeaseService.<init>
-    pub fn new(lease_extension: bool) -> LeaseService {
-        if lease_extension {
-            blaze_util::unported!(
-                "RemoteLeaseExtension",
-                "--experimental_remote_cache_lease_extension"
-            );
+    pub fn new(lease_extension: Option<Arc<dyn LeaseExtension>>) -> LeaseService {
+        let slot = std::sync::OnceLock::new();
+        if let Some(lease_extension) = lease_extension {
+            let _ = slot.set(lease_extension);
         }
         LeaseService {
             lease_extension_started: AtomicBool::new(false),
+            lease_extension: slot,
             has_missing_action_inputs: AtomicBool::new(false),
         }
     }
 
-    /// `finalizeAction()`: starts the lease extension once (there is none).
+    /// Sets the lease extension of a service created without one (see `lease_extension`).
+    pub fn set_lease_extension(&self, lease_extension: Arc<dyn LeaseExtension>) {
+        if self.lease_extension.set(lease_extension).is_err() {
+            panic!("IllegalStateException: the lease extension is already set");
+        }
+    }
+
+    /// `finalizeAction()`: starts the lease extension once.
     // Java: com/google/devtools/build/lib/remote/LeaseService.java:46 LeaseService.finalizeAction
     pub fn finalize_action(&self) {
-        // if (leaseExtension != null) leaseExtension.start(): no lease extension.
-        let _ = self.lease_extension_started.compare_exchange(
-            false,
-            true,
-            Ordering::SeqCst,
-            Ordering::SeqCst,
-        );
+        if self
+            .lease_extension_started
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_ok()
+            && let Some(lease_extension) = self.lease_extension.get()
+        {
+            lease_extension.start();
+        }
     }
 
     /// `onLostInputs(LostInputsEvent event)`.
@@ -70,7 +89,9 @@ impl LeaseService {
         action_cache: Option<&dyn ActionCache>,
         delete_remote_action_execution_values: &dyn Fn(),
     ) {
-        // if (leaseExtension != null) leaseExtension.stop(): no lease extension.
+        if let Some(lease_extension) = self.lease_extension.get() {
+            lease_extension.stop();
+        }
         if self.has_missing_action_inputs.swap(false, Ordering::SeqCst) {
             self.handle_missing_inputs(action_cache, delete_remote_action_execution_values);
         }

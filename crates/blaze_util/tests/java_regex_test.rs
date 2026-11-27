@@ -368,15 +368,50 @@ const ROWS: &[(&str, i32, &str, Expectation, bool)] = &[
     ("(?:(?>a)b)", 0, "ab", Ok((Some((0, 2)), true)), true),
     ("(?>ab|a)c", 0, "abc", Ok((Some((0, 3)), true)), true),
     ("a++b", 0, "aab", Ok((Some((0, 3)), true)), true),
+    ("(?!Genrule).*", 0, "Genrule", Ok((Some((1, 7)), false)), false),
+    ("(?!Genrule).*", 0, "CppCompile", Ok((Some((0, 10)), true)), false),
+    ("(?!CppCompile).*", 0, "CppCompile", Ok((Some((1, 10)), false)), false),
+    ("(?!CppCompile).*", 0, "Genrule", Ok((Some((0, 7)), true)), false),
+    ("(?=a)", 0, "ba", Ok((Some((1, 1)), false)), false),
+    ("(?=a)a", 0, "ba", Ok((Some((1, 2)), false)), false),
+    ("foo(?=bar)", 0, "foobaz foobar", Ok((Some((7, 10)), false)), false),
+    ("foo(?!bar)", 0, "foobar foobaz", Ok((Some((7, 10)), false)), false),
+    ("(?=(a+))a*b", 0, "aab", Ok((Some((0, 3)), true)), false),
+    ("(a(?=b))+", 0, "ababx", Ok((Some((0, 1)), false)), false),
+    ("(?i)(?=FOO)foo", 0, "xfoo", Ok((Some((1, 4)), false)), false),
+    ("x(?=\\s|$)", 0, "ax x", Ok((Some((1, 2)), false)), false),
+    ("^(?!.*bar).*$", 0, "foobaz", Ok((Some((0, 6)), true)), false),
+    ("^(?!.*bar).*$", 0, "foobar", Ok((None, false)), false),
+    ("(?:(?!ab).)*", 0, "xxabyy", Ok((Some((0, 2)), false)), false),
+    ("(?=a)*b", 0, "b", Ok((Some((0, 1)), true)), false),
+    ("(?=a", 0, "a", Err("Unclosed group near index 4\u{a}(?=a"), false),
+    ("(?<=a)b", 0, "cab", Ok((Some((2, 3)), false)), false),
+    ("(?<!a)b", 0, "ab cb", Ok((Some((4, 5)), false)), false),
+    ("(?<=ab|cd)x", 0, "cdx", Ok((Some((2, 3)), false)), false),
+    ("(?<=a{2})b", 0, "aab", Ok((Some((2, 3)), false)), false),
+    ("(?<=\\d{3})x", 0, "12x 123x", Ok((Some((7, 8)), false)), false),
+    ("(?<!^)x", 0, "xx", Ok((Some((1, 2)), false)), false),
+    ("(?<=(?:ab){2})c", 0, "ababc", Ok((Some((4, 5)), false)), false),
+    ("(?<=(ab)+)x", 0, "ababx", Err("Look-behind group does not have an obvious maximum length near index 8\u{a}(?<=(ab)+)x\u{a}        ^"), false),
+    ("(?<=(?:a|bc)+)x", 0, "abcx", Err("Look-behind group does not have an obvious maximum length near index 12\u{a}(?<=(?:a|bc)+)x\u{a}            ^"), false),
+    ("(?<=xa+?)y", 0, "xay", Err("Look-behind group does not have an obvious maximum length near index 7\u{a}(?<=xa+?)y\u{a}       ^"), false),
+    ("(?<=a+)b", 0, "aab", Ok((Some((2, 3)), false)), true),
+    ("(?<=a*)b", 0, "b", Ok((Some((0, 1)), true)), true),
+    ("(?<=a|bc)x", 0, "bcx", Ok((Some((2, 3)), false)), true),
+    ("(?<=a{1,3})b", 0, "aaab", Ok((Some((3, 4)), false)), true),
+    ("(?<=.*)x", 0, "abx", Ok((Some((2, 3)), false)), true),
+    ("(?<=a+b*)x", 0, "aabx", Ok((None, false)), true),
+    ("(?<!a+)b", 0, "aab", Ok((None, false)), true),
+    ("(?<=.)x", 0, "\u{1f600}x", Ok((Some((1, 2)), false)), true),
     ("(a)\\1", 0, "aa", Ok((Some((0, 2)), true)), true),
     ("\\1", 0, "x", Ok((None, false)), true),
     ("(?<n>a)\\k<n>", 0, "aa", Ok((Some((0, 2)), true)), true),
     ("\\k<n>", 0, "a", Err("named capturing group <n> does not exist near index 4\u{a}\\k<n>\u{a}    ^"), false),
     ("\\kn", 0, "a", Err("\\k is not followed by '<' for named capturing group near index 2\u{a}\\kn\u{a}  ^"), false),
-    ("a(?=b)", 0, "ab", Ok((Some((0, 1)), false)), true),
-    ("a(?!b)", 0, "ac", Ok((Some((0, 1)), false)), true),
-    ("(?<=a)b", 0, "ab", Ok((Some((1, 2)), false)), true),
-    ("(?<!a)b", 0, "cb", Ok((Some((1, 2)), false)), true),
+    ("a(?=b)", 0, "ab", Ok((Some((0, 1)), false)), false),
+    ("a(?!b)", 0, "ac", Ok((Some((0, 1)), false)), false),
+    ("(?<=a)b", 0, "ab", Ok((Some((1, 2)), false)), false),
+    ("(?<!a)b", 0, "cb", Ok((Some((1, 2)), false)), false),
     ("\\G", 0, "a", Ok((Some((0, 0)), false)), true),
     ("\\X", 0, "a", Ok((Some((0, 1)), true)), true),
     ("\\b{g}", 0, "a", Ok((Some((0, 0)), false)), true),
@@ -504,6 +539,14 @@ fn translate_and_compile_agree_with_pattern_find() {
             );
             continue;
         };
+        // A pattern with lookaround runs on fancy-regex; `translate` and `compile` (the
+        // regex crate's syntax) refuse it loudly.
+        if ["(?=", "(?!", "(?<=", "(?<!"]
+            .iter()
+            .any(|l| pattern.contains(l))
+        {
+            continue;
+        }
         let regex = java_regex::compile(pattern, flags).unwrap();
         let got = regex
             .find(input)

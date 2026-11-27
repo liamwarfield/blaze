@@ -421,10 +421,11 @@ pub fn assert_file_checksum(
 pub fn get_checksum(key_type: KeyType, path: &Path) -> Result<String, IoException> {
     // Attempt to use the fast digest if the hash function of the filesystem matches `keyType`
     // and it's available.
-    if key_type.matches_file_system_digest(path.get_file_system().get_digest_function())
-        && let Ok(Some(digest)) = path.get_fast_digest()
-    {
-        return Ok(hex::encode(digest));
+    if key_type.matches_file_system_digest(path.get_file_system().get_digest_function()) {
+        // `path.getFastDigest()` throws IOException, which propagates.
+        if let Some(digest) = fs_utils::io(path.get_fast_digest())? {
+            return Ok(hex::encode(digest));
+        }
     }
     let mut hasher = key_type.new_hasher();
     let mut buffer = vec![0u8; BUFFER_SIZE];

@@ -136,6 +136,7 @@ pub mod starlark_action;
 pub mod starlark_action_factory;
 pub mod starlark_aspect_factory;
 pub mod starlark_aspect_propagation_context;
+pub mod starlark_materializer;
 pub mod starlark_attributes_collection;
 pub mod starlark_configuration;
 pub mod starlark_rule_configured_target_util;
@@ -156,6 +157,10 @@ pub use thread_payload::{AnalysisThreadPayload, RuleContextHandle, register_acti
 /// to [`starlark_subrule::call_subrule`]. The lead calls this once at startup.
 pub fn install_hooks() {
     blaze_packages::starlark_defs::subrule::set_subrule_call_hook(starlark_subrule::call_subrule);
+    // `testing.TestEnvironment` called while a .bzl file is loaded.
+    blaze_packages::starlark_defs::testing::set_test_environment_hook(
+        crate::test::starlark_testing_module::test_environment_at_load_time,
+    );
     // The provider interfaces of the builtins' parameter types (`cc_toolchain: Info`, ...).
     starlark::values::register_java_interface_matcher(crate::info::java_interface_matcher);
 }

@@ -418,6 +418,22 @@ pub fn py_builtins() -> PyBuiltinsLoading {
 // Java: com/google/devtools/build/lib/rules/android/AndroidStarlarkCommon.java:52 AndroidStarlarkCommon
 const ANDROID_COMMON_METHODS: &[&str] = &["resource_source_directory", "create_dex_merger_actions"];
 
+// Calling either method fails loudly (`StubObject::invoke` is `unported!`); they are reached only
+// from rules_android. `AndroidCommon` is used only by them.
+// PORT: unported (StubObject): AndroidStarlarkCommon.getSourceDirectoryRelativePathFromResource, AndroidStarlarkCommon.createDexMergerActions
+// PORT: unported (StubObject): AndroidStarlarkCommon.createTemplatedMergerActions, AndroidStarlarkCommon.isNone, AndroidStarlarkCommon.fromNoneable
+// PORT: unported (StubObject): AndroidCommon.findResourceDir, AndroidCommon.getSourceDirectoryRelativePathFromResource, AndroidCommon.trimTo
+// PORT: unported (StubObject): AndroidCommon.getAndroidConfig, AndroidCommon.normalizeDexopts, AndroidCommon.mergerDexopts
+// PORT: unported (StubObject): AndroidCommon.FlagMatcher.<init>, AndroidCommon.FlagMatcher.apply, AndroidCommon.FlagConverter.apply
+// No Java code at the pin uses these classes (no caller, no implementor):
+// PORT: skipped, no caller at the pin: CompilationSupport.<init>, CompilationSupport.getCustomModuleMap
+// PORT: skipped, no implementor at the pin: ObjcProviderApi.strictIncludeForStarlark, ObjcProviderApi.j2objcLibrary
+// PORT: skipped, no implementor at the pin: ObjcProviderApi.moduleMap, ObjcProviderApi.directModuleMaps, ObjcProviderApi.sourceForStarlark
+// PORT: skipped, no implementor at the pin: ObjcProviderApi.directSources, ObjcProviderApi.umbrellaHeader
+// PORT: skipped, no caller at the pin (ProtoInfo is the Starlark provider of BazelProtoCommon): ProtoInfo.ProtoInfoProvider.<init>, ProtoInfo.ProtoInfoProvider.wrap, ProtoInfo.<init>
+// PORT: skipped, no caller at the pin: ProtoInfo.getTransitiveProtoSources, ProtoInfo.getDirectProtoSources, ProtoInfo.getTransitiveProtoSourceRoots
+// PORT: skipped, no caller at the pin: ProtoInfo.getStrictImportableProtoSourcesForDependents, ProtoInfo.getDirectDescriptorSet, ProtoInfo.getTransitiveDescriptorSets
+
 /// `android_common` (Java `AndroidStarlarkCommon`).
 pub fn android_common() -> StubObject {
     StubObject {

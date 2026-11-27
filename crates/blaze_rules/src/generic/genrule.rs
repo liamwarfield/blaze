@@ -47,13 +47,14 @@ use crate::generic::target_utils;
 /// `CommandLines.expand` reads the limits only for command lines that have one
 /// (actions/CommandLines.java:107), so the override cannot change a result.
 // Java: com/google/devtools/build/lib/rules/genrule/GenRuleAction.java:32 GenRuleAction
+// PORT: skipped, cannot change a result (no ParamFileInfo on a genrule's command line, see above): GenRuleAction.getCommandLineLimits
 pub struct GenRuleAction;
 
 impl GenRuleAction {
     // Java: com/google/devtools/build/lib/rules/genrule/GenRuleAction.java:34 GenRuleAction.MNEMONIC
     pub const MNEMONIC: &'static str = "Genrule";
 
-    // Java: com/google/devtools/build/lib/rules/genrule/GenRuleAction.java:36 GenRuleAction.<init>
+    // Java: com/google/devtools/build/lib/rules/genrule/GenRuleAction.java:37 GenRuleAction.<init>
     // PORT: GenRuleAction is a SpawnAction with its own mnemonic; the constructor returns that.
     #[allow(clippy::new_ret_no_self)]
     pub fn new(

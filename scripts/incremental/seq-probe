@@ -182,6 +182,11 @@ SEQUENCES = {
     "id-reuse": ("id", [APP], [
         ("build", [ID, "//app"]), ("edit", ["app/in.txt", "in-2\n"]), ("build", [ID, "//app"])],
         {}),
+    # The same with a build in between (the lockfile written by the first command is settled):
+    # Bazel rebuilds here; it stays stale only right after the server's first command.
+    "id-reuse-warm": ("id", [APP], [
+        ("build", [ID, "//app"]), ("build", [ID, "//app"]), ("edit", ["app/in.txt", "in-2\n"]),
+        ("build", [ID, "//app"])], {}),
     "id-reuse-build-edit": ("id", [APP], [
         ("build", [ID, "//app"]),
         ("edit", ["app/BUILD",

@@ -243,6 +243,10 @@ fn test_matches_filters_rule(
 
 /// The key of `TargetPatternErrorFunction`.
 // Java: com/google/devtools/build/lib/skyframe/TargetPatternErrorFunction.java:44 TargetPatternErrorFunction.Key
+// PORT: the derived equality compares the exception's message, code and detailed exit code (Java:
+// the message and the detailed exit code, which the code determines when none was given).
+// Java: com/google/devtools/build/lib/skyframe/TargetPatternErrorFunction.java:73 TargetPatternErrorFunction.Key.equals
+// PORT: skipped, a key (Key::FUNCTION; no interning): TargetPatternErrorFunction.Key.create, TargetPatternErrorFunction.Key.intern, TargetPatternErrorFunction.Key.functionName, TargetPatternErrorFunction.Key.getSkyKeyInterner
 #[derive(Clone, PartialEq, Eq)]
 pub struct TargetPatternErrorKey {
     exception: TargetParsingException,
@@ -294,6 +298,7 @@ fn target_pattern_error_function(
     key: &TargetPatternErrorKey,
     _env: &mut Environment<'_>,
 ) -> Result<Option<TargetPatternErrorValue>, ComputeError> {
+    // Java: com/google/devtools/build/lib/skyframe/TargetPatternErrorFunction.java:98 TargetPatternErrorFunction.TargetErrorFunctionException.<init>
     Err(SkyFunctionException::new(key.exception.clone(), Transience::Persistent).into())
 }
 
@@ -346,6 +351,7 @@ pub struct TestExpansionValue {
 }
 
 impl TestExpansionValue {
+    // Java: com/google/devtools/build/lib/skyframe/TestExpansionValue.java:41 TestExpansionValue.getLabels
     pub fn get_labels(&self) -> &ResolvedTargets<Label> {
         &self.labels
     }
@@ -534,6 +540,9 @@ fn get_prerequisites(
 
 /// Key of `TestsForTargetPatternValue`: the targets of a pattern whose test suites to expand.
 // Java: com/google/devtools/build/lib/skyframe/TestsForTargetPatternValue.java:52 TestsForTargetPatternValue.TestsForTargetPatternKey
+// PORT: IndexSet equality ignores order, as ImmutableSet.equals does.
+// Java: com/google/devtools/build/lib/skyframe/TestsForTargetPatternValue.java:85 TestsForTargetPatternValue.TestsForTargetPatternKey.equals
+// PORT: skipped, the function name is `Key::FUNCTION` (TEST_SUITE_EXPANSION): TestsForTargetPatternValue.TestsForTargetPatternKey.functionName
 #[derive(Clone, PartialEq, Eq)]
 pub struct TestsForTargetPatternKey {
     targets: IndexSet<Label>,
@@ -541,6 +550,7 @@ pub struct TestsForTargetPatternKey {
 
 impl Hash for TestsForTargetPatternKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        // Java: com/google/devtools/build/lib/skyframe/TestsForTargetPatternValue.java:80 TestsForTargetPatternValue.TestsForTargetPatternKey.hashCode
         // Java ImmutableSet.hashCode: order-insensitive.
         let mut sum: u64 = 0;
         for t in &self.targets {
@@ -556,6 +566,10 @@ impl TestsForTargetPatternKey {
     // Java: com/google/devtools/build/lib/skyframe/TestsForTargetPatternValue.java:47 TestsForTargetPatternValue.key
     pub fn key(targets: IndexSet<Label>) -> TestsForTargetPatternKey {
         TestsForTargetPatternKey { targets }
+    }
+    // Java: com/google/devtools/build/lib/skyframe/TestsForTargetPatternValue.java:71 TestsForTargetPatternValue.TestsForTargetPatternKey.getTargets
+    pub fn get_targets(&self) -> &IndexSet<Label> {
+        &self.targets
     }
 }
 
@@ -582,6 +596,7 @@ pub struct TestsForTargetPatternValue {
 }
 
 impl TestsForTargetPatternValue {
+    // Java: com/google/devtools/build/lib/skyframe/TestsForTargetPatternValue.java:43 TestsForTargetPatternValue.getLabels
     pub fn get_labels(&self) -> &ResolvedTargets<Label> {
         &self.labels
     }

@@ -101,18 +101,42 @@ impl<'v> StarlarkValue<'v> for StarlarkTestingModule {
     }
 }
 
+/// `StarlarkTestingModule.testEnvironment` as analysis implements it (the `RunEnvironmentInfo`
+/// type is blaze_analysis's), installed with [`set_test_environment_hook`].
+pub type TestEnvironmentHook =
+    for<'v> fn(Value<'v>, Option<Value<'v>>, Heap<'v>) -> starlark::Result<Value<'v>>;
+
+static TEST_ENVIRONMENT_HOOK: std::sync::OnceLock<TestEnvironmentHook> = std::sync::OnceLock::new();
+
+/// Installs the constructor of `testing.TestEnvironment`'s `RunEnvironmentInfo` (first call wins).
+pub fn set_test_environment_hook(hook: TestEnvironmentHook) {
+    let _ = TEST_ENVIRONMENT_HOOK.set(hook);
+}
+
 #[allow(non_snake_case)]
 #[starlark_module]
 fn testing_methods(builder: &mut MethodsBuilder) {
+    /// Java's one `testing` object serves both phases; a call while a .bzl file is loaded
+    /// builds the same `RunEnvironmentInfo`, through the constructor blaze_analysis installs
+    /// ([`set_test_environment_hook`]).
     // Java: com/google/devtools/build/lib/rules/test/StarlarkTestingModule.java:52 StarlarkTestingModule.testEnvironment
     fn TestEnvironment<'v>(
         this: Value<'v>,
         environment: Value<'v>,
         inherited_environment: Option<Value<'v>>,
-    ) -> starlark::Result<NoneType> {
-        let _ = (this, environment, inherited_environment);
-        // PORT: builds a RunEnvironmentInfo (analysis-time object).
-        blaze_util::unported!("StarlarkTestingModule.testEnvironment")
+        heap: Heap<'v>,
+    ) -> starlark::Result<Value<'v>> {
+        let _ = this;
+        // The blaze binary's .bzl globals hold blaze_analysis' `testing` instead of this one
+        // (blaze_rules `analysis_bzl_overrides`); this is reached from the loading-only setups
+        // (dev tools, tests), where the hook may not be installed.
+        let Some(hook) = TEST_ENVIRONMENT_HOOK.get() else {
+            blaze_util::unported!(
+                "StarlarkTestingModule.testEnvironment",
+                "RunEnvironmentInfo without blaze_analysis::starlark::install_hooks"
+            )
+        };
+        hook(environment, inherited_environment, heap)
     }
 
     // Java: com/google/devtools/build/lib/rules/test/StarlarkTestingModule.java:62 StarlarkTestingModule.analysisTest
@@ -237,7 +261,6 @@ fn coverage_common_methods(builder: &mut MethodsBuilder) {
     ) -> starlark::Result<NoneType> {
         let _ = (
             this,
-            ctx,
             source_attributes,
             dependency_attributes,
             coverage_support_files,
@@ -247,8 +270,18 @@ fn coverage_common_methods(builder: &mut MethodsBuilder) {
             reported_to_actual_sources,
             baseline_coverage_files,
         );
-        // PORT: needs StarlarkRuleContext (analysis).
-        blaze_util::unported!("CoverageCommon.instrumentedFilesInfo")
+        // This is the loading-phase `coverage_common`: analysis registers its own (blaze_analysis
+        // `register_coverage_common`). Java's `ctx` parameter has no allowedTypes, so the
+        // parameter's class (`StarlarkRuleContext`, Starlark name "ctx") is the allowed type,
+        // checked first; no value of that type exists while loading, so every call here fails
+        // that check.
+        // Java: net/starlark/java/eval/ParamDescriptor.java:92 ParamDescriptor.of
+        Err(crate::starlark_defs::util::param_type_error(
+            "instrumented_files_info",
+            "ctx",
+            ctx,
+            "ctx",
+        ))
     }
 }
 

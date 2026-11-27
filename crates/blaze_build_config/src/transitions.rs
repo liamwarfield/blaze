@@ -17,7 +17,7 @@ use crate::fragment_options_class::{CORE_OPTIONS, FragmentOptionsClass, TEST_OPT
 /// values (not inherited from parent configuration).
 pub static EMPTY_OPTIONS: LazyLock<BuildOptions> = LazyLock::new(create_empty_options);
 
-// Java: com/google/devtools/build/lib/analysis/config/CommonOptions.java:32 CommonOptions.createEmptyOptions
+// Java: com/google/devtools/build/lib/analysis/config/CommonOptions.java:34 CommonOptions.createEmptyOptions
 fn create_empty_options() -> BuildOptions {
     // Disable the exec transition. Since this config is empty it shouldn't trigger any exec
     // transitions.

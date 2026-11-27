@@ -36,7 +36,7 @@ impl fmt::Debug for DependencyState {
 /// Represents the various states in a node's lifecycle.
 // Java: com/google/devtools/build/skyframe/NodeEntry.java:60 NodeEntry.LifecycleState
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum LifecycleState {
+pub enum LifecycleState {
     /// The entry has never started evaluating. The next call to `addReverseDepAndCheckIfDone`
     /// will put the entry into the `NEEDS_REBUILDING` state and return
     /// `DependencyState.NEEDS_SCHEDULING`.

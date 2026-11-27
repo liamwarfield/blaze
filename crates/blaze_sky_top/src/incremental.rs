@@ -90,37 +90,25 @@ impl KeepGraphMode {
 /// PORT: Blaze-only (see the module documentation). In it:
 /// - the Starlark semantics (Java: `PrecomputedValue.STARLARK_SEMANTICS`, which every loading
 ///   and analysis function reads; the Rust services also capture a copy);
-/// - the `RepositoryOptions` that decide what is computed ([`REPOSITORY_OPTIONS_IN_SIGNATURE`];
-///   Java: `BazelRepositoryModule.getPrecomputedValues`; `BzlmodConfig` and the repository
-///   services capture them). Cache locations, download sources, retries and timeouts are not in
-///   it: Java does not invalidate on them either (module state of `BazelRepositoryModule`);
-/// - the working directory when a module or repository override is given (relative override
-///   paths are resolved against it when the bzlmod configuration is built);
-/// - the package path (Java: `PATH_PACKAGE_LOCATOR` and `onPkgLocatorChange`, which invalidates
-///   the file nodes; Rust also captures the roots in the configuration environment).
+/// - the `RepositoryOptions` that Java turns into precomputed values but Blaze does not
+///   ([`REPOSITORY_OPTIONS_IN_SIGNATURE`]).
+///
+/// The other repository options reach the graph as precomputed values that every executor
+/// injects (`BazelRepositoryModule.getPrecomputedValues`: `REGISTRIES`, `MODULE_OVERRIDES`,
+/// `REPOSITORY_OVERRIDES` and the rest, with override paths already resolved against the working
+/// directory), so a change invalidates their dependents as in Java. The package path is handled
+/// as Java does (`SkyframeExecutor.setPackageLocator`, `onPkgLocatorChange`, in `sync`).
+/// Cache locations, download sources, retries and timeouts are not in it: Java does not
+/// invalidate on them either (module state of `BazelRepositoryModule`).
 /// The `RepositoryOptions` of [`LoadingSignature`]: those Java turns into precomputed values
-/// (`BazelRepositoryModule.getPrecomputedValues`, `beforeCommand`).
-const REPOSITORY_OPTIONS_IN_SIGNATURE: [&str; 12] = [
-    "registry",
-    "module_mirrors",
-    "allow_yanked_versions",
-    "override_repository",
-    "inject_repository",
-    "override_module",
-    "ignore_dev_dependency",
-    "check_direct_dependencies",
-    "check_bazel_compatibility",
-    "incompatible_require_repo_extension_metadata",
-    "lockfile_mode",
-    "vendor_dir",
-];
+/// (`BazelRepositoryModule.getPrecomputedValues`) and Blaze reads without one (the extension
+/// evaluation captures it).
+const REPOSITORY_OPTIONS_IN_SIGNATURE: [&str; 1] = ["incompatible_require_repo_extension_metadata"];
 
 #[derive(Clone, PartialEq)]
 pub struct LoadingSignature {
     starlark_semantics: StarlarkSemantics,
     repository_options: Vec<(String, Option<Value>)>,
-    override_working_directory: Option<Path>,
-    package_path: Vec<Root>,
 }
 
 impl LoadingSignature {
@@ -128,8 +116,8 @@ impl LoadingSignature {
     pub fn new(
         options: &OptionsParser,
         starlark_semantics: &StarlarkSemantics,
-        working_directory: &Path,
-        pkg_locator: &PathPackageLocator,
+        _working_directory: &Path,
+        _pkg_locator: &PathPackageLocator,
     ) -> LoadingSignature {
         let repository_options: Vec<(String, Option<Value>)> = options
             .get_options_dyn(RepositoryOptions::class())
@@ -140,16 +128,9 @@ impl LoadingSignature {
                     .collect()
             })
             .unwrap_or_default();
-        let has_overrides = options.get_options::<RepositoryOptions>().is_some_and(|o| {
-            !o.module_overrides.is_empty()
-                || !o.repository_overrides.is_empty()
-                || !o.repository_injections.is_empty()
-        });
         LoadingSignature {
             starlark_semantics: starlark_semantics.clone(),
             repository_options,
-            override_working_directory: has_overrides.then(|| working_directory.clone()),
-            package_path: pkg_locator.get_path_entries().to_vec(),
         }
     }
 }
@@ -343,6 +324,8 @@ struct Inner {
     /// server has one evaluator; a `delete` during a command reaches the graph the command
     /// evaluates on, review round 2, S2-5).
     handed_out: Option<std::sync::Weak<Evaluator>>,
+    /// `SkyframeExecutor.pkgLocator`: the package locator of the last sync.
+    last_pkg_locator: Option<PathPackageLocator>,
 }
 
 impl ExecutorHandle {
@@ -419,6 +402,7 @@ impl SkyframeIncrementalState {
                 decided_command: None,
                 last_execution_salt: None,
                 handed_out: None,
+                last_pkg_locator: None,
             }),
         }
     }
@@ -848,6 +832,7 @@ impl SkyframeIncrementalState {
     /// Records what a new (empty) graph was built from.
     fn note_new_graph(inner: &mut Inner, inputs: &SyncInputs<'_>, command: &IncrementalCommand) {
         inner.deleted_packages = inputs.deleted_packages.clone();
+        inner.last_pkg_locator = Some(inputs.pkg_locator.read().clone());
         inner.previous_client_environment = inputs.client_env.keys().cloned().collect();
         inner.previous_repository_environment = inputs.repo_env.keys().cloned().collect();
         inner.last_analysis_discarded = false;
@@ -908,6 +893,29 @@ impl SkyframeIncrementalState {
         }
     }
 
+    /// `invalidate(SkyFunctionName.functionIsIn(PACKAGE_LOCATOR_DEPENDENT_VALUES))`: the value
+    /// types whose builders have direct access to the package locator, rather than accessing it
+    /// via an explicit Skyframe dependency.
+    // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:352 SequencedSkyframeExecutor.PACKAGE_LOCATOR_DEPENDENT_VALUES
+    // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:362 SequencedSkyframeExecutor.onPkgLocatorChange
+    fn on_pkg_locator_change(evaluator: &Evaluator) {
+        use blaze_sky_loading::sky_functions;
+        let dependent = [
+            sky_functions::FILE_STATE,
+            sky_functions::FILE,
+            sky_functions::DIRECTORY_LISTING_STATE,
+            blaze_sky_loading::prepare_deps::PREPARE_DEPS_OF_PATTERN,
+            sky_functions::TARGET_PATTERN,
+            crate::target_pattern_phase::TARGET_PATTERN_PHASE,
+        ];
+        let keys: Vec<SkyKey> = evaluator
+            .get_all_keys()
+            .into_iter()
+            .filter(|k| dependent.contains(&k.function_name()))
+            .collect();
+        evaluator.invalidate(keys);
+    }
+
     /// What Java does to the kept graph before an evaluation of this command.
     fn sync(
         state: &SkyframeIncrementalState,
@@ -920,6 +928,15 @@ impl SkyframeIncrementalState {
         if first_in_command {
             // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1733 SkyframeExecutor.preparePackageLoading
             evaluator.emitted_event_state().clear();
+
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:1759 SkyframeExecutor.setPackageLocator
+            let pkg_locator = inputs.pkg_locator.read().clone();
+            let old_locator = inner.last_pkg_locator.replace(pkg_locator.clone());
+            if old_locator.is_some_and(|old| old != pkg_locator) {
+                // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:362 SequencedSkyframeExecutor.onPkgLocatorChange
+                debug("invalidate: package locator changed");
+                Self::on_pkg_locator_change(&evaluator);
+            }
 
             // Java: com/google/devtools/build/lib/skyframe/SequencedSkyframeExecutor.java:373 SequencedSkyframeExecutor.setDeletedPackages
             let newly_deleted_or_not_deleted_packages: HashSet<PackageIdentifier> = inner

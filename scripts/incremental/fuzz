@@ -39,7 +39,10 @@ between); SIGINT during A's build (the same). Interrupts and races apply to A on
 
 Servers: A and O only (two at once), startup --max_idle_secs=900 with a `.keep-server` file in
 their output roots while the run lasts; builds use --jobs=4. Both are shut down at the end.
-Heavy: run under `systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0`.
+Heavy: run under `systemd-run --user --collect --wait -p MemoryMax=6G -p MemorySwapMax=0` (a
+leaking server kills the run, not its neighbours). Between rounds the run pauses while
+root-suite-5f68157 is active. The resident memory of A's and O's servers after every round is
+written to ~/.cache/blaze/work/i3/fuzz/<seed>/mem.txt.
 --failsafe off sets BLAZE_INCREMENTAL_REMOTE_FAILSAFE=off for A (debug builds only).
 The log is ~/.cache/blaze/work/i3/fuzz/<seed>/log.txt; directories are deleted unless --keep.
 """
@@ -741,6 +744,30 @@ OTHER_COMMANDS = ["query", "cquery", "test", "fetch"]
 # The run.
 
 
+SUITE_UNIT = "root-suite-5f68157"
+
+
+def suite_active():
+    return subprocess.run(["systemctl", "--user", "is-active", "-q", SUITE_UNIT]).returncode == 0
+
+
+def server_rss_mb(side):
+    """The resident memory of the side's server (0 when it has none)."""
+    total = 0
+    if not os.path.isdir(side.out_root):
+        return 0
+    for d in os.listdir(side.out_root):
+        try:
+            pid = int(read(os.path.join(side.out_root, d, "server", "server.pid.txt")))
+            with open("/proc/%d/status" % pid) as f:
+                for line in f:
+                    if line.startswith("VmRSS:"):
+                        total += int(line.split()[1])
+        except Exception:
+            pass
+    return total // 1024
+
+
 def build_args(editor, side):
     return COMMON + editor.options(side.root) + ["--keep_going", "--", "//..."]
 
@@ -836,8 +863,16 @@ def cmd_run(a):
             results.append(r)
         return results
 
+    mem_log = open(os.path.join(root, "mem.txt"), "w")
+    mem_log.write("round rss_A_MB rss_O_MB\n")
     try:
         for i in range(a.rounds):
+            # Root's rule (2026-11-27): a long job yields while root's suite runs.
+            if suite_active():
+                say("     paused: %s is active" % SUITE_UNIT)
+                while suite_active():
+                    time.sleep(30)
+                say("     resumed")
             what, op = editor.edit()
             if op:
                 for s in sides:
@@ -909,6 +944,8 @@ def cmd_run(a):
                 compare("  build after the interrupt", build_all(), i)
             else:
                 compare(what, build_all(), i)
+            mem_log.write("%d %d %d\n" % (i, server_rss_mb(side_a), server_rss_mb(side_o)))
+            mem_log.flush()
     finally:
         for s in sides:
             s.shutdown()
@@ -920,6 +957,7 @@ def cmd_run(a):
             "%d (seed %d)" % (counts["rounds"], counts["vs_oracle"], counts["vs_clean"],
                              counts["msgdiff"], counts["skipped"], a.seed))
         log.close()
+        mem_log.close()
     if not a.keep:
         for s in sides:
             remove_tree(s.root)

@@ -37,6 +37,7 @@ const EXECUTION_REQUIREMENTS_WORKER_KEY_MNEMONIC: &str = "worker-key-mnemonic";
 // exhaustively enumerate all the legal values here. Right now, only a ~small set of tags is
 // recognized by Bazel.
 // Java: com/google/devtools/build/lib/packages/TargetUtils.java:58 TargetUtils.legalExecInfoKeys
+// PORT: skipped, the private constructor of a static-only class: TargetUtils.<init>
 fn legal_exec_info_keys(tag: &str) -> bool {
     tag.starts_with("block-")
         || tag.starts_with("requires-")

@@ -1554,3 +1554,74 @@ pub fn build_driver_aspect_keys(
     }
     build_driver_aspect_keys.into_iter().collect()
 }
+
+/// `memoizingEvaluator.getExistingValue(actionLookupKey)` as an `ActionLookupValue`, outside an
+/// evaluation (`RemoteLeaseExtension.getActionFromSkyKey`); the keys and values of
+/// [`SkyframeAnalysisSeam::get_action_lookup_value`]. `None` when the graph has no done value.
+// Java: com/google/devtools/build/lib/remote/RemoteLeaseExtension.java:230 RemoteLeaseExtension.getActionFromSkyKey
+pub fn get_existing_action_lookup_value(
+    evaluator: &blaze_skyframe::Evaluator,
+    key: &ActionLookupKeyRef,
+) -> Option<Arc<dyn ActionLookupValue>> {
+    fn existing<K: blaze_skyframe::Key>(
+        evaluator: &blaze_skyframe::Evaluator,
+        key: K,
+    ) -> Option<Arc<K::Value>> {
+        evaluator
+            .get_existing_value(&blaze_skyframe::SkyKey::new(key))
+            .map(|value| {
+                value
+                    .downcast::<K::Value>()
+                    .unwrap_or_else(|_| panic!("ClassCastException: {:?}", K::FUNCTION))
+            })
+    }
+    match key.function_name() {
+        name if name == CONFIGURED_TARGET.0 => {
+            let ct_key = as_configured_target_key(key).unwrap_or_else(|| {
+                panic!("ClassCastException: {key} is not a ConfiguredTargetKey")
+            });
+            existing(evaluator, ct_key.clone()).map(|value| {
+                Arc::new(ConfiguredTargetActionLookupValue(value)) as Arc<dyn ActionLookupValue>
+            })
+        }
+        BUILD_INFO_FUNCTION_NAME => existing(evaluator, WorkspaceStatusKey).map(|value| {
+            Arc::new(WorkspaceStatusActionLookupValue(value)) as Arc<dyn ActionLookupValue>
+        }),
+        name if name == ASPECT.0 => {
+            let aspect_key = as_aspect_key(key)
+                .unwrap_or_else(|| panic!("ClassCastException: {key} is not an AspectKey"));
+            existing(evaluator, aspect_key.clone())
+                .map(|value| Arc::new(AspectActionLookupValue(value)) as Arc<dyn ActionLookupValue>)
+        }
+        name if name == TOP_LEVEL_ASPECTS.0 => {
+            let top_level_key = key
+                .as_any()
+                .downcast_ref::<TopLevelAspectsKey>()
+                .unwrap_or_else(|| panic!("ClassCastException: {key} is not a TopLevelAspectsKey"));
+            existing(evaluator, top_level_key.clone()).map(|value| {
+                Arc::new(TopLevelAspectsActionLookupValue(value)) as Arc<dyn ActionLookupValue>
+            })
+        }
+        "ACTION_TEMPLATE_EXPANSION" => {
+            let expansion_key = key
+                .as_any()
+                .downcast_ref::<ActionTemplateExpansionKey>()
+                .unwrap_or_else(|| {
+                    panic!("ClassCastException: {key} is not an ActionTemplateExpansionKey")
+                });
+            existing(evaluator, expansion_key.clone())
+                .map(|value| value as Arc<dyn ActionLookupValue>)
+        }
+        blaze_analysis::coverage_report_value::COVERAGE_REPORT_FUNCTION_NAME => existing(
+            evaluator,
+            blaze_analysis::coverage_report_value::COVERAGE_REPORT_KEY,
+        )
+        .map(|value| {
+            Arc::new(CoverageReportActionLookupValue(value)) as Arc<dyn ActionLookupValue>
+        }),
+        other => unported!(
+            "RemoteLeaseExtension.getActionFromSkyKey",
+            "{other} ({key})"
+        ),
+    }
+}

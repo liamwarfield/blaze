@@ -566,14 +566,22 @@ impl dyn OptionsBase {
         definition.get_value(self)
     }
 
+    /// `toString` with `getClass().getName()` given as `class_name` (the options classes here
+    /// know their simple name only; the fragment options classes know the binary name, see
+    /// `blaze_build_config::fragment_options_class`).
     // Java: com/google/devtools/common/options/OptionsBase.java:89 OptionsBase.toString
-    pub fn java_to_string(&self) -> String {
+    pub fn java_to_string_with_class_name(&self, class_name: &str) -> String {
         let entries: Vec<String> = self
             .as_map()
             .into_iter()
             .map(|(k, v)| format!("{}={}", k, crate::value::java_string_of(v.as_ref())))
             .collect();
-        format!("{}{{{}}}", self.options_class().name(), entries.join(", "))
+        format!("{}{{{}}}", class_name, entries.join(", "))
+    }
+
+    /// `toString` with the simple class name in place of `getClass().getName()`.
+    pub fn java_to_string(&self) -> String {
+        self.java_to_string_with_class_name(self.options_class().name())
     }
 
     // Java: com/google/devtools/common/options/OptionsBase.java:97 OptionsBase.cacheKey

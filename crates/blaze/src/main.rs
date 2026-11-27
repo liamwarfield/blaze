@@ -28,12 +28,14 @@ impl BazelServer {
 }
 
 impl InProcessServer for BazelServer {
-    fn batch_main(&self, _startup: &ServerStartup, args: Vec<String>) -> i32 {
+    fn batch_main(&self, startup: &ServerStartup, args: Vec<String>) -> i32 {
+        configure_jvm_logging(startup);
         Self::init();
         BlazeRuntime::batch_main(blaze_runtime::bazel_modules::bazel_modules(), args)
     }
 
     fn run_command(&self, startup: &ServerStartup, request: RunRequest) -> RunResponse {
+        configure_jvm_logging(startup);
         Self::init();
         BlazeRuntime::server_main_single_command(
             blaze_runtime::bazel_modules::bazel_modules(),
@@ -47,6 +49,15 @@ impl InProcessServer for BazelServer {
         // The client calls this on the thread that then runs the command (`run_command`).
         blaze_runtime::interrupt::command_thread_canceller()
     }
+}
+
+/// What the JVM does with its flags before `main` that the server can observe: it configures
+/// `java.util.logging` from `-Djava.util.logging.config.file` (the client's
+/// `javalog.properties`), so the server log is open before `Bazel.main` logs.
+fn configure_jvm_logging(startup: &ServerStartup) {
+    blaze_runtime::server_log::configure_from_jvm_flags(
+        &startup.server_exe_args[..startup.first_startup_arg],
+    );
 }
 
 /// The `String[] args` of the server's `main` if `argv` is the argument vector a client starts
@@ -89,6 +100,9 @@ fn main() {
     // Java: src/main/cpp/main.cc:24 main
     let argv = blaze_client::argv_from_os();
     if let Some(args) = server_args(&argv) {
+        // The JVM reads its logging configuration (the flags before `-jar`).
+        let jar = argv.iter().position(|a| a == "-jar").expect("-jar");
+        blaze_runtime::server_log::configure_from_jvm_flags(&argv[1..jar]);
         // The JVM: `Bazel.main(args)`.
         // Java: com/google/devtools/build/lib/bazel/Bazel.java:109 Bazel.main
         BazelServer::init();

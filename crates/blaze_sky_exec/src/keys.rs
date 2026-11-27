@@ -51,7 +51,7 @@ impl fmt::Debug for ActionExecutionKey {
 impl Key for ActionExecutionKey {
     type Value = ActionExecutionValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("ACTION_EXECUTION");
-    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:121 SkyFunctions.ACTION_EXECUTION (createSemiHermetic)
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:120 SkyFunctions.ACTION_EXECUTION (createSemiHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::SemiHermetic;
     /// Java: the file values (a map, `FileArtifactValue.equals`), the tree artifact values
     /// (`TreeArtifactValue.equals`), the rich artifact data (`RunfilesArtifactValue.equals`) and the
@@ -123,20 +123,20 @@ pub fn artifact_key(artifact: &Artifact) -> SkyKey {
 }
 
 /// `SkyKey` for a `NestedSet<Artifact>`.
-// Java: com/google/devtools/build/lib/skyframe/ArtifactNestedSetKey.java:39 ArtifactNestedSetKey
+// Java: com/google/devtools/build/lib/collect/nestedset/ArtifactNestedSetKey.java:45 ArtifactNestedSetKey
 #[derive(Clone)]
 pub struct ArtifactNestedSetKey(pub NestedSet<Artifact>);
 
 impl ArtifactNestedSetKey {
     /// Creates a key for a non-leaf, non-empty nested set.
-    // Java: com/google/devtools/build/lib/skyframe/ArtifactNestedSetKey.java:56 ArtifactNestedSetKey.create
+    // Java: com/google/devtools/build/lib/collect/nestedset/ArtifactNestedSetKey.java:49 ArtifactNestedSetKey.create
     pub fn create(set: NestedSet<Artifact>) -> ArtifactNestedSetKey {
         ArtifactNestedSetKey(set)
     }
 
     /// Returns the set of artifacts that this key represents: its direct leaves, then the keys of
     /// its non-leaf children (`getDirectDepKeys`).
-    // Java: com/google/devtools/build/lib/skyframe/ArtifactNestedSetKey.java:99 ArtifactNestedSetKey.getDirectDepKeys
+    // Java: com/google/devtools/build/lib/collect/nestedset/ArtifactNestedSetKey.java:72 ArtifactNestedSetKey.getDirectDepKeys
     pub fn get_direct_dep_keys(&self) -> Vec<SkyKey> {
         let mut keys = Vec::new();
         for leaf in self.0.get_leaves() {
@@ -149,7 +149,7 @@ impl ArtifactNestedSetKey {
     }
 }
 
-// Java: com/google/devtools/build/lib/skyframe/ArtifactNestedSetKey.java:126 ArtifactNestedSetKey.equals
+// Java: com/google/devtools/build/lib/collect/nestedset/ArtifactNestedSetKey.java:200 ArtifactNestedSetKey.equals
 impl PartialEq for ArtifactNestedSetKey {
     fn eq(&self, other: &Self) -> bool {
         self.0.shallow_equals(Some(&other.0))
@@ -165,7 +165,7 @@ impl Hash for ArtifactNestedSetKey {
 }
 
 impl fmt::Debug for ArtifactNestedSetKey {
-    // Java: com/google/devtools/build/lib/skyframe/ArtifactNestedSetKey.java:140 ArtifactNestedSetKey.toString
+    // Java: com/google/devtools/build/lib/collect/nestedset/ArtifactNestedSetKey.java:209 ArtifactNestedSetKey.toString
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "ArtifactNestedSetKey[{}]", self.0)
     }
@@ -186,7 +186,7 @@ pub enum ArtifactNestedSetValue {
 impl Key for ArtifactNestedSetKey {
     type Value = ArtifactNestedSetValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("ARTIFACT_NESTED_SET");
-    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:123 SkyFunctions.ARTIFACT_NESTED_SET (createHermetic)
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:122 SkyFunctions.ARTIFACT_NESTED_SET (createHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
     // Default `values_equal` (never equal): Java's `ArtifactNestedSetValue` is a
     // `NotComparableSkyValue` "to prohibit value-based change pruning". Its `PartialEq` must not
@@ -196,12 +196,12 @@ impl Key for ArtifactNestedSetKey {
 
 /// `TargetCompletionKey`: a top-level configured target whose requested output groups must be
 /// built.
-// Java: com/google/devtools/build/lib/skyframe/TargetCompletionValue.java:61 TargetCompletionValue.TargetCompletionKey
+// Java: com/google/devtools/build/lib/skyframe/TargetCompletionValue.java:53 TargetCompletionValue.TargetCompletionKey
 #[derive(Clone, PartialEq, Eq, Hash)]
 // (`create` is the struct literal; `functionName` is `Key::FUNCTION`; `key`/`keys` are built by
 // the callers.)
 // Java: com/google/devtools/build/lib/skyframe/TargetCompletionValue.java:55 TargetCompletionValue.TargetCompletionKey.create
-// Java: com/google/devtools/build/lib/skyframe/TargetCompletionValue.java:66 TargetCompletionValue.TargetCompletionKey.functionName
+// Java: com/google/devtools/build/lib/skyframe/TargetCompletionValue.java:67 TargetCompletionValue.TargetCompletionKey.functionName
 // Java: com/google/devtools/build/lib/skyframe/TargetCompletionValue.java:33 TargetCompletionValue.key
 // Java: com/google/devtools/build/lib/skyframe/TargetCompletionValue.java:40 TargetCompletionValue.keys
 // PORT: skipped, shareability only matters to remote analysis caching (unported!): TargetCompletionValue.TargetCompletionKey.valueIsShareable
@@ -227,7 +227,7 @@ impl fmt::Debug for TargetCompletionKey {
 impl Key for TargetCompletionKey {
     type Value = TargetCompletionValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("TARGET_COMPLETION");
-    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:106 SkyFunctions.TARGET_COMPLETION (createHermetic)
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:105 SkyFunctions.TARGET_COMPLETION (createHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
     /// Java: the function returns one singleton, equal to itself.
     // Java: com/google/devtools/build/lib/skyframe/TargetCompletionValue.java:29 TargetCompletionValue.INSTANCE
@@ -273,7 +273,7 @@ impl fmt::Debug for AspectCompletionKey {
 impl Key for AspectCompletionKey {
     type Value = AspectCompletionValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("ASPECT_COMPLETION");
-    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:108 SkyFunctions.ASPECT_COMPLETION (createHermetic)
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:107 SkyFunctions.ASPECT_COMPLETION (createHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
     /// Java: the function returns one singleton, equal to itself.
     // Java: com/google/devtools/build/lib/skyframe/AspectCompletionValue.java:31 AspectCompletionValue.INSTANCE
@@ -283,12 +283,12 @@ impl Key for AspectCompletionKey {
 }
 
 /// `TestCompletionKey`: all runs and shards of a test target.
-// Java: com/google/devtools/build/lib/skyframe/TestCompletionValue.java:45 TestCompletionValue.TestCompletionKey
+// Java: com/google/devtools/build/lib/skyframe/TestCompletionValue.java:59 TestCompletionValue.TestCompletionKey
 #[derive(Clone, PartialEq, Eq, Hash)]
 // (`create` is the struct literal; `functionName` is `Key::FUNCTION`; `key`/`keys` are built by
 // the callers.)
-// Java: com/google/devtools/build/lib/skyframe/TestCompletionValue.java:62 TestCompletionValue.TestCompletionKey.create
-// Java: com/google/devtools/build/lib/skyframe/TestCompletionValue.java:78 TestCompletionValue.TestCompletionKey.functionName
+// Java: com/google/devtools/build/lib/skyframe/TestCompletionValue.java:64 TestCompletionValue.TestCompletionKey.create
+// Java: com/google/devtools/build/lib/skyframe/TestCompletionValue.java:79 TestCompletionValue.TestCompletionKey.functionName
 // Java: com/google/devtools/build/lib/skyframe/TestCompletionValue.java:36 TestCompletionValue.key
 // Java: com/google/devtools/build/lib/skyframe/TestCompletionValue.java:43 TestCompletionValue.keys
 // PORT: skipped, shareability (remote analysis caching, unported!) and key interning: TestCompletionValue.TestCompletionKey.valueIsShareable TestCompletionValue.TestCompletionKey.getSkyKeyInterner
@@ -324,7 +324,7 @@ impl Key for TestCompletionKey {
 }
 
 /// `TestType` of a `BuildDriverKey`.
-// Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:33 BuildDriverKey.TestType
+// Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:150 BuildDriverKey.TestType
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[allow(non_camel_case_types)]
 pub enum TestType {
@@ -335,7 +335,7 @@ pub enum TestType {
 }
 
 impl TestType {
-    // Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:40 TestType.isTest
+    /// `testType != NOT_TEST` (Java compares inline; TestType has no method for it).
     pub fn is_test(self) -> bool {
         self != TestType::NOT_TEST
     }
@@ -432,7 +432,7 @@ impl BuildDriverKey {
         }
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:103 BuildDriverKey.isTopLevelAspectDriver
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:105 BuildDriverKey.isTopLevelAspectDriver
     pub fn is_top_level_aspect_driver(&self) -> bool {
         self.action_lookup_key.function_name() == TOP_LEVEL_ASPECTS
     }
@@ -461,7 +461,7 @@ impl std::hash::Hash for BuildDriverKey {
 }
 
 impl fmt::Debug for BuildDriverKey {
-    // Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:164 BuildDriverKey.toString
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:138 BuildDriverKey.toString
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
@@ -474,7 +474,7 @@ impl fmt::Debug for BuildDriverKey {
 impl Key for BuildDriverKey {
     type Value = BuildDriverValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("BUILD_DRIVER");
-    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:155 SkyFunctions.BUILD_DRIVER (createNonHermetic)
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:154 SkyFunctions.BUILD_DRIVER (createNonHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
     // Default `values_equal` (never equal): Java's `BuildDriverValue` has no `equals`.
     // Java: com/google/devtools/build/lib/skyframe/BuildDriverValue.java:19 BuildDriverValue

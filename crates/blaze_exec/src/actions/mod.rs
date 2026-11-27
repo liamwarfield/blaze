@@ -42,6 +42,7 @@ pub mod action_template;
 pub mod cache;
 pub mod exec_exception;
 pub mod execution_requirements;
+pub mod fail_action;
 pub mod file_artifact_value;
 pub mod input_metadata_provider;
 pub mod path_mapper;
@@ -67,7 +68,8 @@ pub use action_input::{
     ActionInput, ActionInputRef, Artifact, BasicActionInput, HierarchicalPath, InputMapping,
 };
 pub use action_template::{
-    ActionTemplate, ActionTemplateError, as_action_template, register_action_template,
+    ActionTemplate, ActionTemplateError, action_template_expansion_key, as_action_template,
+    register_action_template, set_action_template_expansion_key_factory,
 };
 pub use exec_exception::{
     EnvironmentalExecException, ExecException, LostArtifacts, LostInputsExecException,

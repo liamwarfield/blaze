@@ -330,8 +330,12 @@ impl BlazeCommand for CleanCommand {
             ));
         }
 
-        // PORT: `env.getEventBus().post(new NoBuildEvent())` is skipped: Blaze has no event bus
-        // yet. CleanStartingEvent is delivered to its subscribers (WorkerModule, SandboxModule) below.
+        // `env.getEventBus().post(new NoBuildEvent())` reaches only the Build Event Protocol, which
+        // Bazel does not write for `clean` (BazelBuildEventServiceModule.ALLOWED_COMMANDS; oracle:
+        // no file for --build_event_json_file). CleanStartingEvent is delivered to its
+        // subscribers (WorkerModule, SandboxModule) below.
+        // Java: com/google/devtools/build/lib/runtime/commands/events/CleanStartingEvent.java:23 CleanStartingEvent.<init>
+        // Java: com/google/devtools/build/lib/runtime/commands/events/CleanStartingEvent.java:27 CleanStartingEvent.getOptionsProvider
         let clean_options = options
             .get_options::<CleanCommandOptions>()
             .expect("CleanCommand.Options");

@@ -201,6 +201,8 @@ unsafe impl<'v> Coerce<StarlarkInfoGen<Value<'v>>> for StarlarkInfoGen<FrozenVal
 impl<'v> StarlarkInfo<'v> {
     /// Java: StarlarkInfoNoSchema(provider, values) — fields sorted by name. Later duplicates
     /// replace earlier ones (callers pass maps).
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfo.java:36 StarlarkInfo.create
+    // PORT: skipped, values are not re-laid-out in memory: StarlarkInfo.unsafeOptimizeMemoryLayout
     // Java: com/google/devtools/build/lib/packages/StarlarkInfoNoSchema.java:58 StarlarkInfoNoSchema.StarlarkInfoNoSchema
     // Java: com/google/devtools/build/lib/packages/StarlarkInfoNoSchema.java:78 StarlarkInfoNoSchema.createSchemaless
     // Java: com/google/devtools/build/lib/packages/StarlarkInfoWithSchema.java:50 StarlarkInfoWithSchema.StarlarkInfoWithSchema
@@ -258,6 +260,7 @@ impl<'v, V: ValueLike<'v>> StarlarkInfoGen<V> {
         self.fields.iter().map(|(k, _)| k.as_str())
     }
 
+    // PORT: skipped, typed accessors for Java rule code (cc rules); Rust callers use `get_field`: StructImpl.getNoneableValue, StructImpl.getValueOrNull
     /// Java `getValue(name)`.
     // Java: com/google/devtools/build/lib/packages/StarlarkInfoNoSchema.java:210 StarlarkInfoNoSchema.getValue
     // Java: com/google/devtools/build/lib/packages/StarlarkInfoWithSchema.java:157 StarlarkInfoWithSchema.getValue
@@ -299,6 +302,7 @@ impl<'v, V: ValueLike<'v>> StarlarkInfoGen<V> {
         exported && self.fields.iter().all(|(_, v)| is_immutable(v.to_value()))
     }
 
+    // Java: com/google/devtools/build/lib/packages/StructImpl.java:90 StructImpl.allAttributesSuffix
     /// Java: StructImpl.getErrorMessageForUnknownField (+ allAttributesSuffix), or
     /// StarlarkInfoWithMessage's format.
     // Java: com/google/devtools/build/lib/packages/StarlarkInfoWithMessage.java:51 StarlarkInfoWithMessage.getErrorMessageForUnknownField
@@ -331,6 +335,7 @@ impl<'v> Freeze for StarlarkInfo<'v> {
 }
 
 impl<'v, V: ValueLike<'v>> fmt::Display for StarlarkInfoGen<V> {
+    // Java: com/google/devtools/build/lib/packages/StructImpl.java:164 StructImpl.toString
     // Java: StructImpl.repr — "struct(a = 1, b = 2)", fields in sorted order.
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "struct(")?;
@@ -396,6 +401,7 @@ where
         Ok(true)
     }
 
+    // Java: com/google/devtools/build/lib/packages/StructImpl.java:121 StructImpl.hashCode
     // Java: StructImpl.hashCode (provider, then sorted field names and values). The provider's
     // own hash is not used, so unhashable provider values do not make instances unhashable.
     // Java: com/google/devtools/build/lib/packages/StarlarkInfoWithSchema.java:228 StarlarkInfoWithSchema.hashCode
@@ -490,7 +496,7 @@ fn plus<'v, V: ValueLike<'v>>(
 // Java: net/starlark/java/eval/StarlarkList.java:254 StarlarkList.hashCode
 // Java: net/starlark/java/eval/Dict.java Dict.hashCode
 // W4-analysis: lead-applied, root-approved.
-fn java_hash_code(v: Value, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
+pub fn java_hash_code(v: Value, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
     if let Some(list) = starlark::values::list::ListRef::from_value(v) {
         "list".hash(hasher);
         for e in list.iter() {

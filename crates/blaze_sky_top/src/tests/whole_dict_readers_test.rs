@@ -54,6 +54,11 @@ const NOT_RECORDING: &[(&str, &str, &str)] = &[
         "a transition implementation gets settings and attr, no ctx",
     ),
     (
+        "blaze_starlarkdebug/src/serialization.rs",
+        "has_children",
+        "Java DebuggerSerialization.hasChildren: Map.isEmpty, which does not record",
+    ),
+    (
         "blaze_actions/src/analysis/actions/build_info_file_write_action.rs",
         "call_translation_callback",
         "the translation callback runs at execution, no ctx",

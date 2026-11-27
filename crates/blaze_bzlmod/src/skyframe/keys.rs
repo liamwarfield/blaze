@@ -290,8 +290,10 @@ impl fmt::Debug for RegistryKey {
     }
 }
 
+// PORT: skipped, a struct key (no interning): RegistryKey.getSkyKeyInterner
 impl Key for RegistryKey {
     type Value = Arc<dyn Registry>;
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/RegistryKey.java:40 RegistryKey.functionName
     const FUNCTION: SkyFunctionName = REGISTRY;
     // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:175 SkyFunctions.REGISTRY (createNonHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;

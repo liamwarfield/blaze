@@ -65,6 +65,8 @@ impl ConfiguredTarget {
                  the Skyframe graph and it does not have a key."
             );
         }
+        // An alias's own key (Java: `this.actionLookupKey`).
+        // Java: com/google/devtools/build/lib/rules/AliasConfiguredTarget.java:150 AliasConfiguredTarget.getLookupKey
         &self.base().lookup_key
     }
 
@@ -188,6 +190,9 @@ impl ConfiguredTarget {
             ConfiguredTarget::OutputFile(t) => t.providers(),
             ConfiguredTarget::PackageGroup(t) => t.providers(),
             ConfiguredTarget::EnvironmentGroup(t) => t.providers(),
+            // The overrides, then the actual target's providers (`AliasConfiguredTarget`'s
+            // provider map is built that way).
+            // Java: com/google/devtools/build/lib/rules/AliasConfiguredTarget.java:165 AliasConfiguredTarget.getProvider
             ConfiguredTarget::Alias(t) => t.providers(),
             ConfiguredTarget::Merged(t) => t.providers(),
         }

@@ -14,8 +14,16 @@ use prost::Message;
 use crate::event_helper;
 
 /// Called with the listening port before the server waits for its client (tests).
-// Java: com/google/devtools/build/lib/starlarkdebug/server/DebugServerTransport.java:38 DebugServerTransport.onListenPortCallbackForTests
 pub type ListenPortCallback = Box<dyn Fn(u16) + Send + Sync>;
+
+// Java: com/google/devtools/build/lib/starlarkdebug/server/DebugServerTransport.java:38 DebugServerTransport.onListenPortCallbackForTests
+static ON_LISTEN_PORT_CALLBACK_FOR_TESTS: parking_lot::RwLock<Option<ListenPortCallback>> =
+    parking_lot::RwLock::new(None);
+
+/// Sets `DebugServerTransport.onListenPortCallbackForTests` (`None`: Java's no-op default).
+pub fn set_on_listen_port_callback_for_tests(callback: Option<ListenPortCallback>) {
+    *ON_LISTEN_PORT_CALLBACK_FOR_TESTS.write() = callback;
+}
 
 /// Manages the connection to and communication with the remote debug client.
 // Java: com/google/devtools/build/lib/starlarkdebug/server/DebugServerTransport.java:34 DebugServerTransport
@@ -35,11 +43,10 @@ impl DebugServerTransport {
         event_handler: Arc<dyn EventHandler>,
         server_socket: TcpListener,
         verbose_logging: bool,
-        on_listen_port: Option<&ListenPortCallback>,
     ) -> io::Result<DebugServerTransport> {
         // TODO(bazel-team): reject remote connections when running in a remote environment?
         event_handler.handle(&Event::progress("Waiting for debugger..."));
-        if let Some(callback) = on_listen_port {
+        if let Some(callback) = &*ON_LISTEN_PORT_CALLBACK_FOR_TESTS.read() {
             callback(server_socket.local_addr()?.port());
         }
         let (client_socket, _) = server_socket.accept()?;

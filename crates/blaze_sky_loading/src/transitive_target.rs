@@ -134,10 +134,14 @@ impl TransitiveTargetValue {
 /// `TargetLoadingUtil.TargetAndErrorIfAny`).
 // Java: com/google/devtools/build/lib/skyframe/TargetLoadingUtil.java:117 TargetLoadingUtil.TargetAndErrorIfAny
 pub struct TargetAndErrorIfAny {
+    // Java: com/google/devtools/build/lib/skyframe/TargetLoadingUtil.java:133 TargetLoadingUtil.TargetAndErrorIfAny.isPackageLoadedSuccessfully
     pub package_loaded_successfully: bool,
+    // Java: com/google/devtools/build/lib/skyframe/TargetLoadingUtil.java:137 TargetLoadingUtil.TargetAndErrorIfAny.getErrorLoadingTarget
     pub error_loading_target: Option<NoSuchTargetException>,
+    // Java: com/google/devtools/build/lib/skyframe/TargetLoadingUtil.java:142 TargetLoadingUtil.TargetAndErrorIfAny.getTarget
     pub target: Target,
     /// Java `getPackage()`.
+    // Java: com/google/devtools/build/lib/skyframe/TargetLoadingUtil.java:150 TargetLoadingUtil.TargetAndErrorIfAny.getPackage
     pub package: Arc<blaze_packages::package::Package>,
 }
 
@@ -147,6 +151,7 @@ pub enum LoadTargetError {
     NoSuchPackage(NoSuchPackageException),
 }
 
+// PORT: skipped, the private constructor of a static-only class: TargetLoadingUtil.<init>
 // Java: com/google/devtools/build/lib/skyframe/TargetLoadingUtil.java:107 TargetLoadingUtil.getContainingDirectory
 fn get_containing_directory(label: &Label) -> PathFragment {
     let pkg = label.get_package_fragment();

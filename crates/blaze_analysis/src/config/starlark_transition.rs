@@ -23,7 +23,7 @@ use crate::config::transitions::{ConfigurationTransition, StarlarkTransition, re
 
 /// Exception class for exceptions thrown during application of a starlark-defined transition
 /// (Java `StarlarkTransition.TransitionException`).
-// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:103 StarlarkTransition.TransitionException
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:91 StarlarkTransition.TransitionException
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
 pub struct TransitionException(pub String);
@@ -45,7 +45,7 @@ pub const STARLARK_BUILD_SETTINGS_DETAILS: SkyFunctionName =
 
 /// A value class for storing details about Starlark build settings read by a transition: their
 /// defaults, types, whether they allow multiple values, and the aliases used to refer to them.
-// Java: com/google/devtools/build/lib/skyframe/StarlarkBuildSettingsDetailsValue.java:38 StarlarkBuildSettingsDetailsValue
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkBuildSettingsDetailsValue.java:55 StarlarkBuildSettingsDetailsValue
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct StarlarkBuildSettingsDetailsValue {
     /// Java `ImmutableMap<Label, Object>`: the defaults in their `BuildOptions` form.
@@ -56,14 +56,14 @@ pub struct StarlarkBuildSettingsDetailsValue {
 }
 
 impl StarlarkBuildSettingsDetailsValue {
-    // Java: com/google/devtools/build/lib/skyframe/StarlarkBuildSettingsDetailsValue.java:52 StarlarkBuildSettingsDetailsValue.EMPTY
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkBuildSettingsDetailsValue.java:72 StarlarkBuildSettingsDetailsValue.EMPTY
     pub fn empty() -> StarlarkBuildSettingsDetailsValue {
         StarlarkBuildSettingsDetailsValue::default()
     }
 }
 
 /// Java `StarlarkBuildSettingsDetailsValue.Key`.
-// Java: com/google/devtools/build/lib/skyframe/StarlarkBuildSettingsDetailsValue.java:75 StarlarkBuildSettingsDetailsValue.Key
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkBuildSettingsDetailsValue.java:96 StarlarkBuildSettingsDetailsValue.Key
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct StarlarkBuildSettingsDetailsKey {
     /// Java `ImmutableSet<Label>` (insertion order, no duplicates).
@@ -71,7 +71,7 @@ pub struct StarlarkBuildSettingsDetailsKey {
 }
 
 impl StarlarkBuildSettingsDetailsKey {
-    // Java: com/google/devtools/build/lib/skyframe/StarlarkBuildSettingsDetailsValue.java:70 StarlarkBuildSettingsDetailsValue.key
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkBuildSettingsDetailsValue.java:87 StarlarkBuildSettingsDetailsValue.key
     pub fn key(build_settings: &IndexSet<Label>) -> StarlarkBuildSettingsDetailsKey {
         StarlarkBuildSettingsDetailsKey {
             build_settings: build_settings.iter().cloned().collect(),
@@ -101,7 +101,7 @@ impl fmt::Debug for StarlarkBuildSettingsDetailsKey {
 impl Key for StarlarkBuildSettingsDetailsKey {
     type Value = StarlarkBuildSettingsDetailsValue;
     const FUNCTION: SkyFunctionName = STARLARK_BUILD_SETTINGS_DETAILS;
-    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:118 SkyFunctions.STARLARK_BUILD_SETTINGS_DETAILS (createHermetic)
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:117 SkyFunctions.STARLARK_BUILD_SETTINGS_DETAILS (createHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
     /// Java: a record of four maps and sets (order-insensitive, as `IndexMap`/`IndexSet` here). PORT: defaults compare with `StarlarkOptionValue`'s `==`, stricter than Java's `equals` across collection classes: Rust prunes less, never more.
     // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkBuildSettingsDetailsValue.java:55 StarlarkBuildSettingsDetailsValue
@@ -615,7 +615,7 @@ fn unalias(options: BuildOptions, alias_to_actual: &IndexMap<Label, Label>) -> B
 /// `clearLegacyData` (each command that resets the evaluator, as the first Blaze server does),
 /// at `clearAnalysisCache` and at `clearInvalidatedActionLookupKeys`; the server releases the
 /// arena after every command. Java's soft-valued Caffeine caches become plain maps.
-// Java: com/google/devtools/build/lib/analysis/config/StarlarkTransitionCache.java:43 StarlarkTransitionCache
+// Java: com/google/devtools/build/lib/analysis/config/StarlarkTransitionCache.java:49 StarlarkTransitionCache
 #[derive(Default)]
 pub struct StarlarkTransitionCache {
     cache: Mutex<HashMap<CacheKey, CacheValue>>,
@@ -881,6 +881,35 @@ mod tests {
         assert_eq!(
             err(Type::String, StarlarkOptionValue::Int(5), "//:mode"),
             "expected value of type 'string' for //:mode, but got 5 (int)"
+        );
+    }
+
+    // Expected texts: the oracle (Bazel 9.3.2, 2026-11-26, config-cluster/bin/utrans.sh): a
+    // transition that returns 1.5, None or struct(a = 1) for an int_flag or a string_flag.
+    #[test]
+    fn conversion_error_texts_for_other_starlark_objects() {
+        let object = |repr: &str, type_name: &str| StarlarkOptionValue::StarlarkObject {
+            repr: repr.to_owned(),
+            type_name: type_name.to_owned(),
+        };
+        let err = |type_: Type, value: StarlarkOptionValue, what: &str| {
+            convert_starlark_option(type_, &value, what).unwrap_err().0
+        };
+        assert_eq!(
+            err(Type::Integer, object("1.5", "float"), "//u:i"),
+            "expected value of type 'int' for //u:i, but got 1.5 (float)"
+        );
+        assert_eq!(
+            err(Type::Integer, object("None", "NoneType"), "//u:i"),
+            "expected value of type 'int' for //u:i, but got None (NoneType)"
+        );
+        assert_eq!(
+            err(Type::Integer, object("struct(a = 1)", "struct"), "//u:i"),
+            "expected value of type 'int' for //u:i, but got struct(a = 1) (struct)"
+        );
+        assert_eq!(
+            err(Type::String, object("None", "NoneType"), "//u:s"),
+            "expected value of type 'string' for //u:s, but got None (NoneType)"
         );
     }
 

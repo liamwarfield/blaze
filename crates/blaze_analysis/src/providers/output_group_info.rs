@@ -243,12 +243,18 @@ impl OutputGroupInfo {
     }
 
     // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:342 OutputGroupInfo.getValue
-    fn get_value<'v>(&self, name: &str) -> Option<Value<'v>> {
+    // PORT: `heap` is the heap of the value handed out (None: read at once by Rust code, see
+    // `depsets::depset_value_in_command`).
+    fn get_value<'v>(&self, name: &str, heap: Option<Heap<'v>>) -> Option<Value<'v>> {
         let result = self.get_output_group(name);
         if result.is_empty() && !self.contains_key(name) {
             return None;
         }
-        Some(depset_value(&artifacts_to_depset(&result)))
+        let depset = artifacts_to_depset(&result);
+        Some(match heap {
+            Some(heap) => depset_value(heap, &depset),
+            None => crate::rule::depsets::depset_value_in_command(&depset),
+        })
     }
 }
 
@@ -263,7 +269,7 @@ impl fmt::Display for OutputGroupInfo {
             if i > 0 {
                 write!(f, ", ")?;
             }
-            let v = self.get_value(name).expect("group present");
+            let v = self.get_value(name, None).expect("group present");
             write!(f, "{} = {}", name, v.to_repr())?;
         }
         write!(f, ")")
@@ -274,14 +280,14 @@ impl fmt::Display for OutputGroupInfo {
 #[starlark_value(type = "OutputGroupInfo")]
 impl<'v> StarlarkValue<'v> for OutputGroupInfo {
     // Java: com/google/devtools/build/lib/analysis/OutputGroupInfo.java:323 OutputGroupInfo.getIndex
-    fn at(&self, index: Value<'v>, _heap: Heap<'v>) -> starlark::Result<Value<'v>> {
+    fn at(&self, index: Value<'v>, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
         let Some(key) = index.unpack_str() else {
             return Err(errorf(format!(
                 "Output group names must be strings, got {} instead",
                 index.get_type()
             )));
         };
-        match self.get_value(key) {
+        match self.get_value(key, Some(heap)) {
             Some(v) => Ok(v),
             None => Err(errorf(format!("Output group {key} not present"))),
         }
@@ -297,8 +303,8 @@ impl<'v> StarlarkValue<'v> for OutputGroupInfo {
         Ok(self.groups.keys().map(|k| heap.alloc(k.as_str())).collect())
     }
 
-    fn get_attr(&self, attribute: &str, _heap: Heap<'v>) -> Option<Value<'v>> {
-        self.get_value(attribute)
+    fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
+        self.get_value(attribute, Some(heap))
     }
 
     fn has_attr(&self, attribute: &str, _heap: Heap<'v>) -> bool {

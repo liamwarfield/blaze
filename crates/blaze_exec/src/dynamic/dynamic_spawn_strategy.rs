@@ -54,6 +54,12 @@ pub type GetExecutionPolicy = Arc<dyn Fn(&dyn Spawn) -> ExecutionPolicy + Send +
 
 /// Posted when a spawn was executed dynamically: which strategies ran it and which branch won.
 // Java: com/google/devtools/build/lib/dynamic/DynamicExecutionFinishedEvent.java:20 DynamicExecutionFinishedEvent
+// Java: com/google/devtools/build/lib/dynamic/DynamicExecutionFinishedEvent.java:27 DynamicExecutionFinishedEvent.<init>
+// The getters are the public fields:
+// Java: com/google/devtools/build/lib/dynamic/DynamicExecutionFinishedEvent.java:38 DynamicExecutionFinishedEvent.getMnemonic
+// Java: com/google/devtools/build/lib/dynamic/DynamicExecutionFinishedEvent.java:42 DynamicExecutionFinishedEvent.getLocalBranchName
+// Java: com/google/devtools/build/lib/dynamic/DynamicExecutionFinishedEvent.java:46 DynamicExecutionFinishedEvent.getRemoteBranchName
+// Java: com/google/devtools/build/lib/dynamic/DynamicExecutionFinishedEvent.java:50 DynamicExecutionFinishedEvent.getWinnerBranchType
 #[derive(Debug, Clone)]
 pub struct DynamicExecutionFinishedEvent {
     pub mnemonic: String,

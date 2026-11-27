@@ -435,24 +435,12 @@ fn depset_survives_freezing_and_converts_to_nested_set() {
     }
 }
 
-// W4-analysis: to_nested_set_with_memo keeps Java's NestedSet identity across calls.
+// W4-analysis: to_nested_set_cached keeps Java's NestedSet identity across calls.
 // Java: Depset.getSet returns the wrapped NestedSet; NestedSetBuilder.build returns a lone
 // transitive set of the same order (NestedSetBuilder.java build), and sub-sets share their array.
 #[test]
-fn to_nested_set_with_memo_keeps_node_identity_across_calls() {
+fn to_nested_set_cached_keeps_node_identity_across_calls() {
     use blaze_collect::NestedSet;
-    use blaze_starlark::depset::DepsetNodeMemo;
-    use std::collections::HashMap;
-
-    struct Memo(HashMap<(usize, bool), NestedSet<String>>);
-    impl DepsetNodeMemo<String> for Memo {
-        fn get(&mut self, node: usize, frozen: bool) -> Option<NestedSet<String>> {
-            self.0.get(&(node, frozen)).cloned()
-        }
-        fn put(&mut self, node: usize, frozen: bool, set: NestedSet<String>) -> NestedSet<String> {
-            self.0.entry((node, frozen)).or_insert(set).clone()
-        }
-    }
 
     let m = exec(
         "\
@@ -463,25 +451,19 @@ d = depset(transitive = [a])
 ",
     )
     .unwrap();
-    let mut memo = Memo(HashMap::new());
-    let convert = |name: &str, memo: &mut Memo| -> NestedSet<String> {
+    let convert = |name: &str| -> NestedSet<String> {
         let v = m.get(name).unwrap();
-        let value = v.value();
-        Depset::from_value(value)
+        Depset::from_value(v.value())
             .unwrap()
-            .to_nested_set_with_memo(
-                value.unpack_frozen().is_some(),
-                &mut |e| Ok(e.unpack_str().unwrap().to_owned()),
-                memo,
-            )
+            .to_nested_set_cached(&mut |e| Ok(e.unpack_str().unwrap().to_owned()))
             .unwrap()
     };
-    let b1 = convert("b", &mut memo);
-    let b2 = convert("b", &mut memo);
+    let b1 = convert("b");
+    let b2 = convert("b");
     assert_eq!(b1.node_id(), b2.node_id());
-    let a = convert("a", &mut memo);
-    let c = convert("c", &mut memo);
-    let d = convert("d", &mut memo);
+    let a = convert("a");
+    let c = convert("c");
+    let d = convert("d");
     // The same order and elements as the plain conversion.
     let plain = |name: &str| -> Vec<String> {
         let v = m.get(name).unwrap();

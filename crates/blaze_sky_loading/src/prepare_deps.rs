@@ -807,6 +807,8 @@ impl PrepareDepsOfPatternFunction {
             &preparer,
             &|| Ok(repository_ignored_patterns.clone()),
             &[],
+            // Java: com/google/devtools/build/lib/cmdline/BatchCallback.java:44 BatchCallback.NullCallback.process
+            // Java: com/google/devtools/build/lib/cmdline/BatchCallback.java:47 BatchCallback.NullCallback.instance
             &mut |_| {},
         );
         match result {

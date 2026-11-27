@@ -112,6 +112,7 @@ pub fn produce_configured_targets_and_data(
     let mut supplied_configurations: IndexMap<BuildConfigurationKey, Arc<BuildConfigurationValue>> =
         IndexMap::new();
     let mut package_keys: IndexMap<PackageIdentifier, ()> = IndexMap::new();
+    let mut existing_packages: IndexMap<PackageIdentifier, Arc<Package>> = IndexMap::new();
     for value in values.iter().flatten().flatten() {
         let configured_target = value.get_configured_target();
         if let Some(configuration_key) = configured_target.get_configuration_key() {
@@ -134,7 +135,17 @@ pub fn produce_configured_targets_and_data(
         let package_id = configured_target_label(configured_target)
             .get_package_identifier()
             .clone();
-        package_keys.insert(package_id, ());
+        // `this.pkg = transitiveState.getDependencyPackage(packageId)`; null →
+        // `tasks.lookUp(packageId, this)`. In incremental builds, it is possible that the package
+        // won't be present in the cache.
+        match transitive_state.get_dependency_package(&package_id) {
+            Some(pkg) => {
+                existing_packages.insert(package_id, pkg);
+            }
+            None => {
+                package_keys.insert(package_id, ());
+            }
+        }
     }
     let mut dep_keys: Vec<SkyKey> = Vec::new();
     for k in configuration_keys.keys() {
@@ -149,7 +160,7 @@ pub fn produce_configured_targets_and_data(
             .keys()
             .map(|k| (k.clone(), deps.get_typed(k)))
             .collect();
-    let packages: IndexMap<PackageIdentifier, Option<Arc<Package>>> = package_keys
+    let mut packages: IndexMap<PackageIdentifier, Option<Arc<Package>>> = package_keys
         .keys()
         .map(|p| {
             (
@@ -159,6 +170,9 @@ pub fn produce_configured_targets_and_data(
             )
         })
         .collect();
+    for (id, pkg) in existing_packages {
+        packages.insert(id, Some(pkg));
+    }
 
     // Java: com/google/devtools/build/lib/analysis/producers/ConfiguredTargetAndDataProducer.java:213 ConfiguredTargetAndDataProducer.constructResult
     let mut outcomes = Vec::with_capacity(requests.len());

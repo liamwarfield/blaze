@@ -41,6 +41,10 @@ static EMPTY_FRAGMENT: LazyLock<PathFragment> = LazyLock::new(|| PathFragment {
 /// ported.
 // Java: com/google/devtools/build/lib/vfs/PathFragment.java:58 PathFragment
 #[derive(Clone)]
+// PORT: one type for Java's three subclasses (the Unix OS only: relative and Unix-style absolute).
+// Java: com/google/devtools/build/lib/vfs/PathFragment.java:194 PathFragment.RelativePathFragment.<init>
+// Java: com/google/devtools/build/lib/vfs/PathFragment.java:209 PathFragment.UnixStyleAbsolutePathFragment.<init>
+// PORT: skipped, Windows only: PathFragment.WindowsStyleAbsolutePathFragment.<init>
 pub struct PathFragment {
     normalized_path: Arc<str>,
     /// 0 for relative paths (Java `RelativePathFragment`), 1 for Unix-style absolute paths (Java

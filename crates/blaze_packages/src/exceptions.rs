@@ -434,6 +434,7 @@ impl fmt::Display for NoSuchTargetException {
 
 impl std::error::Error for NoSuchTargetException {}
 
+// PORT: skipped, the (message, cause) constructor has no caller in Bazel 9.3.2: ErrorDeterminingRepositoryException.<init>
 /// Java `ErrorDeterminingRepositoryException`.
 // Java: com/google/devtools/build/lib/packages/ErrorDeterminingRepositoryException.java:20 ErrorDeterminingRepositoryException
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]

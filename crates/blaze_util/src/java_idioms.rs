@@ -12,6 +12,8 @@
 // PORT: skipped, CharSequence plumbing (the ported uses render with Display): OnDemandString.charAt, OnDemandString.length, OnDemandString.subSequence
 // PORT: skipped, JVM-only (jdk.internal.misc.Blocker for virtual threads around blocking calls): Blocker.begin, Blocker.end, Blocker.blockerType
 // PORT: skipped, JVM-only (jdk.internal.misc.Blocker for virtual threads around blocking calls): Blocker.getEnd, Blocker.getBegin
+// PORT: skipped, the private constructor of a static-only class: FileChannels.<init>
+// PORT: skipped, a holder of the JVM's java.lang.ref.Cleaner (Rust drops values deterministically): BazelCleaner.<init>
 // PORT: skipped, JVM-only (FileChannel interruptibility; Rust I/O is never closed by an interrupt): FileChannels.setUninterruptible
 // PORT: skipped, unused at the pin (no other class refers to it): PathFragmentFilter.convert, PathFragmentFilter.getTypeDescription
 // PORT: skipped, unused at the pin (no other class refers to it): PathFragmentFilter.isIncluded, PathFragmentFilter.toString

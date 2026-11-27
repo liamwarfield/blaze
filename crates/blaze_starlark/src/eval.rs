@@ -347,7 +347,7 @@ pub fn with_evaluator<R>(
     let run = AssertUnwindSafe(|| {
         Module::with_temp_heap(|module| {
             let mut eval = Evaluator::new(&module);
-            crate::debug::install_hook(&mut eval);
+            crate::debug::install_hook_for_call(&mut eval);
             eval.extra = Some(ctx);
             if let Some(l) = loads {
                 eval.set_loader(l);
@@ -387,6 +387,15 @@ pub fn exec_module(
     let ast = compiled.ast;
     let debug_file_name = ast.file_span(Default::default()).filename().to_owned();
     crate::debug::register_predeclared(&debug_file_name, globals);
+    if !compiled.kind.file_options().load_binds_globally {
+        crate::debug::register_load_bound(
+            &debug_file_name,
+            ast.loads()
+                .iter()
+                .flat_map(|l| l.symbols.keys().map(|k| (*k).to_owned()))
+                .collect(),
+        );
+    }
     let run = AssertUnwindSafe(|| {
         Module::with_temp_heap(|module| {
             {
@@ -427,6 +436,15 @@ pub fn exec_module_with_extra_value(
     let ast = compiled.ast;
     let debug_file_name = ast.file_span(Default::default()).filename().to_owned();
     crate::debug::register_predeclared(&debug_file_name, globals);
+    if !compiled.kind.file_options().load_binds_globally {
+        crate::debug::register_load_bound(
+            &debug_file_name,
+            ast.loads()
+                .iter()
+                .flat_map(|l| l.symbols.keys().map(|k| (*k).to_owned()))
+                .collect(),
+        );
+    }
     let run = AssertUnwindSafe(|| {
         Module::with_temp_heap(|module| {
             let extra = extra_value(&module);
@@ -504,7 +522,7 @@ pub fn call_frozen_and_freeze(
         Module::with_temp_heap(|module| {
             {
                 let mut eval = Evaluator::new(&module);
-                crate::debug::install_hook(&mut eval);
+                crate::debug::install_hook_for_call(&mut eval);
                 eval.extra = Some(ctx);
                 eval.set_forbid_recursion(!ctx.semantics.allow_recursion);
                 eval.set_utf8_byte_strings(ctx.semantics.utf8_byte_strings());

@@ -29,6 +29,8 @@ pub const CLIENT_ENVIRONMENT_VARIABLE: SkyFunctionName =
 /// PORT: Java's class is in `lib/skyframe`; it is in this crate because action execution
 /// (blaze_sky_exec) and bzlmod (blaze_bzlmod), which do not depend on each other, request it.
 // Java: com/google/devtools/build/lib/skyframe/ClientEnvironmentFunction.java:37 ClientEnvironmentFunction.Key
+// PORT: skipped, a struct key (Key::FUNCTION; no interning): ClientEnvironmentFunction.Key.create, ClientEnvironmentFunction.Key.intern, ClientEnvironmentFunction.Key.getSkyKeyInterner
+// PORT: skipped, the function reads the command's client environment directly (no constructor state; blaze_bzlmod skyframe): ClientEnvironmentFunction.<init>
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ClientEnvironmentKey(pub String);
 

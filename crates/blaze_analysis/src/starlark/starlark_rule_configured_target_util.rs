@@ -174,6 +174,18 @@ fn evaluate(
 ) -> Result<Evaluated, RuleErrorException> {
     let opts = EvalOptions::default();
     Module::with_temp_heap(|module| {
+        // PORT: Blaze-only (decision D7, amended 2026-11-26): the rule's providers and actions
+        // hold values of the .bzl modules its package loaded (provider types, functions) without
+        // owning their heaps; the frozen analysis heap references them, so the configured target
+        // owns them.
+        let module_heaps = handle
+            .borrow()
+            .get_rule()
+            .get_package_declarations()
+            .get_module_heaps();
+        for heap in &module_heaps {
+            module.frozen_heap().add_reference(heap);
+        }
         let keep_alive = module.heap().alloc(AnalysisKeepAlive::new());
         module.set_extra_value(keep_alive);
         let keep = keep_alive
@@ -184,11 +196,11 @@ fn evaluate(
         let is_default_executable_created;
         let required_config_fragments_provider;
         // Java: a Depset created by the implementation wraps one NestedSet for as long as it
-        // lives, before and after its Mutability is frozen; see rule::depsets.
-        // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:207 Depset.getSet
-        let depset_scope = crate::rule::depsets::DepsetConversionScope::enter();
+        // lives, before and after its Mutability is frozen: the depset node keeps its set and
+        // freezing moves it to the frozen copy (rule::depsets).
         {
             let mut eval = Evaluator::new(&module);
+            blaze_starlark::debug::install_hook_for_call(&mut eval);
             eval.extra = Some(thread);
             eval.set_forbid_recursion(!thread.semantics.allow_recursion);
             // Java: net/starlark/java/eval/StringModule.java:326 and lib/json/Json.java:346 read
@@ -230,35 +242,8 @@ fn evaluate(
             ctx.close();
             raw_providers = raw.map(|v| keep.push(v));
         }
-        // PORT: freezing copies the depsets the implementation made; the keep-alive list gives
-        // the frozen copy of each one whose NestedSet an action already holds.
-        // SAFETY: the depsets converted in the scope are values of `module`'s heap, which is
-        // alive and is not garbage collected while a function call (the implementation) runs.
-        let converted_depsets: Vec<usize> = unsafe { depset_scope.converted_depsets() }
-            .into_iter()
-            .map(|depset| keep.push(depset))
-            .collect();
         let frozen = match module.freeze() {
-            Ok(frozen) => {
-                // PORT: keep-alive. rule::depsets memoizes NestedSets by the address of frozen
-                // depsets, so a frozen heap must never be freed (and its addresses reused), not
-                // even when the target later fails analysis.
-                crate::rule::depsets::keep_frozen_heap_alive(frozen.frozen_heap().clone());
-                let keep_alive = frozen
-                    .owned_extra_value()
-                    .expect("the keep-alive list is the module's extra value");
-                let frozen_depsets: Vec<OwnedFrozenValue> = converted_depsets
-                    .iter()
-                    .map(|index| {
-                        super::thread_payload::FrozenAnalysisKeepAlive::get_owned(
-                            &keep_alive,
-                            *index,
-                        )
-                    })
-                    .collect();
-                depset_scope.adopt_frozen(&frozen_depsets);
-                Some(frozen)
-            }
+            Ok(frozen) => Some(frozen),
             Err(e) => {
                 // PORT: Java's providers are frozen by closing the Mutability, which cannot fail;
                 // starlark-rust refuses values that cannot be frozen.

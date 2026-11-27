@@ -27,6 +27,7 @@ pub mod grpc_remote_executor;
 pub mod hooks;
 pub mod http;
 pub mod lease_service;
+pub mod remote_lease_extension;
 pub mod logging;
 pub mod merkletree;
 pub mod platform_utils;

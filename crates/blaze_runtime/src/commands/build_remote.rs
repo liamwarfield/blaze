@@ -57,6 +57,10 @@ pub(crate) struct RemoteSupport {
     /// `RemoteModule.executorInit`'s `LeaseService` (a combined cache without
     /// `--rewind_lost_inputs`).
     lease_service: Option<Arc<blaze_remote::lease_service::LeaseService>>,
+    /// What `executorInit` gives `new RemoteLeaseExtension(...)` with
+    /// `--experimental_remote_cache_lease_extension`, kept until the evaluator and the action
+    /// cache exist ([`RemoteSupport::install_lease_extension`]).
+    lease_extension_init: Option<LeaseExtensionInit>,
     /// `env.withMergedAnalysisAndExecutionSourceOfTruth()`, which decides whether
     /// `registerActionContexts` registers the `RemoteImportantOutputHandler`; set by
     /// [`RemoteSupport::set_merged_analysis_and_execution`].
@@ -135,18 +139,38 @@ pub(crate) fn before_command(
     // The --experimental_remote_cache_lease_extension warning (with --rewind_lost_inputs) or
     // RemoteLeaseExtension (without).
     module.executor_init(env.get_reporter().as_ref(), rewind_lost_inputs);
-    let lease_service = module
+    let combined_cache = module
         .get_action_context_provider()
         .and_then(|provider| provider.get_combined_cache())
         .filter(|_| !rewind_lost_inputs)
-        .map(|_| {
-            Arc::new(blaze_remote::lease_service::LeaseService::new(
-                lease_extension_requested,
-            ))
+        .cloned();
+    // new RemoteLeaseExtension(env.getSkyframeExecutor().getEvaluator(),
+    // env.getBlazeWorkspace().getPersistentActionCache(), env.getBuildRequestId(),
+    // env.getCommandId().toString(), actionContextProvider.getCombinedCache(),
+    // remoteOptions.remoteCacheTtl): the workspace's action cache is null until a command has
+    // loaded it (Blaze records that in PERSISTENT_ACTION_CACHE_LOADED).
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1277 RemoteModule.executorInit
+    let lease_extension_init = combined_cache
+        .as_ref()
+        .filter(|_| lease_extension_requested)
+        .map(|combined_cache| LeaseExtensionInit {
+            action_cache_present:
+                blaze_buildtool::buildtool::execution_tool::PERSISTENT_ACTION_CACHE_LOADED
+                    .load(std::sync::atomic::Ordering::SeqCst),
+            build_request_id: build_request_id(options),
+            command_id: env.get_command_id().to_owned(),
+            combined_cache: combined_cache.clone(),
+            remote_cache_ttl: options
+                .get_options::<RemoteOptions>()
+                .map(|o| o.remote_cache_ttl)
+                .unwrap_or_default(),
         });
+    let lease_service =
+        combined_cache.map(|_| Arc::new(blaze_remote::lease_service::LeaseService::new(None)));
     Ok(Some(RemoteSupport {
         module: Mutex::new(module),
         lease_service,
+        lease_extension_init,
         merged_analysis_and_execution: Arc::new(std::sync::atomic::AtomicBool::new(false)),
     }))
 }
@@ -706,7 +730,121 @@ pub(crate) fn placeholder_contributions(
     }
 }
 
+/// The arguments of `new RemoteLeaseExtension(...)` that `executorInit` has.
+struct LeaseExtensionInit {
+    /// `env.getBlazeWorkspace().getPersistentActionCache() != null` at `executorInit`.
+    action_cache_present: bool,
+    build_request_id: String,
+    command_id: String,
+    combined_cache: Arc<blaze_remote::combined_cache::CombinedCache>,
+    remote_cache_ttl: std::time::Duration,
+}
+
+/// `RemoteOutputService.finalizeAction` with a lease service.
+// Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:170 RemoteOutputService.finalizeAction
+struct RemoteOutputServiceFinalizer {
+    action_input_fetcher:
+        Option<Arc<dyn blaze_exec::exec::action_execution_context::ActionFinalizer>>,
+    lease_service: Arc<blaze_remote::lease_service::LeaseService>,
+}
+
+impl blaze_exec::exec::action_execution_context::ActionFinalizer for RemoteOutputServiceFinalizer {
+    fn finalize_action(
+        &self,
+        action: &dyn blaze_exec::actions::ActionExecutionMetadata,
+        outputs: &[ActionInputRef],
+        output_metadata_store: &dyn blaze_exec::actions::cache::output_metadata_store::OutputMetadataStore,
+    ) -> Result<(), blaze_exec::exec::action_execution_context::SpawnCacheError> {
+        if let Some(fetcher) = &self.action_input_fetcher {
+            fetcher.finalize_action(action, outputs, output_metadata_store)?;
+        }
+        self.lease_service.finalize_action();
+        Ok(())
+    }
+}
+
+/// The command's evaluator as `RemoteLeaseExtension` reads it.
+///
+/// PORT: weak, as the kept graph must have no other holder once the command is over (the
+/// extension is stopped in `finalizeExecution`, before that); Java's field is strong.
+struct EvaluatorLeaseGraph(std::sync::Weak<blaze_skyframe::Evaluator>);
+
+impl blaze_remote::remote_lease_extension::LeaseExtensionGraph for EvaluatorLeaseGraph {
+    /// PORT: Java iterates `getValues()`, a `ConcurrentHashMap`, in its hash order; this is the
+    /// order of Blaze's map, which decides only the order of the per-action `FindMissingBlobs`
+    /// calls.
+    // Java: com/google/devtools/build/lib/remote/RemoteLeaseExtension.java:111 RemoteLeaseExtension.doExtendLeases
+    // Java: com/google/devtools/build/lib/remote/RemoteLeaseExtension.java:230 RemoteLeaseExtension.getActionFromSkyKey
+    fn for_each_action_execution_value(
+        &self,
+        visit: &mut dyn FnMut(
+            &dyn blaze_actions::actions::action::Action,
+            &indexmap::IndexMap<Artifact, blaze_exec::actions::FileArtifactValue>,
+            &indexmap::IndexMap<Artifact, Arc<blaze_exec::actions::TreeArtifactValue>>,
+        ) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
+        use blaze_sky_exec::action_execution_value::ActionExecutionValue;
+        use blaze_sky_exec::keys::ActionExecutionKey;
+        let Some(evaluator) = self.0.upgrade() else {
+            return Ok(());
+        };
+        for (key, value) in evaluator.get_values() {
+            if key.function_name() != <ActionExecutionKey as blaze_skyframe::Key>::FUNCTION {
+                continue;
+            }
+            let action_lookup_data = &key
+                .downcast::<ActionExecutionKey>()
+                .expect("an ACTION_EXECUTION key is an ActionExecutionKey")
+                .0;
+            // checkNotNull(memoizingEvaluator.getExistingValue(actionLookupKey))
+            let Some(action_lookup_value) =
+                blaze_sky_top::execution_seam::get_existing_action_lookup_value(
+                    &evaluator,
+                    action_lookup_data.get_action_lookup_key(),
+                )
+            else {
+                return Err(std::io::Error::other("java.lang.NullPointerException"));
+            };
+            let action = action_lookup_value.get_action(action_lookup_data.get_action_index());
+            let action_execution_value = value
+                .downcast_ref::<ActionExecutionValue>()
+                .expect("ClassCastException: an ACTION_EXECUTION value is an ActionExecutionValue");
+            visit(
+                &*action,
+                action_execution_value.get_all_file_values(),
+                action_execution_value.get_all_tree_artifact_values(),
+            )?;
+        }
+        Ok(())
+    }
+}
+
 impl RemoteSupport {
+    /// Creates the `RemoteLeaseExtension` of `--experimental_remote_cache_lease_extension` once
+    /// the command's evaluator and action cache exist (see `LeaseService::set_lease_extension`).
+    /// `action_cache` is the one this command loaded, which is the workspace's in Java; it is
+    /// given only if Java's was already loaded at `executorInit`.
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1277 RemoteModule.executorInit
+    pub(crate) fn install_lease_extension(
+        &self,
+        evaluator: &Arc<blaze_skyframe::Evaluator>,
+        action_cache: Option<&Arc<dyn blaze_exec::actions::cache::ActionCache>>,
+    ) {
+        let (Some(init), Some(lease_service)) = (&self.lease_extension_init, &self.lease_service)
+        else {
+            return;
+        };
+        let extension = blaze_remote::remote_lease_extension::RemoteLeaseExtension::new(
+            Arc::new(EvaluatorLeaseGraph(Arc::downgrade(evaluator))),
+            action_cache.filter(|_| init.action_cache_present).cloned(),
+            &init.build_request_id,
+            &init.command_id,
+            init.combined_cache.clone(),
+            init.remote_cache_ttl,
+        );
+        lease_service.set_lease_extension(Arc::new(extension));
+    }
+
     /// The build's Skymeld decision (`SkymeldModule.beforeCommand`), which Java makes before
     /// `registerActionContexts` and Blaze after it (see
     /// `ImportantOutputHandler::is_registered`).
@@ -805,11 +943,22 @@ impl RemoteSupport {
                             dyn blaze_exec::exec::action_execution_context::ImportantOutputHandler,
                         >
                 }),
+            // RemoteOutputService.finalizeAction: the fetcher's, then
+            // leaseService.finalizeAction().
+            // Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:170 RemoteOutputService.finalizeAction
             action_finalizer: if finalize_actions {
-                module.get_action_input_fetcher().map(|f| {
+                let fetcher = module.get_action_input_fetcher().map(|f| {
                     f.clone()
                         as Arc<dyn blaze_exec::exec::action_execution_context::ActionFinalizer>
-                })
+                });
+                match &self.lease_service {
+                    Some(lease_service) => Some(Arc::new(RemoteOutputServiceFinalizer {
+                        action_input_fetcher: fetcher,
+                        lease_service: lease_service.clone(),
+                    })
+                        as Arc<dyn blaze_exec::exec::action_execution_context::ActionFinalizer>),
+                    None => fetcher,
+                }
             } else {
                 None
             },
@@ -841,14 +990,21 @@ impl RemoteSupport {
     }
 
     /// `afterSingleAspectAnalysis(request, configuredAspect)` (the Skymeld path):
-    /// `remoteOutputChecker.afterAspectAnalysis`, which is not ported (top-level aspects with a
-    /// remote output checker fail loudly).
+    /// `remoteOutputChecker.afterAspectAnalysis(configuredAspect, request::getTopLevelArtifactContext)`.
     // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1047 RemoteModule.afterSingleAspectAnalysis
-    pub(crate) fn after_single_aspect_analysis(&self) {
+    pub(crate) fn after_single_aspect_analysis(
+        &self,
+        configured_aspect: &blaze_analysis::aspect_value::AspectValue,
+        output_groups: &[String],
+    ) {
         let module = self.module.lock();
-        if module.get_remote_output_checker().is_some() {
-            blaze_util::unported!("RemoteOutputChecker.afterAspectAnalysis");
-        }
+        let Some(checker) = module.get_remote_output_checker() else {
+            return;
+        };
+        checker.after_aspect_analysis(&ConfiguredAspectView {
+            aspect: configured_aspect,
+            output_groups,
+        });
     }
 
     /// `afterSingleTestAnalysis(request, configuredTarget)` (the Skymeld path).
@@ -914,11 +1070,22 @@ impl RemoteSupport {
                     })
                     .collect()
             });
-        // PORT: top-level aspects are not ported (AnalysisResult.getAspectsMap is empty).
+        // `analysisResult.getAspectsMap().values()`.
+        let aspects: Vec<ConfiguredAspectView<'_>> = analysis_result
+            .get_aspects_map()
+            .values()
+            .map(|aspect| ConfiguredAspectView {
+                aspect,
+                output_groups,
+            })
+            .collect();
         let is_owned_by_coverage_report = is_owned_by_coverage_report;
         if merged {
             for (rule_class, view) in &targets {
                 checker.after_top_level_target_analysis(rule_class.as_deref(), view);
+            }
+            for aspect in &aspects {
+                checker.after_aspect_analysis(aspect);
             }
             if let Some(tests) = &tests {
                 for test in tests {
@@ -937,7 +1104,7 @@ impl RemoteSupport {
                     .iter()
                     .map(|(rule_class, view)| (rule_class.as_deref(), view as &dyn TopLevelTarget))
                     .collect(),
-                aspects: Vec::new(),
+                aspects: aspects.iter().map(|a| a as &dyn TopLevelTarget).collect(),
                 targets_to_test: tests
                     .as_ref()
                     .map(|tests| tests.iter().map(|t| t as &dyn TargetUnderTest).collect()),
@@ -1100,6 +1267,62 @@ impl TopLevelTarget for ConfiguredTargetView<'_> {
         // PORT: ExtraActionArtifactsProvider is not ported; its artifacts come from action
         // listeners (`--experimental_action_listener`), which Blaze does not run, so the
         // provider would be empty.
+        None
+    }
+}
+
+/// A top-level aspect as `RemoteOutputChecker.addTopLevelTarget` reads it (the `AspectValue`
+/// as a `ProviderCollection`, without a configured target).
+struct ConfiguredAspectView<'a> {
+    aspect: &'a blaze_analysis::aspect_value::AspectValue,
+    output_groups: &'a [String],
+}
+
+impl TopLevelTarget for ConfiguredAspectView<'_> {
+    // Java: com/google/devtools/build/lib/analysis/TopLevelArtifactHelper.java:97 ArtifactsToBuild.getImportantArtifacts
+    fn get_important_artifacts_to_build(&self) -> Vec<ActionInputRef> {
+        let all = blaze_sky_top::execution_seam::get_all_artifacts_to_build_of_aspect(self.aspect);
+        let mut important = Vec::new();
+        for output_group in self.output_groups {
+            if let Some(artifacts) = all.get(output_group)
+                && is_important_group(output_group)
+            {
+                important.extend(inputs_of(artifacts.to_list().iter()));
+            }
+        }
+        important
+    }
+
+    fn output_groups_contain_hidden_top_level(&self) -> bool {
+        self.output_groups.iter().any(|g| g == HIDDEN_TOP_LEVEL)
+    }
+
+    fn get_runfiles(&self) -> Option<RunfilesView> {
+        let provider = self
+            .aspect
+            .get_providers()
+            .get_provider::<FilesToRunProvider>()?;
+        let runfiles_support = provider.get_runfiles_support()?;
+        let runfiles = runfiles_support.get_runfiles();
+        Some(RunfilesView {
+            artifacts: inputs_of(runfiles.get_artifacts().to_list().iter()),
+            symlink_artifacts: runfiles
+                .get_symlinks()
+                .to_list()
+                .iter()
+                .map(|s| artifact_input(s.get_artifact()))
+                .collect(),
+            root_symlink_artifacts: runfiles
+                .get_root_symlinks()
+                .to_list()
+                .iter()
+                .map(|s| artifact_input(s.get_artifact()))
+                .collect(),
+        })
+    }
+
+    fn get_extra_action_artifacts(&self) -> Option<Vec<ActionInputRef>> {
+        // PORT: as for a configured target (ExtraActionArtifactsProvider is not ported).
         None
     }
 }

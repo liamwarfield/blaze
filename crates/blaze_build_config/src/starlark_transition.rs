@@ -211,7 +211,7 @@ impl JavaObject {
                     )
                 }
             }
-            // Java: net/starlark/java/eval/Printer.java:216 Printer.repr (a value whose class
+            // Java: net/starlark/java/eval/Printer.java:160 Printer.repr (a value whose class
             // is not a Starlark value prints its `toString()`).
             JavaObject::StarlarkValue(v) | JavaObject::Other(v) => v.java_to_string(),
             JavaObject::StarlarkObject { repr, .. } => repr.clone(),
@@ -511,7 +511,7 @@ pub fn from_java<'v>(x: &JavaObject, heap: starlark::values::Heap<'v>) -> Option
             }
             Some(heap.alloc(AllocDict(entries)))
         }
-        // Java: net/starlark/java/eval/Starlark.java:217 Starlark.fromJava
+        // Java: net/starlark/java/eval/Starlark.java:198 Starlark.fromJava
         // (StarlarkSet.copyOf(mutability, set)).
         JavaObject::Set(l) => {
             let mut elems = Vec::with_capacity(l.len());
@@ -726,7 +726,7 @@ fn canonicalize_setting(
     Label::parse_with_package_context(setting, package_context)
 }
 
-// Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:114 StarlarkDefinedConfigTransition.getCanonicalizedSettings
+// Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:153 StarlarkDefinedConfigTransition.getCanonicalizedSettings
 /// Canonicalize the given list of settings. Return a map of their canonicalized version to the
 /// form they were given in.
 fn get_canonicalized_settings(
@@ -771,7 +771,7 @@ fn get_canonicalized_settings(
     Ok(canonicalized_to_given)
 }
 
-// Java: com/google/devtools/build/lib/rules/config/ConfigGlobalLibrary.java:60 ConfigGlobalLibrary.validateBuildSettingKeys
+// Java: com/google/devtools/build/lib/rules/config/ConfigGlobalLibrary.java:143 ConfigGlobalLibrary.validateBuildSettingKeys
 fn validate_build_setting_keys(
     option_keys: &[String],
     inputs: bool,
@@ -1423,7 +1423,7 @@ impl StarlarkDefinedConfigTransition {
         &self.data.package_context
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:455 RegularTransition.getTransitionSafeString
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:475 RegularTransition.getTransitionSafeString
     /// Converts a Java-native flag value to a Starlark-readable string, or fails if the flag's
     /// type can't be represented in Starlark.
     fn get_transition_safe_string(
@@ -1490,7 +1490,7 @@ impl StarlarkDefinedConfigTransition {
         }
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:265 RegularTransition.evaluate
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:548 RegularTransition.evaluate
     /// Given a map of a subset of the "previous" build settings, returns the changed build
     /// settings as a result of applying this transition. Returns `None` if errors were reported
     /// to the handler.
@@ -1707,7 +1707,7 @@ impl StarlarkDefinedConfigTransition {
                 let mut builder = IndexMap::new();
                 // Sequence.cast(result, Dict.class, "dictionary of options dictionaries") checks
                 // every element before any entry is canonicalized.
-                // Java: net/starlark/java/eval/Sequence.java:142 Sequence.cast
+                // Java: net/starlark/java/eval/Sequence.java:132 Sequence.cast
                 for (i, entry) in items.iter().enumerate() {
                     if !matches!(entry, JavaObject::Map(_)) {
                         self.errorf(
@@ -1821,7 +1821,7 @@ impl StarlarkDefinedConfigTransition {
         self.implementation().value().to_str()
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:602 RegularTransition.errorf
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:653 RegularTransition.errorf
     fn errorf(&self, handler: &dyn EventHandler, message: &str) {
         handler.handle(&Event::error(format!(
             "{}{}",
@@ -1870,7 +1870,7 @@ impl StarlarkDefinedConfigTransition {
         Ok(())
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:597 RegularTransition.canonicalizeTransitionOutputDict
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:700 RegularTransition.canonicalizeTransitionOutputDict
     /// Given a map of build settings to their values, return a map with the same build settings
     /// but in their canonicalized string form to their values.
     fn canonicalize_transition_output_dict(

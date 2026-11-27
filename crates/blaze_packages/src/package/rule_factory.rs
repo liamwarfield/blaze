@@ -5,9 +5,7 @@ use std::sync::Arc;
 use blaze_starlark::Location;
 use blaze_starlark::error::StackEntry;
 use indexmap::IndexMap;
-use parking_lot::Mutex;
 use starlark::values::FrozenHeap;
-use starlark::values::FrozenHeapRef;
 use starlark::values::Value;
 
 use crate::package::NameConflictException;
@@ -114,6 +112,10 @@ pub fn create_rule<'v>(
 
     // Add the generator_name attribute.
     let generator_name = get_generator_name(target_definition_context, attribute_values, callstack);
+    // PORT: Java puts a java.lang.String into the attribute map; a Starlark value needs a heap.
+    // The rule copies the string (`AttrValue::String`), so the heap lives for this call only
+    // (declared before the map that holds the value, so it is dropped after it).
+    let generator_name_heap = FrozenHeap::new();
     // Don't bother copying anything if nothing changed.
     let processed_attributes_owned;
     let processed_attributes = match generator_name {
@@ -122,7 +124,10 @@ pub fn create_rule<'v>(
             let mut values = attribute_values.attribute_values.clone();
             values.insert(
                 "generator_name".to_owned(),
-                alloc_generator_name(&generator_name),
+                generator_name_heap
+                    .alloc_str(&generator_name)
+                    .to_frozen_value()
+                    .to_value(),
             );
             processed_attributes_owned = BuildLangTypedAttributeValuesMap::new(values);
             &processed_attributes_owned
@@ -206,36 +211,6 @@ fn get_generator_name<'v>(
             .and_then(|v| v.unpack_str())
             .map(str::to_owned),
     }
-}
-
-/// Frozen heaps holding `generator_name` strings; kept for the life of the build arena
-/// (`blaze_util::build_arena`, decision D7).
-// PORT: keep-alive. Java puts a java.lang.String into the attribute map; a Starlark value needs a
-// heap, and the caller's heap is not reachable here.
-#[derive(Default)]
-struct GeneratorNameHeaps(Mutex<Vec<FrozenHeapRef>>);
-
-impl blaze_util::build_arena::ArenaSlot for GeneratorNameHeaps {
-    const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
-        blaze_util::build_arena::ReleaseOrder::Heaps;
-
-    fn held_count(&self) -> usize {
-        self.0.lock().len()
-    }
-}
-
-/// A Starlark string value for `generator_name`, valid for any heap lifetime while the build
-/// arena lives: the value ends up in a rule's attributes, held by a package of an evaluator's
-/// graph (or by the evaluation running now), and the arena is released only once no evaluator
-/// is left.
-fn alloc_generator_name<'v>(generator_name: &str) -> Value<'v> {
-    let heap = FrozenHeap::new();
-    let value = heap.alloc_str(generator_name).to_frozen_value();
-    blaze_util::build_arena::slot::<GeneratorNameHeaps>()
-        .0
-        .lock()
-        .push(heap.into_ref());
-    value.to_value()
 }
 
 /// Java `entry.location` (a builtin frame has `Location.BUILTIN`).

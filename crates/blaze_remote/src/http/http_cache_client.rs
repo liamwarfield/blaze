@@ -23,16 +23,22 @@
 //!
 //! PORT: Java runs each request through a pipeline of Netty handlers on an event loop, over a
 //! `FixedChannelPool` (`--remote_max_connections` > 0) or a `SimpleChannelPool`. Here a request
-//! runs on a blocking connection taken from [`ConnectionPool`] (same limit, connections kept
-//! alive and reused last-in first-out as Netty's pool does), on the calling task's thread
-//! (`tokio::task::block_in_place`); the response is read with the downloader's HTTP stack
+//! runs on a blocking connection taken from [`ConnectionPool`] (same limit, queued acquisitions
+//! served first in first out, connections kept alive and reused last-in first-out as Netty's
+//! pool does). The channel is acquired on the calling thread, in call order, as Java's
+//! `acquireUploadChannel` / `acquireDownloadChannel` are: an idle connection or a non-blocking
+//! connect started at once; the transfer then runs on an upload's own task
+//! (`tokio::task::block_in_place`) or on a download's own thread of the blocking pool, so that
+//! the transfers a caller waits for together proceed at once; the response is read with the
+//! downloader's HTTP stack
 //! (`blaze_repo_fetch::downloader::socket_transport`). The idle timeout (`IdleTimeoutHandler`:
 //! no read or write for `--remote_timeout`) is the socket's read and write timeout.
 //!
 //! Where the Netty plumbing went:
-//! - `acquireUploadChannel` / `acquireDownloadChannel`: [`ConnectionPool::acquire`] then
-//!   `connect`; `releaseUploadChannel` / `releaseDownloadChannel`: [`ConnectionPool::release`]
-//!   (a connection is kept only after a complete keep-alive response).
+//! - `acquireUploadChannel` / `acquireDownloadChannel`: [`ConnectionPool::acquire`] (its
+//!   [`Lease`] is `channelReady`), then [`ConnectionPool::connection`] (`notifyConnect`);
+//!   `releaseUploadChannel` / `releaseDownloadChannel`: [`ConnectionPool::release`] (a
+//!   connection is kept after a keep-alive response).
 //! - `HttpUploadHandler.buildRequest` / `HttpDownloadHandler.buildRequest`: the request heads of
 //!   `upload` and `download`; `HttpUploadHandler.buildBody`: the body loop of `exchange_upload`.
 //! - `HttpDownloadHandler.succeedAndReset`, `failAndClose`, `failAndReset` and
@@ -63,6 +69,7 @@
 // PORT: skipped, handler and command objects: the client's fields and the method parameters hold their state: AbstractHttpHandler.<init>, HttpUploadHandler.<init>, HttpDownloadHandler.<init>, IdleTimeoutHandler.<init>, DownloadCommand.<init>, DownloadCommand.uri, DownloadCommand.casDownload, DownloadCommand.digest, DownloadCommand.out, DownloadCommand.offset, UploadCommand.<init>, UploadCommand.uri, UploadCommand.casUpload, UploadCommand.hash, UploadCommand.data, UploadCommand.contentLength
 // PORT: skipped, the response is kept as its status and headers on the exception (`HttpException.status`, `headers`): HttpException.response
 
+use std::collections::VecDeque;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::os::unix::net::UnixStream;
@@ -78,8 +85,9 @@ use blaze_repo_fetch::downloader::socket_transport::{
 use blaze_repo_fetch::downloader::streams::InputStream;
 use blaze_repo_fetch::errors::{IoException, IoExceptionKind};
 use blaze_repo_fetch::uri::JavaUri;
+use futures::channel::oneshot;
 use indexmap::IndexSet;
-use parking_lot::{Condvar, Mutex};
+use parking_lot::Mutex;
 use prost::Message;
 use tokio_rustls::rustls::pki_types::ServerName;
 use tokio_rustls::rustls::{ClientConfig, ClientConnection, StreamOwned};
@@ -138,8 +146,39 @@ impl Read for Stream {
         match self {
             Stream::Tcp(s) => s.read(buf),
             Stream::Unix(s) => s.read(buf),
-            Stream::TlsTcp(s) => s.read(buf),
-            Stream::TlsUnix(s) => s.read(buf),
+            Stream::TlsTcp(s) => tls_read(s, buf),
+            Stream::TlsUnix(s) => tls_read(s, buf),
+        }
+    }
+}
+
+/// Reads plaintext without first flushing the records rustls still has to send (which
+/// `StreamOwned::read` does, in a blocking write): after an answer that came before the body was
+/// written, those records wait for a server that may not read them, and the response must still
+/// be read. Netty's `SslHandler` decodes inbound records independently of its pending writes.
+/// (Review 2026-11-19 round 9, S3.)
+// Java: io/netty/handler/ssl/SslHandler.java SslHandler.decode
+fn tls_read<S: Read + Write>(
+    s: &mut StreamOwned<ClientConnection, S>,
+    buf: &mut [u8],
+) -> io::Result<usize> {
+    if s.conn.is_handshaking() {
+        return s.read(buf);
+    }
+    loop {
+        match s.conn.reader().read(buf) {
+            Ok(n) => return Ok(n),
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+            Err(e) => return Err(e),
+        }
+        // More input is needed: read records (the socket's read timeout applies).
+        let n = s.conn.read_tls(&mut s.sock)?;
+        s.conn
+            .process_new_packets()
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+        if n == 0 {
+            // End of stream: the reader now reports a clean close (0) or `UnexpectedEof`.
+            return s.conn.reader().read(buf);
         }
     }
 }
@@ -228,75 +267,421 @@ fn unix_peek(s: &UnixStream) -> io::Result<usize> {
     }
 }
 
+/// Where new connections go and how they are set up: `Bootstrap.remoteAddress`,
+/// `CONNECT_TIMEOUT_MILLIS = 1000 * timeoutSeconds`, and the `ssl-handler` the pool handler's
+/// `channelCreated` adds.
+// Java: com/google/devtools/build/lib/remote/http/HttpCacheClient.java:261 HttpCacheClient.<init>
+// Java: com/google/devtools/build/lib/remote/http/HttpCacheClient.java:277 HttpCacheClient.<init>
+struct Connector {
+    address: CacheAddress,
+    tls: Option<Arc<ClientConfig>>,
+    /// `sslCtx.newEngine(alloc, hostname, port)`'s host.
+    tls_host: String,
+    /// `timeoutSeconds`: the connect timeout and the idle timeout (`None` for 0).
+    timeout_seconds: i32,
+}
+
+/// The address a connect went to, as `SocketAddress.toString()` prints it in Netty's messages.
+enum RemoteAddress {
+    /// `InetSocketAddress`: `<host>/<address>:<port>`.
+    Inet { host: String, address: SocketAddr },
+    /// `DomainSocketAddress`: the socket's path.
+    Unix(PathBuf),
+}
+
+impl RemoteAddress {
+    fn java_string(&self) -> String {
+        match self {
+            RemoteAddress::Inet { host, address } => format!("{host}/{address}"),
+            RemoteAddress::Unix(path) => path.display().to_string(),
+        }
+    }
+}
+
+/// A connect that has been started: the socket is non-blocking and its connection request has
+/// been sent (`Bootstrap.connect()` has returned its future; the channel becomes active, or
+/// the connect fails or times out, later on the event loop).
+struct StartedConnect {
+    socket: socket2::Socket,
+    remote: RemoteAddress,
+    started: Instant,
+}
+
+impl Connector {
+    fn idle_timeout(&self) -> Option<Duration> {
+        (self.timeout_seconds > 0).then(|| Duration::from_secs(self.timeout_seconds as u64))
+    }
+
+    /// `Bootstrap.connect()`: resolves the address and starts the connect without waiting for
+    /// it. A connect that fails at once fails here (the acquisition's future fails).
+    // Java: io/netty/channel/pool/SimpleChannelPool.java SimpleChannelPool.connectChannel
+    fn start(&self) -> io::Result<StartedConnect> {
+        use socket2::{Domain, Protocol, SockAddr, Socket, Type};
+        let in_progress = |e: &io::Error| {
+            matches!(
+                e.raw_os_error(),
+                Some(libc::EINPROGRESS) | Some(libc::EAGAIN)
+            )
+        };
+        match &self.address {
+            CacheAddress::Inet { host, port } => {
+                // `new InetSocketAddress(host, port)` resolves the host once
+                // (`InetAddress.getByName`): its first address, IPv4 addresses before IPv6 ones
+                // (the JDK's default `java.net.preferIPv6Addresses=false`).
+                let addresses: Vec<SocketAddr> = (host.as_str(), *port)
+                    .to_socket_addrs()
+                    .map_err(|e| unknown_host(host, &e))?
+                    .collect();
+                let address = addresses
+                    .iter()
+                    .find(|a| a.is_ipv4())
+                    .or_else(|| addresses.first())
+                    .copied()
+                    .ok_or_else(|| {
+                        unknown_host(host, &io::Error::other("Name or service not known"))
+                    })?;
+                let socket = Socket::new(
+                    Domain::for_address(address),
+                    Type::STREAM,
+                    Some(Protocol::TCP),
+                )?;
+                socket.set_nonblocking(true)?;
+                match socket.connect(&address.into()) {
+                    Ok(()) => {}
+                    Err(e) if in_progress(&e) => {}
+                    Err(e) => return Err(connect_exception(&e, host, &address)),
+                }
+                Ok(StartedConnect {
+                    socket,
+                    remote: RemoteAddress::Inet {
+                        host: host.clone(),
+                        address,
+                    },
+                    started: Instant::now(),
+                })
+            }
+            CacheAddress::DomainSocket(path) => {
+                let socket = Socket::new(Domain::UNIX, Type::STREAM, None)?;
+                socket.set_nonblocking(true)?;
+                match socket.connect(&SockAddr::unix(path)?) {
+                    Ok(()) => {}
+                    Err(e) if in_progress(&e) => {}
+                    Err(e) => return Err(unix_connect_exception(&e, path)),
+                }
+                Ok(StartedConnect {
+                    socket,
+                    remote: RemoteAddress::Unix(path.clone()),
+                    started: Instant::now(),
+                })
+            }
+        }
+    }
+
+    /// Waits for a started connect (`notifyConnect`), within `CONNECT_TIMEOUT_MILLIS` of its
+    /// start, and sets the connection up: the idle timeout, and TLS (`channelCreated`).
+    // Java: io/netty/channel/nio/AbstractNioChannel.java AbstractNioChannel.AbstractNioUnsafe.connect
+    // Java: io/netty/channel/nio/AbstractNioChannel.java AbstractNioChannel.AbstractNioUnsafe.finishConnect
+    fn finish(&self, started: StartedConnect) -> io::Result<Connection> {
+        use std::os::fd::AsRawFd;
+        let StartedConnect {
+            socket,
+            remote,
+            started,
+        } = started;
+        let deadline = self.idle_timeout().map(|t| started + t);
+        let revents = poll_fd(socket.as_raw_fd(), libc::POLLOUT, remaining(deadline))?;
+        if revents == 0 {
+            // ConnectTimeoutException("connection timed out after " + connectTimeoutMillis +
+            // " ms: " + remoteAddress)
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                errors::JavaException {
+                    class_name: "io.netty.channel.ConnectTimeoutException",
+                    message: format!(
+                        "connection timed out after {} ms: {}",
+                        1000 * self.timeout_seconds,
+                        remote.java_string()
+                    ),
+                },
+            ));
+        }
+        if let Some(e) = socket.take_error()? {
+            return Err(match &remote {
+                RemoteAddress::Inet { host, address } => connect_exception(&e, host, address),
+                RemoteAddress::Unix(path) => unix_connect_exception(&e, path),
+            });
+        }
+        socket.set_nonblocking(false)?;
+        let stream = match remote {
+            RemoteAddress::Inet { .. } => {
+                let tcp: TcpStream = socket.into();
+                tcp.set_read_timeout(self.idle_timeout())?;
+                tcp.set_write_timeout(self.idle_timeout())?;
+                let _ = tcp.set_nodelay(true);
+                match &self.tls {
+                    Some(tls) => Stream::TlsTcp(Box::new(StreamOwned::new(
+                        client_connection(tls, &self.tls_host)?,
+                        tcp,
+                    ))),
+                    None => Stream::Tcp(tcp),
+                }
+            }
+            RemoteAddress::Unix(_) => {
+                let unix: UnixStream = socket.into();
+                unix.set_read_timeout(self.idle_timeout())?;
+                unix.set_write_timeout(self.idle_timeout())?;
+                match &self.tls {
+                    Some(tls) => Stream::TlsUnix(Box::new(StreamOwned::new(
+                        client_connection(tls, &self.tls_host)?,
+                        unix,
+                    ))),
+                    None => Stream::Unix(unix),
+                }
+            }
+        };
+        Ok(BufReader::new(stream))
+    }
+}
+
+/// What an acquisition got: an idle connection, or a connect it started.
+enum Acquired {
+    Idle(Connection),
+    Connecting(io::Result<StartedConnect>),
+}
+
 /// The channel pool: at most `max` connections in use when `max` is set (`FixedChannelPool`;
-/// further acquisitions wait), idle connections kept for reuse, the most recently released
-/// first (`SimpleChannelPool`'s `lastRecentUsed`).
+/// further acquisitions queue, first in first out, and each release hands its slot to the
+/// oldest), idle connections kept for reuse, the most recently released first
+/// (`SimpleChannelPool`'s `lastRecentUsed`).
+///
+/// An acquisition takes its place on the calling thread, in call order, and never blocks it:
+/// it takes an idle connection or starts a connect at once, or queues (`acquire0`); the
+/// connect is completed by whoever waits for the [`Lease`].
+// Java: io/netty/channel/pool/FixedChannelPool.java FixedChannelPool.acquire0
+// Java: io/netty/channel/pool/FixedChannelPool.java FixedChannelPool.runTaskQueue
+// Java: io/netty/channel/pool/SimpleChannelPool.java SimpleChannelPool.acquireHealthyFromPoolOrNew
 struct ConnectionPool {
     state: Mutex<PoolState>,
-    released: Condvar,
     max: Option<usize>,
+    connector: Connector,
 }
 
 struct PoolState {
     idle: Vec<Connection>,
     in_use: usize,
     closed: bool,
+    /// `pendingAcquireQueue`.
+    pending: VecDeque<oneshot::Sender<io::Result<Acquired>>>,
+}
+
+/// The most recently released idle connection that is still open (`pollChannel`, then
+/// `ChannelHealthChecker.ACTIVE`: a connection the server closed is not reused).
+fn take_healthy(idle: &mut Vec<Connection>) -> Option<Connection> {
+    while let Some(connection) = idle.pop() {
+        if is_open(&connection) {
+            return Some(connection);
+        }
+    }
+    None
 }
 
 impl ConnectionPool {
-    fn new(max: Option<usize>) -> ConnectionPool {
+    fn new(max: Option<usize>, connector: Connector) -> ConnectionPool {
         ConnectionPool {
             state: Mutex::new(PoolState {
                 idle: Vec::new(),
                 in_use: 0,
                 closed: false,
+                pending: VecDeque::new(),
             }),
-            released: Condvar::new(),
             max,
+            connector,
         }
     }
 
-    /// Takes a slot, and an idle connection if there is one.
-    fn acquire(&self) -> io::Result<Option<Connection>> {
-        let mut state = self.state.lock();
-        loop {
+    /// `channelPool.acquire()`: a slot and an idle connection or a started connect now, or a
+    /// place in the queue.
+    fn acquire(self: &Arc<Self>) -> Lease {
+        let idle = {
+            let mut state = self.state.lock();
             if state.closed {
-                // FixedChannelPool.acquire after close: IllegalStateException("FixedChannelPool
+                // FixedChannelPool.acquire0 after close: IllegalStateException("FixedChannelPool
                 // was closed").
-                return Err(errors::io_exception("FixedChannelPool was closed"));
+                return Lease::granted(
+                    None,
+                    Err(errors::io_exception("FixedChannelPool was closed")),
+                );
             }
-            if self.max.is_none_or(|max| state.in_use < max) {
-                state.in_use += 1;
-                // ChannelHealthChecker.ACTIVE: a connection the server closed is not reused.
-                while let Some(connection) = state.idle.pop() {
-                    if is_open(&connection) {
-                        return Ok(Some(connection));
-                    }
-                }
-                return Ok(None);
+            if self.max.is_some_and(|max| state.in_use >= max) {
+                let (sender, receiver) = oneshot::channel();
+                state.pending.push_back(sender);
+                return Lease {
+                    pool: Some(self.clone()),
+                    state: LeaseState::Waiting(receiver),
+                };
             }
-            self.released.wait(&mut state);
+            state.in_use += 1;
+            take_healthy(&mut state.idle)
+        };
+        let acquired = match idle {
+            Some(connection) => Acquired::Idle(connection),
+            None => Acquired::Connecting(self.connector.start()),
+        };
+        Lease::granted(Some(self.clone()), Ok(acquired))
+    }
+
+    /// The connection of an acquisition, once its connect has completed; a failed connect gives
+    /// the slot back (`AcquireListener`: `decrementAndRunTaskQueue`).
+    fn connection(&self, acquired: Acquired) -> io::Result<Connection> {
+        let result = match acquired {
+            Acquired::Idle(connection) => return Ok(connection),
+            Acquired::Connecting(started) => started.and_then(|s| self.connector.finish(s)),
+        };
+        if result.is_err() {
+            self.release(None);
+        }
+        result
+    }
+
+    /// Gives an acquisition nobody used back.
+    fn give_back(&self, acquired: Acquired) {
+        match acquired {
+            Acquired::Idle(connection) => self.release(Some(connection)),
+            Acquired::Connecting(_) => self.release(None),
         }
     }
 
-    /// Gives the slot back, with the connection when it can carry another request.
+    /// Gives the slot back, with the connection when it can carry another request, and hands
+    /// slots to the queued acquisitions (`decrementAndRunTaskQueue`).
+    // Java: io/netty/channel/pool/FixedChannelPool.java FixedChannelPool.decrementAndRunTaskQueue
     fn release(&self, connection: Option<Connection>) {
-        let mut state = self.state.lock();
-        state.in_use -= 1;
-        if let Some(connection) = connection
-            && !state.closed
-        {
-            state.idle.push(connection);
+        let grants = {
+            let mut state = self.state.lock();
+            state.in_use -= 1;
+            if let Some(connection) = connection
+                && !state.closed
+            {
+                state.idle.push(connection);
+            }
+            let mut grants = Vec::new();
+            while !state.closed && self.max.is_none_or(|max| state.in_use < max) {
+                let Some(sender) = state.pending.pop_front() else {
+                    break;
+                };
+                if sender.is_canceled() {
+                    continue;
+                }
+                state.in_use += 1;
+                let idle = take_healthy(&mut state.idle);
+                grants.push((sender, idle));
+            }
+            grants
+        };
+        for (sender, idle) in grants {
+            let acquired = match idle {
+                Some(connection) => Acquired::Idle(connection),
+                None => Acquired::Connecting(self.connector.start()),
+            };
+            if let Err(Ok(acquired)) = sender.send(Ok(acquired)) {
+                // The acquisition went away meanwhile.
+                self.give_back(acquired);
+            }
         }
-        self.released.notify_one();
     }
 
-    /// `channelPool.close()`: closes the idle connections.
+    /// `channelPool.close()`: closes the idle connections and fails the queued acquisitions
+    /// with `ClosedChannelException` (`FixedChannelPool.close0`).
     fn close(&self) {
-        let mut state = self.state.lock();
-        state.closed = true;
-        state.idle.clear();
-        self.released.notify_all();
+        let pending = {
+            let mut state = self.state.lock();
+            state.closed = true;
+            state.idle.clear();
+            std::mem::take(&mut state.pending)
+        };
+        for sender in pending {
+            let _ = sender.send(Err(ClosedChannelException.into()));
+        }
+    }
+}
+
+/// The future of an acquisition (`acquireUploadChannel` / `acquireDownloadChannel`'s
+/// `channelReady`). It completes on a later poll, never on the one that finds it granted: Java
+/// completes it on the channel's event loop, after the caller's thread has gone on.
+struct Lease {
+    pool: Option<Arc<ConnectionPool>>,
+    state: LeaseState,
+}
+
+enum LeaseState {
+    Granted {
+        acquired: Option<io::Result<Acquired>>,
+        yielded: bool,
+    },
+    Waiting(oneshot::Receiver<io::Result<Acquired>>),
+}
+
+impl Lease {
+    fn granted(pool: Option<Arc<ConnectionPool>>, acquired: io::Result<Acquired>) -> Lease {
+        Lease {
+            pool,
+            state: LeaseState::Granted {
+                acquired: Some(acquired),
+                yielded: false,
+            },
+        }
+    }
+}
+
+impl std::future::Future for Lease {
+    type Output = io::Result<Acquired>;
+
+    fn poll(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<io::Result<Acquired>> {
+        use std::task::Poll;
+        match &mut self.state {
+            LeaseState::Granted { acquired, yielded } => {
+                if !*yielded {
+                    *yielded = true;
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
+                Poll::Ready(acquired.take().expect("a lease is completed once"))
+            }
+            LeaseState::Waiting(receiver) => match std::pin::Pin::new(receiver).poll(cx) {
+                Poll::Pending => Poll::Pending,
+                Poll::Ready(Ok(acquired)) => {
+                    self.state = LeaseState::Granted {
+                        acquired: None,
+                        yielded: true,
+                    };
+                    Poll::Ready(acquired)
+                }
+                Poll::Ready(Err(_canceled)) => Poll::Ready(Err(ClosedChannelException.into())),
+            },
+        }
+    }
+}
+
+impl Drop for Lease {
+    fn drop(&mut self) {
+        let Some(pool) = &self.pool else {
+            return;
+        };
+        match &mut self.state {
+            LeaseState::Granted { acquired, .. } => {
+                if let Some(Ok(acquired)) = acquired.take() {
+                    pool.give_back(acquired);
+                }
+            }
+            LeaseState::Waiting(receiver) => {
+                receiver.close();
+                if let Ok(Some(Ok(acquired))) = receiver.try_recv() {
+                    pool.give_back(acquired);
+                }
+            }
+        }
     }
 }
 
@@ -310,9 +695,7 @@ pub struct HttpCacheClient {
     verify_downloads: bool,
     digest_util: DigestUtil,
     retrier: Arc<RemoteRetrier>,
-    address: CacheAddress,
-    tls: Option<Arc<ClientConfig>>,
-    pool: ConnectionPool,
+    pool: Arc<ConnectionPool>,
     is_closed: AtomicBool,
     /// `creds` (guarded by `credentialsLock`).
     creds: Option<Arc<dyn Credentials>>,
@@ -374,6 +757,7 @@ impl HttpCacheClient {
             panic!("IllegalStateException: an https remote cache needs its TLS configuration");
         }
         let max = (remote_max_connections > 0).then_some(remote_max_connections as usize);
+        let tls_host = host_for_tls(&uri);
         Ok(HttpCacheClient {
             uri,
             timeout_seconds,
@@ -382,9 +766,15 @@ impl HttpCacheClient {
             verify_downloads,
             digest_util,
             retrier,
-            address,
-            tls: if use_tls { tls } else { None },
-            pool: ConnectionPool::new(max),
+            pool: Arc::new(ConnectionPool::new(
+                max,
+                Connector {
+                    address,
+                    tls: if use_tls { tls } else { None },
+                    tls_host,
+                    timeout_seconds,
+                },
+            )),
             is_closed: AtomicBool::new(false),
             creds,
             last_refresh_time: Mutex::new(0),
@@ -398,75 +788,15 @@ impl HttpCacheClient {
         (self.timeout_seconds > 0).then(|| Duration::from_secs(self.timeout_seconds as u64))
     }
 
-    /// Opens a connection: `Bootstrap.connect` with `CONNECT_TIMEOUT_MILLIS = 1000 *
-    /// timeoutSeconds`, then the TLS handshake of the pool's `ssl-handler`.
-    fn connect(&self) -> io::Result<Connection> {
-        let connect_timeout = self.idle_timeout();
-        let host = self.uri.get_host().unwrap_or_default().to_string();
-        let port = self.uri.get_port();
-        let stream = match &self.address {
-            CacheAddress::Inet { host, port } => {
-                // `new InetSocketAddress(host, port)` resolves the host once
-                // (`InetAddress.getByName`): its first address, IPv4 addresses before IPv6 ones
-                // (the JDK's default `java.net.preferIPv6Addresses=false`).
-                let addresses: Vec<SocketAddr> = (host.as_str(), *port)
-                    .to_socket_addrs()
-                    .map_err(|e| unknown_host(host, &e))?
-                    .collect();
-                let address = addresses
-                    .iter()
-                    .find(|a| a.is_ipv4())
-                    .or_else(|| addresses.first())
-                    .copied()
-                    .ok_or_else(|| {
-                        unknown_host(host, &io::Error::other("Name or service not known"))
-                    })?;
-                let tcp = match connect_timeout {
-                    Some(timeout) => TcpStream::connect_timeout(&address, timeout),
-                    None => TcpStream::connect(address),
-                }
-                .map_err(|e| connect_exception(&e, host, &address))?;
-                tcp.set_read_timeout(self.idle_timeout())?;
-                tcp.set_write_timeout(self.idle_timeout())?;
-                let _ = tcp.set_nodelay(true);
-                match &self.tls {
-                    Some(tls) => Stream::TlsTcp(Box::new(StreamOwned::new(
-                        client_connection(tls, &host_for_tls(&self.uri))?,
-                        tcp,
-                    ))),
-                    None => Stream::Tcp(tcp),
-                }
-            }
-            CacheAddress::DomainSocket(path) => {
-                let unix = UnixStream::connect(path).map_err(|e| {
-                    errors::io_exception(format!(
-                        "connect(..) failed: {}: {}",
-                        java_io_message(&e),
-                        path.display()
-                    ))
-                })?;
-                unix.set_read_timeout(self.idle_timeout())?;
-                unix.set_write_timeout(self.idle_timeout())?;
-                match &self.tls {
-                    Some(tls) => Stream::TlsUnix(Box::new(StreamOwned::new(
-                        client_connection(tls, &host_for_tls(&self.uri))?,
-                        unix,
-                    ))),
-                    None => Stream::Unix(unix),
-                }
-            }
-        };
-        let _ = (host, port);
-        Ok(BufReader::new(stream))
-    }
-
     /// `downloadBlob` / `downloadActionResult`'s `get(digest, out, casBytesDownloaded)`: one
-    /// download attempt with its refresh of expired credentials.
+    /// download attempt with its refresh of expired credentials. `lease` is the channel the
+    /// caller acquired (`acquireDownloadChannel()`, on the calling thread).
     // Java: com/google/devtools/build/lib/remote/http/HttpCacheClient.java:479 HttpCacheClient.get
-    fn get(
+    async fn get(
         &self,
+        lease: Lease,
         digest: &Digest,
-        out: &mut dyn Write,
+        out: &mut (dyn Write + Send),
         cas_bytes_downloaded: Option<&AtomicI64>,
     ) -> io::Result<()> {
         let data_written = AtomicBool::new(false);
@@ -477,7 +807,10 @@ impl HttpCacheClient {
             cas_bytes_downloaded,
         };
         let cas_download = cas_bytes_downloaded.is_some();
-        match self.download(digest, cas_download, &mut wrapped_out, offset) {
+        match self
+            .download(lease, digest, cas_download, &mut wrapped_out, offset)
+            .await
+        {
             Ok(()) => Ok(()),
             Err(cause) => {
                 let Some(http_exception) = errors::downcast_ref::<HttpException>(&cause) else {
@@ -485,14 +818,16 @@ impl HttpCacheClient {
                 };
                 if !data_written.load(Ordering::SeqCst) && self.auth_token_expired(http_exception) {
                     // The error is due to an auth token having expired. Let's try again.
-                    match self.refresh_credentials() {
+                    match blocking(|| self.refresh_credentials()) {
                         Ok(()) => {
-                            return self.get_after_credential_refresh(
-                                digest,
-                                cas_download,
-                                &mut wrapped_out,
-                                offset,
-                            );
+                            return self
+                                .get_after_credential_refresh(
+                                    digest,
+                                    cas_download,
+                                    &mut wrapped_out,
+                                    offset,
+                                )
+                                .await;
                         }
                         // cause.addSuppressed(e): the cause is what fails.
                         Err(_suppressed) => return Err(cause),
@@ -505,15 +840,20 @@ impl HttpCacheClient {
         }
     }
 
+    /// The download again after a refresh; its channel is acquired when it runs.
     // Java: com/google/devtools/build/lib/remote/http/HttpCacheClient.java:570 HttpCacheClient.getAfterCredentialRefresh
-    fn get_after_credential_refresh(
+    async fn get_after_credential_refresh(
         &self,
         digest: &Digest,
         cas_download: bool,
-        out: &mut dyn Write,
+        out: &mut (dyn Write + Send),
         offset: i64,
     ) -> io::Result<()> {
-        match self.download(digest, cas_download, out, offset) {
+        let lease = self.pool.acquire();
+        match self
+            .download(lease, digest, cas_download, out, offset)
+            .await
+        {
             Ok(()) => Ok(()),
             Err(cause) => {
                 if let Some(http_exception) = errors::downcast_ref::<HttpException>(&cause)
@@ -526,18 +866,10 @@ impl HttpCacheClient {
         }
     }
 
-    /// One `DownloadCommand` on a pooled connection: `acquireDownloadChannel`,
-    /// `HttpDownloadHandler.write` and `channelRead0`, `releaseDownloadChannel`.
+    /// The request head of a `DownloadCommand` (`HttpDownloadHandler.write`: built when the
+    /// channel is ready, so the credentials are read then).
     // Java: com/google/devtools/build/lib/remote/http/HttpDownloadHandler.java:149 HttpDownloadHandler.write
-    // Java: com/google/devtools/build/lib/remote/http/HttpDownloadHandler.java:70 HttpDownloadHandler.channelRead0
-    fn download(
-        &self,
-        digest: &Digest,
-        cas_download: bool,
-        out: &mut dyn Write,
-        offset: i64,
-    ) -> io::Result<()> {
-        let path = construct_path(&self.uri, &digest.hash, cas_download);
+    fn download_request(&self, path: &str) -> io::Result<Vec<u8>> {
         let mut headers: Vec<(String, String)> = Vec::new();
         // buildRequest(path, constructHost(uri))
         set_header(&mut headers, "host", &construct_host(&self.uri));
@@ -547,26 +879,66 @@ impl HttpCacheClient {
         self.add_credential_headers(&mut headers)?;
         self.add_extra_remote_headers(&mut headers);
         self.add_user_agent_header(&mut headers);
-        let request = request_head("GET", &path, &headers);
+        Ok(request_head("GET", path, &headers))
+    }
 
-        let connection = match self.pool.acquire()? {
-            Some(connection) => connection,
-            None => match self.connect() {
-                Ok(connection) => connection,
+    /// One `DownloadCommand` on a pooled connection: the acquired channel,
+    /// `HttpDownloadHandler.write` and `channelRead0`, `releaseDownloadChannel`.
+    ///
+    /// The transfer runs on a thread of its own, as each download has its own channel on an
+    /// event loop in Java, so that the downloads a caller waits for together proceed at once;
+    /// what arrives is written to `out` here, by the caller's task.
+    // Java: com/google/devtools/build/lib/remote/http/HttpDownloadHandler.java:149 HttpDownloadHandler.write
+    // Java: com/google/devtools/build/lib/remote/http/HttpDownloadHandler.java:70 HttpDownloadHandler.channelRead0
+    async fn download(
+        &self,
+        lease: Lease,
+        digest: &Digest,
+        cas_download: bool,
+        out: &mut (dyn Write + Send),
+        offset: i64,
+    ) -> io::Result<()> {
+        let acquired = lease.await?;
+        let path = construct_path(&self.uri, &digest.hash, cas_download);
+        let request = self.download_request(&path);
+        let pool = self.pool.clone();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel::<Vec<u8>>(4);
+        let transfer = on_blocking_thread(move || {
+            let connection = pool.connection(acquired)?;
+            let request = match request {
+                Ok(request) => request,
                 Err(e) => {
-                    self.pool.release(None);
+                    // An exception thrown by the handler's `write` fails the promise; the
+                    // channel stays open and goes back to the pool.
+                    pool.release(Some(connection));
                     return Err(e);
                 }
-            },
-        };
-        let mut state = DownloadState {
-            path: path.clone(),
-            bytes_received: 0,
-            content_length: -1,
-        };
-        let (kept, result) = Self::exchange_download(connection, &request, out, offset, &mut state);
-        self.pool.release(kept);
-        result
+            };
+            let mut state = DownloadState {
+                path,
+                bytes_received: 0,
+                content_length: -1,
+            };
+            let mut sink = ChunkSink(sender);
+            let (kept, result) =
+                Self::exchange_download(connection, &request, &mut sink, offset, &mut state);
+            pool.release(kept);
+            result
+        });
+        let mut write_error: Option<io::Error> = None;
+        while let Some(chunk) = receiver.recv().await {
+            if let Err(e) = out.write_all(&chunk) {
+                // An exception in `channelRead0` (the output stream's): `failAndClose`.
+                write_error = Some(e);
+                break;
+            }
+        }
+        drop(receiver);
+        let result = transfer.await;
+        match write_error {
+            Some(e) => Err(e),
+            None => result,
+        }
     }
 
     /// Writes the request and reads the response; gives the connection back when it can carry
@@ -722,16 +1094,18 @@ impl HttpCacheClient {
         }
     }
 
-    /// One `UploadCommand` (`uploadAsync` with its refresh of expired credentials).
+    /// One `UploadCommand` (`uploadAsync` with its refresh of expired credentials). `lease` is
+    /// the channel the caller acquired (`acquireUploadChannel()`, on the calling thread).
     // Java: com/google/devtools/build/lib/remote/http/HttpCacheClient.java:634 HttpCacheClient.uploadAsync
-    fn upload_async(
+    async fn upload_async(
         &self,
+        lease: Lease,
         key: &str,
         length: i64,
         blob: &dyn Blob,
         cas_upload: bool,
     ) -> io::Result<()> {
-        match self.upload(key, length, blob, cas_upload) {
+        match self.upload(lease, key, length, blob, cas_upload).await {
             Ok(()) => Ok(()),
             Err(cause) => {
                 let Some(http_exception) = errors::downcast_ref::<HttpException>(&cause) else {
@@ -742,21 +1116,21 @@ impl HttpCacheClient {
                 // `FileInputStream`); the retry then sends the body again from its start (a new
                 // stream of the blob).
                 if self.auth_token_expired(http_exception) && blob.supports_reset() {
-                    self.refresh_credentials()?;
-                    // uploadAfterCredentialRefresh
-                    return self.upload(key, length, blob, cas_upload);
+                    blocking(|| self.refresh_credentials())?;
+                    // uploadAfterCredentialRefresh: its channel is acquired when it runs.
+                    // Java: com/google/devtools/build/lib/remote/http/HttpCacheClient.java:696 HttpCacheClient.uploadAfterCredentialRefresh
+                    let lease = self.pool.acquire();
+                    return self.upload(lease, key, length, blob, cas_upload).await;
                 }
                 Err(cause)
             }
         }
     }
 
-    /// `acquireUploadChannel`, `HttpUploadHandler.write` and `channelRead0`,
-    /// `releaseUploadChannel`.
+    /// The request head of an `UploadCommand` (`HttpUploadHandler.write`: built when the channel
+    /// is ready, so the credentials are read then).
     // Java: com/google/devtools/build/lib/remote/http/HttpUploadHandler.java:89 HttpUploadHandler.write
-    // Java: com/google/devtools/build/lib/remote/http/HttpUploadHandler.java:54 HttpUploadHandler.channelRead0
-    fn upload(&self, key: &str, length: i64, blob: &dyn Blob, cas_upload: bool) -> io::Result<()> {
-        let path = construct_path(&self.uri, key, cas_upload);
+    fn upload_request(&self, path: &str, length: i64) -> io::Result<Vec<u8>> {
         let mut headers: Vec<(String, String)> = Vec::new();
         // buildRequest(path, constructHost(uri), contentLength)
         set_header(&mut headers, "host", &construct_host(&self.uri));
@@ -766,35 +1140,52 @@ impl HttpCacheClient {
         self.add_credential_headers(&mut headers)?;
         self.add_extra_remote_headers(&mut headers);
         self.add_user_agent_header(&mut headers);
-        let request = request_head("PUT", &path, &headers);
+        Ok(request_head("PUT", path, &headers))
+    }
 
-        let connection = match self.pool.acquire()? {
-            Some(connection) => connection,
-            None => match self.connect() {
-                Ok(connection) => connection,
+    /// The acquired channel, `HttpUploadHandler.write` and `channelRead0`,
+    /// `releaseUploadChannel`.
+    // Java: com/google/devtools/build/lib/remote/http/HttpUploadHandler.java:89 HttpUploadHandler.write
+    // Java: com/google/devtools/build/lib/remote/http/HttpUploadHandler.java:54 HttpUploadHandler.channelRead0
+    async fn upload(
+        &self,
+        lease: Lease,
+        key: &str,
+        length: i64,
+        blob: &dyn Blob,
+        cas_upload: bool,
+    ) -> io::Result<()> {
+        let acquired = lease.await?;
+        blocking(|| {
+            let connection = self.pool.connection(acquired)?;
+            let path = construct_path(&self.uri, key, cas_upload);
+            let request = match self.upload_request(&path, length) {
+                Ok(request) => request,
                 Err(e) => {
-                    self.pool.release(None);
+                    // An exception thrown by the handler's `write` fails the promise; the channel
+                    // stays open and goes back to the pool.
+                    self.pool.release(Some(connection));
                     return Err(e);
                 }
-            },
-        };
-        match Self::exchange_upload(
-            connection,
-            &request,
-            blob,
-            &path,
-            length,
-            self.idle_timeout(),
-        ) {
-            Ok((kept, result)) => {
-                self.pool.release(kept);
-                result
+            };
+            match Self::exchange_upload(
+                connection,
+                &request,
+                blob,
+                &path,
+                length,
+                self.idle_timeout(),
+            ) {
+                Ok((kept, result)) => {
+                    self.pool.release(kept);
+                    result
+                }
+                Err(e) => {
+                    self.pool.release(None);
+                    Err(e)
+                }
             }
-            Err(e) => {
-                self.pool.release(None);
-                Err(e)
-            }
-        }
+        })
     }
 
     /// Writes the request and its body, reads the response. `Ok((kept, result))` once a
@@ -819,8 +1210,7 @@ impl HttpCacheClient {
         // Content-Length, so the encoder adds no chunk framing). The response is read as soon as
         // the server sends one, whatever has been written (see `write_watching`).
         let stream = connection.get_mut();
-        let mut answered_early = write_watching(stream, request, idle_timeout)
-            .map_err(write_error)?
+        let answered_early = write_watching(stream, request, idle_timeout).map_err(write_error)?
             == Written::Answered;
         if !answered_early {
             let mut data = blob.get()?;
@@ -835,7 +1225,6 @@ impl HttpCacheClient {
                 if write_watching(stream, &buf[..n], idle_timeout).map_err(write_error)?
                     == Written::Answered
                 {
-                    answered_early = true;
                     break;
                 }
             }
@@ -892,10 +1281,12 @@ impl HttpCacheClient {
         let Some(connection) = body.into_reader() else {
             return Err(ClosedChannelException.into());
         };
-        // PORT: Java releases the channel to the pool after an early answer too, with part of the
-        // body unwritten (its `ChunkedWriteHandler` is removed), so that its next request would
-        // be read as the rest of this body; here such a connection is closed instead.
-        let kept = (is_keep_alive(&head) && !answered_early).then_some(connection);
+        // `if (!HttpUtil.isKeepAlive(response)) ctx.close()`; otherwise the channel goes back to
+        // the pool (`releaseUploadChannel`), also after an answer that came before the whole body
+        // was written: the server then reads the channel's next request as the rest of this body.
+        // Java: com/google/devtools/build/lib/remote/http/HttpUploadHandler.java:66 HttpUploadHandler.channelRead0
+        // Java: com/google/devtools/build/lib/remote/http/HttpCacheClient.java:360 HttpCacheClient.releaseUploadChannel
+        let kept = is_keep_alive(&head).then_some(connection);
         // Supporting more than OK status to be compatible with nginx webdav.
         let result = if !matches!(head.code, 200 | 202 | 201 | 204) {
             let mut error_msg = format!("{} {}", head.code, head.message);
@@ -996,7 +1387,7 @@ struct DownloadState {
 
 /// `get`'s `wrappedOut`: notes that data was written and counts the CAS bytes for resuming.
 struct CountingOut<'a> {
-    out: &'a mut dyn Write,
+    out: &'a mut (dyn Write + Send),
     data_written: &'a AtomicBool,
     cas_bytes_downloaded: Option<&'a AtomicI64>,
 }
@@ -1452,11 +1843,7 @@ fn unknown_host(host: &str, e: &io::Error) -> io::Error {
 
 /// Netty's `AnnotatedConnectException`: `<reason>: <host>/<address>`.
 fn connect_exception(e: &io::Error, host: &str, address: &SocketAddr) -> io::Error {
-    let reason = if e.kind() == io::ErrorKind::TimedOut {
-        "connection timed out".to_string()
-    } else {
-        java_io_message(e)
-    };
+    let reason = java_io_message(e);
     io::Error::new(
         e.kind(),
         errors::JavaException {
@@ -1464,6 +1851,16 @@ fn connect_exception(e: &io::Error, host: &str, address: &SocketAddr) -> io::Err
             message: format!("{reason}: {host}/{address}"),
         },
     )
+}
+
+/// Netty epoll's `Errors.newConnectException` for a Unix domain socket:
+/// `connect(..) failed: <reason>: <path>`.
+fn unix_connect_exception(e: &io::Error, path: &std::path::Path) -> io::Error {
+    errors::io_exception(format!(
+        "connect(..) failed: {}: {}",
+        java_io_message(e),
+        path.display()
+    ))
 }
 
 /// The host the TLS engine is created for (`sslCtx.newEngine(alloc, hostname, port)`).
@@ -1477,22 +1874,24 @@ fn client_connection(tls: &Arc<ClientConfig>, host: &str) -> io::Result<ClientCo
     ClientConnection::new(tls.clone(), server_name).map_err(io::Error::other)
 }
 
-/// A spawned task that is aborted when its handle is dropped.
-struct AbortOnDrop<T>(tokio::task::JoinHandle<T>);
+/// A spawned task that is aborted when its handle is dropped. A task the runtime cancelled (it
+/// shut down under the waiter) ends the upload as interrupted, as a Java upload future is
+/// cancelled when its event loop group shuts down.
+struct AbortOnDrop<T>(tokio::task::JoinHandle<io::Result<T>>);
 
 impl<T> std::future::Future for AbortOnDrop<T> {
-    type Output = T;
+    type Output = io::Result<T>;
 
     fn poll(
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
-    ) -> std::task::Poll<T> {
+    ) -> std::task::Poll<io::Result<T>> {
         std::pin::Pin::new(&mut self.0)
             .poll(cx)
             .map(|result| match result {
                 Ok(value) => value,
                 Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
-                Err(e) => panic!("upload task cancelled: {e}"),
+                Err(_cancelled) => Err(errors::interrupted()),
             })
     }
 }
@@ -1514,6 +1913,30 @@ fn blocking<T>(f: impl FnOnce() -> T) -> T {
     }
 }
 
+/// Runs `f` on a thread of the remote runtime's blocking pool; the transfer of one request, as
+/// one channel's work on an event loop in Java.
+fn on_blocking_thread<T: Send + 'static>(
+    f: impl FnOnce() -> io::Result<T> + Send + 'static,
+) -> AbortOnDrop<T> {
+    AbortOnDrop(crate::runtime::runtime().spawn_blocking(f))
+}
+
+/// What a download's thread writes: handed to the task that writes it to the output stream.
+struct ChunkSink(tokio::sync::mpsc::Sender<Vec<u8>>);
+
+impl Write for ChunkSink {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.0
+            .blocking_send(buf.to_vec())
+            .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "the download was abandoned"))?;
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 #[async_trait]
 impl MissingDigestsFinder for HttpCacheClient {
     // Java: com/google/devtools/build/lib/remote/http/HttpCacheClient.java:729 HttpCacheClient.findMissingDigests
@@ -1532,14 +1955,26 @@ impl RemoteCacheClient for HttpCacheClient {
     /// (`blocking`), and the uploads a caller waits for together (the outputs of an action)
     /// proceed at once, as each upload has its own channel in Java. Dropping the returned future
     /// aborts the task (at its next await; a transfer in progress ends with its socket timeout).
+    ///
+    /// Java runs `uploadBlobImpl` on the calling thread up to `channelPool.acquire()` (the
+    /// retrier's circuit-breaker check, `uploadAsync`, `acquireUploadChannel`), so the uploads
+    /// take their channels in call order. The task is therefore polled once here, on the
+    /// caller, before it is spawned: that poll runs exactly this part and stops at the
+    /// acquisition's [`Lease`], which never completes on the poll that took it.
+    // Java: com/google/devtools/build/lib/remote/http/HttpCacheClient.java:720 HttpCacheClient.uploadBlobImpl
     fn upload_blob_owned(
         self: Arc<Self>,
         context: RemoteActionExecutionContext<'static>,
         digest: Digest,
         blob: Arc<dyn Blob>,
     ) -> futures::future::BoxFuture<'static, io::Result<()>> {
-        let task = crate::runtime::runtime()
-            .spawn(async move { self.upload_blob_impl(&context, &digest, &*blob).await });
+        let mut upload: futures::future::BoxFuture<'static, io::Result<()>> =
+            Box::pin(async move { self.upload_blob_impl(&context, &digest, &*blob).await });
+        let mut cx = std::task::Context::from_waker(futures::task::noop_waker_ref());
+        if let std::task::Poll::Ready(result) = upload.as_mut().poll(&mut cx) {
+            return Box::pin(std::future::ready(result));
+        }
+        let task = crate::runtime::runtime().spawn(upload);
         Box::pin(AbortOnDrop(task))
     }
 
@@ -1581,12 +2016,17 @@ impl RemoteCacheClient for HttpCacheClient {
     ) -> io::Result<Option<ActionResult>> {
         self.retrier
             .execute_async(|| {
-                utils::download_as_action_result(action_key, |digest, data| async move {
-                    let mut data = data;
-                    blocking(|| {
-                        self.get(&digest, &mut data, /* cas_bytes_downloaded= */ None)
-                    })?;
-                    Ok(data)
+                utils::download_as_action_result(action_key, |digest, data| {
+                    // get(...): acquireDownloadChannel() on the calling thread.
+                    let lease = self.pool.acquire();
+                    async move {
+                        let mut data = data;
+                        self.get(
+                            lease, &digest, &mut data, /* cas_bytes_downloaded= */ None,
+                        )
+                        .await?;
+                        Ok(data)
+                    }
                 })
             })
             .await
@@ -1602,14 +2042,16 @@ impl RemoteCacheClient for HttpCacheClient {
         let serialized = bytes::Bytes::from(action_result.encode_to_vec());
         let length = serialized.len() as i64;
         let blob = crate::common::remote_cache_client::BytesBlob(serialized);
-        blocking(|| {
-            self.upload_async(
-                &action_key.digest().hash,
-                length,
-                &blob,
-                /* cas_upload= */ false,
-            )
-        })
+        // uploadAsync: acquireUploadChannel() on the calling thread.
+        let lease = self.pool.acquire();
+        self.upload_async(
+            lease,
+            &action_key.digest().hash,
+            length,
+            &blob,
+            /* cas_upload= */ false,
+        )
+        .await
     }
 
     // Java: com/google/devtools/build/lib/remote/http/HttpCacheClient.java:455 HttpCacheClient.downloadBlob
@@ -1621,26 +2063,36 @@ impl RemoteCacheClient for HttpCacheClient {
     ) -> io::Result<()> {
         let cas_bytes_downloaded = AtomicI64::new(0);
         let cas_bytes_downloaded = &cas_bytes_downloaded;
+        // Each attempt's get(...) acquires its channel on the calling thread (the retrier's
+        // call), before it waits for anything.
         if self.verify_downloads {
-            let digest_out = Mutex::new(self.digest_util.new_digest_output_stream(&mut *out));
+            let digest_out =
+                futures::lock::Mutex::new(self.digest_util.new_digest_output_stream(&mut *out));
             let target = &digest_out;
             self.retrier
-                .execute_async(|| async move {
-                    blocking(|| self.get(digest, &mut *target.lock(), Some(cas_bytes_downloaded)))
+                .execute_async(|| {
+                    let lease = self.pool.acquire();
+                    async move {
+                        let mut out = target.lock().await;
+                        self.get(lease, digest, &mut *out, Some(cas_bytes_downloaded))
+                            .await
+                    }
                 })
                 .await?;
             // Utils.verifyBlobContents(digest, digestOut.digest())
             let actual = digest_out.into_inner().digest();
             utils::verify_blob_contents(digest, &actual)?;
         } else {
-            let target = Mutex::new(&mut *out);
+            let target = futures::lock::Mutex::new(&mut *out);
             let target = &target;
             self.retrier
-                .execute_async(|| async move {
-                    blocking(|| {
-                        let mut out = target.lock();
-                        self.get(digest, &mut **out, Some(cas_bytes_downloaded))
-                    })
+                .execute_async(|| {
+                    let lease = self.pool.acquire();
+                    async move {
+                        let mut out = target.lock().await;
+                        self.get(lease, digest, &mut **out, Some(cas_bytes_downloaded))
+                            .await
+                    }
                 })
                 .await?;
         }
@@ -1655,15 +2107,19 @@ impl RemoteCacheClient for HttpCacheClient {
         blob: &dyn Blob,
     ) -> io::Result<()> {
         self.retrier
-            .execute_async(|| async {
-                blocking(|| {
+            .execute_async(|| {
+                // uploadAsync: acquireUploadChannel() on the calling thread.
+                let lease = self.pool.acquire();
+                async move {
                     self.upload_async(
+                        lease,
                         &digest.hash,
                         digest.size_bytes,
                         blob,
                         /* cas_upload= */ true,
                     )
-                })
+                    .await
+                }
             })
             .await
     }
@@ -1683,5 +2139,184 @@ impl std::fmt::Debug for HttpCacheClient {
             .field("uri", &self.uri.as_str())
             .field("use_tls", &self.use_tls)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod abort_on_drop_tests {
+    use super::*;
+
+    /// Review 2026-11-19 round 9, S4: a runtime that shuts down under the waiter cancels the
+    /// task; the upload ends as interrupted, not with a panic.
+    #[test]
+    fn cancelled_task_is_interrupted() {
+        let runtime = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .unwrap();
+        let task = runtime.spawn(async {
+            futures::future::pending::<()>().await;
+            Ok::<(), io::Error>(())
+        });
+        runtime.shutdown_background();
+        let e = futures::executor::block_on(AbortOnDrop(task)).unwrap_err();
+        assert!(errors::is_interrupted(&e), "{e:?}");
+    }
+}
+
+#[cfg(test)]
+mod connection_pool_tests {
+    //! The order of `FixedChannelPool` / `SimpleChannelPool` acquisitions (review 2026-11-19
+    //! round 9, J1: Java acquires each upload's channel on the calling thread, in call order).
+    use super::*;
+    use std::net::TcpListener;
+    use std::task::{Context, Poll};
+
+    fn pool(max: Option<usize>) -> (Arc<ConnectionPool>, TcpListener) {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let connector = Connector {
+            address: CacheAddress::Inet {
+                host: "127.0.0.1".to_string(),
+                port,
+            },
+            tls: None,
+            tls_host: "127.0.0.1".to_string(),
+            timeout_seconds: 5,
+        };
+        (Arc::new(ConnectionPool::new(max, connector)), listener)
+    }
+
+    fn local_port(connection: &Connection) -> u16 {
+        match connection.get_ref() {
+            Stream::Tcp(s) => s.local_addr().unwrap().port(),
+            _ => unreachable!(),
+        }
+    }
+
+    fn poll_once(lease: &mut Lease) -> Poll<io::Result<Acquired>> {
+        let mut cx = Context::from_waker(futures::task::noop_waker_ref());
+        std::pin::Pin::new(lease).poll(&mut cx)
+    }
+
+    fn connection_of(pool: &ConnectionPool, lease: Lease) -> Connection {
+        let acquired = futures::executor::block_on(lease).unwrap();
+        pool.connection(acquired).unwrap()
+    }
+
+    #[test]
+    fn lease_never_completes_on_the_poll_that_takes_it() {
+        let (pool, _listener) = pool(None);
+        let mut lease = pool.acquire();
+        assert!(poll_once(&mut lease).is_pending());
+        assert!(matches!(
+            poll_once(&mut lease),
+            Poll::Ready(Ok(Acquired::Connecting(Ok(_))))
+        ));
+    }
+
+    #[test]
+    fn queued_acquisitions_are_served_first_in_first_out() {
+        let (pool, _listener) = pool(Some(1));
+        let first = pool.acquire();
+        let mut second = pool.acquire();
+        let mut third = pool.acquire();
+        assert!(matches!(second.state, LeaseState::Waiting(_)));
+        let connection = connection_of(&pool, first);
+        let port = local_port(&connection);
+        pool.release(Some(connection));
+        // The released connection goes to the oldest queued acquisition.
+        assert!(poll_once(&mut third).is_pending());
+        match poll_once(&mut second) {
+            Poll::Ready(Ok(Acquired::Idle(connection))) => {
+                assert_eq!(local_port(&connection), port);
+                pool.release(Some(connection));
+            }
+            _ => panic!("the second acquisition is not served"),
+        }
+        match poll_once(&mut third) {
+            Poll::Ready(Ok(Acquired::Idle(connection))) => {
+                assert_eq!(local_port(&connection), port);
+                pool.release(Some(connection));
+            }
+            _ => panic!("the third acquisition is not served"),
+        }
+    }
+
+    #[test]
+    fn idle_connections_are_reused_last_in_first_out() {
+        let (pool, _listener) = pool(None);
+        let a = pool.acquire();
+        let b = pool.acquire();
+        let a = connection_of(&pool, a);
+        let b = connection_of(&pool, b);
+        let b_port = local_port(&b);
+        pool.release(Some(a));
+        pool.release(Some(b));
+        let again = connection_of(&pool, pool.acquire());
+        assert_eq!(local_port(&again), b_port);
+    }
+
+    #[test]
+    fn a_dropped_queued_acquisition_passes_its_turn_on() {
+        let (pool, _listener) = pool(Some(1));
+        let first = pool.acquire();
+        let second = pool.acquire();
+        let mut third = pool.acquire();
+        drop(second);
+        let connection = connection_of(&pool, first);
+        pool.release(Some(connection));
+        assert!(matches!(
+            poll_once(&mut third),
+            Poll::Ready(Ok(Acquired::Idle(_)))
+        ));
+    }
+
+    #[test]
+    fn an_unused_granted_acquisition_gives_its_slot_back() {
+        let (pool, _listener) = pool(Some(1));
+        let first = pool.acquire();
+        let mut second = pool.acquire();
+        drop(first);
+        // The dropped acquisition's connect is abandoned; the next one starts its own.
+        assert!(matches!(
+            poll_once(&mut second),
+            Poll::Ready(Ok(Acquired::Connecting(Ok(_))))
+        ));
+    }
+
+    #[test]
+    fn close_fails_queued_acquisitions_with_closed_channel_exception() {
+        let (pool, _listener) = pool(Some(1));
+        let _first = pool.acquire();
+        let second = pool.acquire();
+        pool.close();
+        let e = futures::executor::block_on(second).err().unwrap();
+        assert!(
+            errors::downcast_ref::<ClosedChannelException>(&e).is_some(),
+            "{e:?}"
+        );
+        let e = futures::executor::block_on(pool.acquire()).err().unwrap();
+        assert_eq!(e.to_string(), "FixedChannelPool was closed");
+    }
+
+    #[test]
+    fn connect_refused_frees_the_slot() {
+        let (pool, listener) = pool(Some(1));
+        drop(listener);
+        let first = pool.acquire();
+        let mut second = pool.acquire();
+        let acquired = futures::executor::block_on(first).unwrap();
+        let e = pool.connection(acquired).err().unwrap();
+        assert!(
+            e.to_string()
+                .starts_with("Connection refused: 127.0.0.1/127.0.0.1:"),
+            "{e}"
+        );
+        assert!(matches!(
+            poll_once(&mut second),
+            Poll::Ready(Ok(Acquired::Connecting(_)))
+        ));
     }
 }

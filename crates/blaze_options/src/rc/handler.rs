@@ -99,7 +99,7 @@ impl StoredEventHandler {
     }
 }
 
-// Java: com/google/devtools/build/lib/runtime/Command.java:34 Command
+// Java: com/google/devtools/build/lib/runtime/Command.java:28 Command
 /// The parts of a command's `@Command` annotation that option handling needs.
 #[derive(Debug)]
 pub struct Command {
@@ -349,8 +349,9 @@ impl<'p> BlazeOptionHandler<'p> {
         // ProjectFileSupport.handleProjectFiles (commands that analyze) does nothing in Bazel:
         // no module of Bazel's defines a ProjectFile.Provider, so the provider it is given is
         // null.
-        // Java: com/google/devtools/build/lib/runtime/BlazeOptionHandler.java:310 BlazeOptionHandler.parseArgsAndConfigs
-        // Java: com/google/devtools/build/lib/runtime/ProjectFileSupport.java:55 ProjectFileSupport.handleProjectFiles
+        // Java: com/google/devtools/build/lib/runtime/BlazeOptionHandler.java:258 BlazeOptionHandler.parseArgsAndConfigs
+        // Java: com/google/devtools/build/lib/runtime/ProjectFileSupport.java:46 ProjectFileSupport.handleProjectFiles
+        // PORT: skipped, posted only when a project file is read (never in Bazel, see above): GotProjectFileEvent.<init>, GotProjectFileEvent.getProjectFile
 
         self.expand_config_options(event_handler, &command_to_rc_args)?;
         Ok(command_to_rc_args)
@@ -677,7 +678,7 @@ impl ConfigExpander {
         "linux"
     }
 
-    // Java: com/google/devtools/build/lib/runtime/ConfigExpander.java:62 ConfigExpander.shouldEnablePlatformSpecificConfig
+    // Java: com/google/devtools/build/lib/runtime/ConfigExpander.java:63 ConfigExpander.shouldEnablePlatformSpecificConfig
     fn should_enable_platform_specific_config(
         enable_platform_specific_config_description: Option<&crate::OptionValueDescription>,
         command_to_rc_args: &CommandToRcArgs,
@@ -699,7 +700,7 @@ impl ConfigExpander {
         })
     }
 
-    // Java: com/google/devtools/build/lib/runtime/ConfigExpander.java:89 ConfigExpander.expandConfigOptions
+    // Java: com/google/devtools/build/lib/runtime/ConfigExpander.java:90 ConfigExpander.expandConfigOptions
     pub fn expand_config_options(
         event_handler: &mut StoredEventHandler,
         command_to_rc_args: &CommandToRcArgs,
@@ -808,7 +809,7 @@ impl ConfigExpander {
         Ok(())
     }
 
-    // Java: com/google/devtools/build/lib/runtime/ConfigExpander.java:183 ConfigExpander.getExpansion
+    // Java: com/google/devtools/build/lib/runtime/ConfigExpander.java:179 ConfigExpander.getExpansion
     fn get_expansion(
         event_handler: &mut StoredEventHandler,
         command_to_rc_args: &CommandToRcArgs,
@@ -840,7 +841,7 @@ impl ConfigExpander {
         Ok(final_expansion)
     }
 
-    // Java: com/google/devtools/build/lib/runtime/ConfigExpander.java:226 ConfigExpander.getExpansion
+    // Java: com/google/devtools/build/lib/runtime/ConfigExpander.java:225 ConfigExpander.getExpansion
     fn get_expansion_rec(
         command_to_rc_args: &CommandToRcArgs,
         commands_to_parse: &[String],

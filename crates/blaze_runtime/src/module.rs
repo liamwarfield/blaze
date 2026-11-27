@@ -176,6 +176,23 @@ pub trait BlazeModule: Send + Sync {
         None
     }
 
+    /// Registers any spawn strategies this module provides with the execution phase. Invoked
+    /// before actions are executed, after Bazel's built-in modules registered theirs.
+    ///
+    /// PORT: Java passes the `CommandEnvironment`; the registry is built by the execution tool
+    /// (blaze_buildtool), which hands the command's execution environment
+    /// (`ExecCommandEnvironment`: its options, exec root and reporter). The exception is the
+    /// registry's `AbruptExitException` (Java has one class). Bazel's own modules register
+    /// theirs in blaze_exec's `executor_setup`, not through this method.
+    // Java: com/google/devtools/build/lib/runtime/BlazeModule.java:329 BlazeModule.registerSpawnStrategies
+    fn register_spawn_strategies(
+        &self,
+        _registry_builder: &mut blaze_exec::exec::spawn_strategy_registry::SpawnStrategyRegistryBuilder,
+        _env: &blaze_exec::exec::exec_command_environment::ExecCommandEnvironment,
+    ) -> Result<(), blaze_exec::exec::spawn_strategy_registry::AbruptExitException> {
+        Ok(())
+    }
+
     // Java: com/google/devtools/build/lib/runtime/BlazeModule.java:338 BlazeModule.afterCommand
     fn after_command(&self) -> Result<(), AbruptExitException> {
         Ok(())

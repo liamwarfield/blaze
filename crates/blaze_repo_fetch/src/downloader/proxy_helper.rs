@@ -29,6 +29,7 @@ pub enum ProxyType {
 // Java: com/google/devtools/build/lib/bazel/repository/downloader/ProxyInfo.java:29 ProxyInfo
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProxyInfo {
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/ProxyInfo.java:45 ProxyInfo.proxy
     pub proxy_type: ProxyType,
     pub hostname: Option<String>,
     pub port: i32,
@@ -49,6 +50,7 @@ impl ProxyInfo {
     }
 
     /// Returns true if this proxy requires authentication.
+    // Java: com/google/devtools/build/lib/bazel/repository/downloader/ProxyInfo.java:50 ProxyInfo.hasCredentials
     pub fn has_credentials(&self) -> bool {
         self.username.is_some() && self.password.is_some()
     }

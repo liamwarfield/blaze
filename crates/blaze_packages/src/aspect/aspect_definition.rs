@@ -226,6 +226,7 @@ impl AspectDefinition {
             if type_.get_label_class() != LabelClass::Dependency {
                 continue;
             }
+            // Java: com/google/devtools/build/lib/packages/AspectDefinition.java:259 AspectDefinition.visitSingleAttribute
             // Java: visitSingleAttribute (AspectDefinition.java:258); a null default visits
             // nothing (the LabelVisitor skips null labels).
             if let Some(default_value) = aspect_attribute.get_default_value(None) {
@@ -521,6 +522,7 @@ impl AspectDefinitionBuilder {
     }
 
     /// Adds the given toolchains as requirements for this aspect.
+    // Java: com/google/devtools/build/lib/packages/AspectDefinition.java:502 AspectDefinition.Builder.addToolchainTypes
     // Java: com/google/devtools/build/lib/packages/AspectDefinition.java:508 AspectDefinition.Builder.addToolchainTypes
     pub fn add_toolchain_types(
         &mut self,

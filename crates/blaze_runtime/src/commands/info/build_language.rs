@@ -54,6 +54,7 @@ fn is_starlark_function_or_macro(value: Value) -> bool {
 /// instead of stub overridden native rules.
 ///
 /// `include_macro_wrapped_rules`: if true, include rule classes for rules wrapped in macros.
+// PORT: skipped, the private constructor of a static-only class: RuleClassUtils.<init>
 // Java: com/google/devtools/build/lib/packages/RuleClassUtils.java:38 RuleClassUtils.getBuiltinRuleClasses
 pub fn get_builtin_rule_classes(
     builtins: &StarlarkBuiltinsValue,

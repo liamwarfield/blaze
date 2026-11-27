@@ -47,6 +47,8 @@ pub struct StarlarkAspectFactory {
     /// Java `starlarkAspect` (the data of the `StarlarkDefinedAspect` value, which holds the
     /// implementation as a keep-alive handle).
     starlark_aspect: Arc<AspectData>,
+    /// The heap of the .bzl module defining the aspect (see [`StarlarkAspectFactory::new`]).
+    owner: starlark::values::FrozenHeapRef,
 }
 
 /// What the evaluation of the implementation leaves behind once the module is frozen.
@@ -63,8 +65,17 @@ struct Evaluated {
 impl StarlarkAspectFactory {
     /// `starlark_aspect` is the `StarlarkDefinedAspect` (`aspect_data` of its value).
     // Java: com/google/devtools/build/lib/skyframe/StarlarkAspectFactory.java:42 StarlarkAspectFactory.<init>
-    pub fn new(starlark_aspect: Arc<AspectData>) -> StarlarkAspectFactory {
-        StarlarkAspectFactory { starlark_aspect }
+    ///
+    /// `owner`: the heap of the .bzl module that defines the aspect (PORT: Blaze-only, decision
+    /// D7: the aspect's values live there without owning it).
+    pub fn new(
+        starlark_aspect: Arc<AspectData>,
+        owner: starlark::values::FrozenHeapRef,
+    ) -> StarlarkAspectFactory {
+        StarlarkAspectFactory {
+            starlark_aspect,
+            owner,
+        }
     }
 
     /// Java `starlarkAspect.getImplementation()`, as an owned frozen value.
@@ -86,6 +97,18 @@ impl StarlarkAspectFactory {
         let opts = EvalOptions::default();
         let implementation = self.get_implementation();
         Module::with_temp_heap(|module| {
+            // PORT: Blaze-only (decision D7, amended 2026-11-26): the aspect's values (its
+            // implementation, provider types) live on its module's heap and on the heaps of the
+            // modules the target's package loaded; the frozen analysis heap references them.
+            module.frozen_heap().add_reference(&self.owner);
+            let module_heaps = handle
+                .borrow()
+                .get_rule()
+                .get_package_declarations()
+                .get_module_heaps();
+            for heap in &module_heaps {
+                module.frozen_heap().add_reference(heap);
+            }
             let keep_alive = module.heap().alloc(AnalysisKeepAlive::new());
             module.set_extra_value(keep_alive);
             let keep = keep_alive
@@ -95,11 +118,11 @@ impl StarlarkAspectFactory {
             let aspect_starlark_object: Option<usize>;
             let required_config_fragments;
             // Java: a Depset created by the implementation wraps one NestedSet for as long as it
-            // lives, before and after its Mutability is frozen; see rule::depsets.
-            // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:207 Depset.getSet
-            let depset_scope = crate::rule::depsets::DepsetConversionScope::enter();
+            // lives, before and after its Mutability is frozen: the depset node keeps its set
+            // and freezing moves it to the frozen copy (rule::depsets).
             {
                 let mut eval = Evaluator::new(&module);
+                blaze_starlark::debug::install_hook_for_call(&mut eval);
                 eval.extra = Some(thread);
                 eval.set_forbid_recursion(!thread.semantics.allow_recursion);
                 // Java: net/starlark/java/eval/StringModule.java:326 and lib/json/Json.java:346 read
@@ -166,30 +189,9 @@ impl StarlarkAspectFactory {
                     }
                 }
             }
-            // PORT: freezing copies the depsets the implementation made; the keep-alive list
-            // gives the frozen copy of each one whose NestedSet an action already holds.
-            // SAFETY: the depsets converted in the scope are values of `module`'s heap, which is
-            // alive and is not garbage collected while a function call (the implementation)
-            // runs.
-            let converted_depsets: Vec<usize> = unsafe { depset_scope.converted_depsets() }
-                .into_iter()
-                .map(|depset| keep.push(depset))
-                .collect();
             // Java: freeze mutability to allow optimizing StarlarkInfo instances
             let frozen = match module.freeze() {
-                Ok(frozen) => {
-                    // PORT: keep-alive (see starlark_rule_configured_target_util::evaluate).
-                    crate::rule::depsets::keep_frozen_heap_alive(frozen.frozen_heap().clone());
-                    let keep_alive = frozen
-                        .owned_extra_value()
-                        .expect("the keep-alive list is the module's extra value");
-                    let frozen_depsets: Vec<OwnedFrozenValue> = converted_depsets
-                        .iter()
-                        .map(|index| FrozenAnalysisKeepAlive::get_owned(&keep_alive, *index))
-                        .collect();
-                    depset_scope.adopt_frozen(&frozen_depsets);
-                    Some(frozen)
-                }
+                Ok(frozen) => Some(frozen),
                 Err(e) => {
                     // PORT: Java's values are frozen by closing the Mutability, which cannot
                     // fail; starlark-rust refuses values that cannot be frozen.

@@ -501,6 +501,25 @@ pub fn delete_outputs(
     Ok(())
 }
 
+/// The part of `AbstractAction.deleteOutputs` with `cleanupArchivedArtifacts`: deletes the
+/// archived tree artifact (`ArchivedTreeArtifact.createForTree`) of each tree output, as Java does
+/// after the outputs (`Iterables.concat(outputs, archivedTreeArtifactOutputs(outputs))`).
+// Java: com/google/devtools/build/lib/actions/AbstractAction.java:438 AbstractAction.deleteOutputs
+// Java: com/google/devtools/build/lib/actions/AbstractAction.java:486 AbstractAction.archivedTreeArtifactOutputs
+pub fn delete_archived_tree_artifact_outputs(
+    action: &(impl Action + ?Sized),
+) -> std::io::Result<()> {
+    for output in action.get_outputs() {
+        if !output.is_tree_artifact() {
+            continue;
+        }
+        let archived = blaze_actions::Artifact::create_archived_tree_artifact_for_tree(&output);
+        // Java: com/google/devtools/build/lib/actions/AbstractAction.java:499 AbstractAction.deleteOutput
+        delete_output(&archived.get_path(), Some(archived.get_root().get_root()))?;
+    }
+    Ok(())
+}
+
 /// Helper method to remove an output file. If the path refers to a directory, recursively removes
 /// the contents of the directory.
 // Java: com/google/devtools/build/lib/actions/AbstractAction.java:514 AbstractAction.deleteOutput

@@ -125,8 +125,10 @@ fn get_top_level_aspects(
                 else {
                     return Ok(None);
                 };
-                // PORT: keep-alive (the .bzl module's heap lives in the build arena).
-                // SAFETY: BZL_LOAD keeps the module's frozen heap in the build arena, which
+                // PORT: keep-alive (decision D7, amended 2026-11-26): the module's heap is kept
+                // in the build arena for the callable `LOAD_ASPECTS` holds.
+                blaze_sky_loading::bzl_load::keep_bzl_heap_alive(starlark_aspect.owner());
+                // SAFETY: the module's frozen heap is kept in the build arena (above), which
                 // outlives this evaluator and its graph, the holders of the callable (see
                 // `StarlarkCallable`).
                 let callable =

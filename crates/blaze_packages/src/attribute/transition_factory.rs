@@ -126,7 +126,7 @@ impl TransitionFactory {
     }
 
     /// Java `NoTransition.isInstance(factory)`.
-    // Java: com/google/devtools/build/lib/analysis/config/transitions/NoTransition.java:47 NoTransition.isInstance
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/NoTransition.java:56 NoTransition.isInstance
     pub fn is_no_transition(&self) -> bool {
         matches!(self, TransitionFactory::NoTransition)
     }
@@ -155,6 +155,7 @@ impl TransitionFactory {
 }
 
 /// Data a transition factory uses to create an attribute transition (Java
+// PORT: skipped, the AutoValue builder is a struct literal: AttributeTransitionData.builder, AttributeTransitionData.Builder.attributes, AttributeTransitionData.Builder.executionPlatform, AttributeTransitionData.Builder.analysisData, AttributeTransitionData.Builder.build
 /// `AttributeTransitionData`).
 // Java: com/google/devtools/build/lib/packages/AttributeTransitionData.java:33 AttributeTransitionData
 pub struct AttributeTransitionData<'a> {

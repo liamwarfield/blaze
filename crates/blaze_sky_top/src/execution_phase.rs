@@ -79,6 +79,14 @@ pub fn register_executable_actions() {
     blaze_exec::analysis::actions::register();
     blaze_rules::executable_actions::register_executable_actions();
     blaze_analysis::test::test_runner_action_execution::register_executable_actions();
+    blaze_analysis::actions::register_action_templates();
+    blaze_exec::actions::set_action_template_expansion_key_factory(|key, index| {
+        blaze_actions::ActionLookupKeyRef::new(
+            blaze_sky_exec::action_template_expansion_value::ActionTemplateExpansionValue::key(
+                key, index,
+            ),
+        )
+    });
 }
 
 /// `ExecutionTool.<init>` + `prepareForExecution` and the registration of the execution

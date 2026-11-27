@@ -30,7 +30,7 @@ use starlark::values::ValueLike;
 use starlark::values::starlark_value;
 
 /// Java `StarlarkDefinedConfigTransition.Settings`.
-// Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:79 StarlarkDefinedConfigTransition.Settings
+// Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:81 StarlarkDefinedConfigTransition.Settings
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Settings {
     /// Build settings that are read by a transition.
@@ -80,7 +80,7 @@ pub struct TransitionData {
 #[error("{0}")]
 pub struct TransitionError(pub String);
 
-// Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:132 StarlarkDefinedConfigTransition.canonicalizeSetting
+// Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:133 StarlarkDefinedConfigTransition.canonicalizeSetting
 fn canonicalize_setting(
     setting: &str,
     repo_mapping: &RepositoryMapping,
@@ -137,7 +137,7 @@ fn get_canonicalized_settings(
 }
 
 impl TransitionData {
-    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:102 StarlarkDefinedConfigTransition.<init>
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:101 StarlarkDefinedConfigTransition.<init>
     fn new(
         kind: TransitionKind,
         inputs: &[String],
@@ -233,7 +233,7 @@ impl<'v> Freeze for StarlarkDefinedConfigTransition<'v> {
 }
 
 impl<'v> StarlarkDefinedConfigTransition<'v> {
-    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:274 StarlarkDefinedConfigTransition.newRegularTransition
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:272 StarlarkDefinedConfigTransition.newRegularTransition
     // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:385 RegularTransition.<init>
     pub fn new_regular_transition(
         impl_: Value<'v>,
@@ -259,7 +259,7 @@ impl<'v> StarlarkDefinedConfigTransition<'v> {
         })
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:287 StarlarkDefinedConfigTransition.newExecTransition
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:286 StarlarkDefinedConfigTransition.newExecTransition
     // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:758 ExecTransition.<init>
     pub fn new_exec_transition(
         impl_: Value<'v>,
@@ -317,13 +317,13 @@ impl<'v, V: ValueLike<'v>> StarlarkDefinedConfigTransitionGen<V> {
     }
 
     /// Java `isForAnalysisTesting()`.
-    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:191 StarlarkDefinedConfigTransition.isForAnalysisTesting
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:192 StarlarkDefinedConfigTransition.isForAnalysisTesting
     pub fn is_for_analysis_testing(&self) -> bool {
         self.data.kind == TransitionKind::AnalysisTest
     }
 
     /// Java `isExecTransition()`.
-    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:123 StarlarkDefinedConfigTransition.isExecTransition
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:126 StarlarkDefinedConfigTransition.isExecTransition
     pub fn is_exec_transition(&self) -> bool {
         self.data.kind == TransitionKind::Exec
     }

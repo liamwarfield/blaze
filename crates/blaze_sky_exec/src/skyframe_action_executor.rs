@@ -58,6 +58,7 @@ use blaze_exec::exec::spawn_runner::ProgressStatus;
 use blaze_exec::exec::spawn_strategy_registry::SpawnStrategyRegistry;
 use blaze_exec::util::FileOutErr;
 use blaze_optdefs::command::action_execution_context::ShowSubcommands;
+use blaze_optdefs::common::regex_filter::RegexFilter;
 use blaze_protos::failure_details::{FailureDetail, execution};
 use blaze_skyframe::Environment;
 use blaze_util::check_state;
@@ -76,7 +77,7 @@ use crate::events::{
 };
 
 /// `OutputPermissions`: the mode output files are set to after execution.
-// Java: com/google/devtools/build/lib/vfs/OutputPermissions.java:22 OutputPermissions
+// Java: com/google/devtools/build/lib/vfs/OutputPermissions.java:17 OutputPermissions
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[allow(non_camel_case_types)]
 pub enum OutputPermissions {
@@ -87,7 +88,7 @@ pub enum OutputPermissions {
 }
 
 impl OutputPermissions {
-    // Java: com/google/devtools/build/lib/vfs/OutputPermissions.java:30 OutputPermissions.getPermissionsMode
+    // Java: com/google/devtools/build/lib/vfs/OutputPermissions.java:27 OutputPermissions.getPermissionsMode
     pub fn get_permissions_mode(self) -> u32 {
         match self {
             OutputPermissions::READONLY => 0o555,
@@ -106,7 +107,7 @@ impl OutputPermissions {
 
 /// The action contexts registered for this build (`Executor.getContext`), plus the spawn
 /// strategy registry, spawn log context and spawn cache.
-// Java: com/google/devtools/build/lib/exec/BlazeExecutor.java:56 BlazeExecutor
+// Java: com/google/devtools/build/lib/exec/BlazeExecutor.java:39 BlazeExecutor
 #[derive(Default)]
 pub struct ActionContexts {
     pub spawn_strategy_registry: Option<Arc<SpawnStrategyRegistry>>,
@@ -118,7 +119,7 @@ pub struct ActionContexts {
 impl ActionContexts {
     /// Registers `context` as the implementation of `T` (Java `ActionContext.ActionContextRegistry`
     /// `register(T.class, context)`). For a trait-object context, `T = Arc<dyn Trait>`.
-    // Java: com/google/devtools/build/lib/exec/ModuleActionContextRegistry.java:132 ModuleActionContextRegistry.Builder.register
+    // Java: com/google/devtools/build/lib/exec/ModuleActionContextRegistry.java:133 ModuleActionContextRegistry.Builder.register
     // (A later registration of a type replaces the earlier one: the last registered context wins,
     // as `ModuleActionContextRegistry.Builder.build` picks it for an empty restriction.)
     // PORT: skipped, ModuleActionContextRegistry.logActionContexts: java.log logging.
@@ -133,8 +134,8 @@ impl ActionContexts {
         self.contexts.insert(type_id, context);
     }
 
-    // Java: com/google/devtools/build/lib/exec/ModuleActionContextRegistry.java:65 ModuleActionContextRegistry.getContext
-    // Java: com/google/devtools/build/lib/exec/BlazeExecutor.java:110 BlazeExecutor.getContext
+    // Java: com/google/devtools/build/lib/exec/ModuleActionContextRegistry.java:66 ModuleActionContextRegistry.getContext
+    // Java: com/google/devtools/build/lib/exec/BlazeExecutor.java:112 BlazeExecutor.getContext
     pub fn get_any(&self, type_id: TypeId) -> Option<ActionContextRef> {
         self.contexts.get(&type_id).cloned()
     }
@@ -168,7 +169,7 @@ pub struct SkyframeActionExecutorConfig {
 /// of `ActionExecutionFunction.PackageRootResolverWithEnvironment.findPackageRootsForFiles`
 /// (ActionExecutionFunction.java:602-662) after its `checkState`. `None` (tests without loading
 /// functions) fails loudly when an action cache entry has source paths to resolve.
-// Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:578 ActionExecutionFunction.PackageRootResolverWithEnvironment
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:591 ActionExecutionFunction.PackageRootResolverWithEnvironment
 pub trait ContainingPackageRootLookup: Send + Sync {
     #[allow(clippy::type_complexity)]
     /// Returns mapping from exec path to the root of its containing package (`None`: no
@@ -194,7 +195,7 @@ pub struct ActionCacheSetup {
     /// `outputService.getOutputChecker()`: `None` is `LocalOutputService`'s
     /// `OutputChecker.TRUST_LOCAL_ONLY`; the remote module's `RemoteOutputService` gives its
     /// `RemoteOutputChecker`.
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:782 SkyframeActionExecutor.checkActionCache
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:759 SkyframeActionExecutor.checkActionCache
     pub output_checker: Option<Arc<dyn OutputChecker>>,
 }
 
@@ -222,7 +223,7 @@ pub enum ExecutionFailure {
 
 /// An `ActionExecutionException` thrown when an action fails to execute because one or more of
 /// its inputs was lost. In some cases, Bazel may know how to fix this on its own.
-// Java: com/google/devtools/build/lib/actions/LostInputsActionExecutionException.java:28 LostInputsActionExecutionException
+// Java: com/google/devtools/build/lib/actions/LostInputsActionExecutionException.java:31 LostInputsActionExecutionException
 #[derive(Clone, Debug)]
 pub struct LostInputsActionExecutionException {
     /// The exception, whose `get_lost_inputs()` is set.
@@ -243,7 +244,7 @@ pub struct LostInputsActionExecutionException {
 impl LostInputsActionExecutionException {
     /// `isPrimaryAction(actionLookupData)`: whether the lost inputs belong to the action of
     /// `action_lookup_data` (a shared action's other copy gets the primary action's result).
-    // Java: com/google/devtools/build/lib/actions/LostInputsActionExecutionException.java:93 LostInputsActionExecutionException.isPrimaryAction
+    // Java: com/google/devtools/build/lib/actions/LostInputsActionExecutionException.java:104 LostInputsActionExecutionException.isPrimaryAction
     pub fn is_primary_action(&self, action_lookup_data: &ActionLookupData) -> bool {
         self.primary_action
             .get_primary_output()
@@ -265,9 +266,9 @@ impl LostInputsActionExecutionException {
 /// rewinding fails, Java's copy waits for ever (it stays in flight); here it fails with the
 /// owner's error. The waits are interruptible.
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:143 ActionExecutionState.scheduleRestart
-// Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:407 ActionExecutionState.Obsolete.isDone
-// Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:412 ActionExecutionState.Obsolete.run
-// Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:417 ActionExecutionState.Obsolete.get
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:408 ActionExecutionState.Obsolete.isDone
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:413 ActionExecutionState.Obsolete.run
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:418 ActionExecutionState.Obsolete.get
 #[derive(Default)]
 struct RewindSignal {
     outcome: Mutex<Option<RewindOutcome>>,
@@ -399,17 +400,17 @@ pub type ActionPostprocessing<'a> = dyn FnMut(
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:302 ActionExecutionState.ActionStepOrResult.isDone
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:316 ActionExecutionState.ActionStepOrResult.get
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:346 ActionExecutionState.Finished.<init>
-// Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:350 ActionExecutionState.Finished.isDone
-// Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:360 ActionExecutionState.Finished.get
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:351 ActionExecutionState.Finished.isDone
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:361 ActionExecutionState.Finished.get
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:373 ActionExecutionState.Exceptional.<init>
-// Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:381 ActionExecutionState.Exceptional.isDone
-// Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:391 ActionExecutionState.Exceptional.get
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:382 ActionExecutionState.Exceptional.isDone
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:392 ActionExecutionState.Exceptional.get
 // PORT: skipped, a terminal state has no step to run and Blaze has no asynchronous action steps (see above): ActionExecutionState.ActionStepOrResult.run ActionExecutionState.Finished.run ActionExecutionState.Exceptional.run ActionExecutionState.ActionStep.isDone ActionExecutionState.ActionStep.get
 type SharedResult = Result<Option<ActionExecutionValue>, ExecutionFailure>;
 
 /// The (shared) execution of the action that generates one primary output: the
 /// `ActionLookupData` of the Skyframe node that runs it, that action, and its result.
-// Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:60 ActionExecutionState
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:41 ActionExecutionState
 #[derive(Clone)]
 struct ActionExecutionState {
     action_lookup_data: ActionLookupData,
@@ -570,6 +571,7 @@ impl Postable for CachedActionEvent {}
 // PORT: skipped, remote analysis caching (retrieval of remote ActionExecutionValues) stops with unported! (--experimental_remote_analysis_cache_mode): SkyframeActionExecutor.shouldSkipRetrieval SkyframeActionExecutor.ExistingActionLookupValuePeeker.getExistingActionLookupValue
 // PORT: skipped, the evaluator of the build driver keys runs at most --jobs functions at once (blaze_buildtool evaluate_build_driver_keys, parallelism config.jobs), which bounds the actions in execution as the meter does without --experimental_async_execution: SkyframeActionExecutor.acquireActionExecutionSemaphore SkyframeActionExecutor.releaseActionExecutionSemaphore
 // PORT: skipped, it only drops references for the garbage collector and stops the meter above: SkyframeActionExecutor.executionOver
+// PORT: skipped, the evaluator runs at most --jobs action executions at once (Java's meter allows more only with --experimental_async_execution, off by default): ActionConcurrencyMeter.<init>, ActionConcurrencyMeter.stop, ActionConcurrencyMeter.acquireUninterruptibly, ActionConcurrencyMeter.release, ActionConcurrencyMeter.handleNotification
 // PORT: skipped, the only ImportantOutputHandler of Bazel (RemoteImportantOutputHandler) does nothing for a large stdout/stderr (LostImportantOutputHandlerModule is a test module): SkyframeActionExecutor.informImportantOutputHandlerIfNecessary
 // PORT: skipped, no reader at the pin outside the executor: SkyframeActionExecutor.getOutputService SkyframeActionExecutor.getActionInputPrefetcher
 // PORT: skipped, the target completion reads --experimental_publish_target_summary from the BEP options itself (blaze_runtime commands/bep.rs): SkyframeActionExecutor.publishTargetSummaries
@@ -587,6 +589,9 @@ pub struct SkyframeActionExecutor {
     keep_going: bool,
     verbose_failures: bool,
     output_permissions: OutputPermissions,
+    /// `options.getOptions(CoreOptions.class).archivedArtifactsMnemonicsFilter`
+    /// (`--archived_tree_artifact_mnemonics_filter`); `None` is the option's default (`-.*`).
+    archived_artifacts_mnemonics_filter: Option<RegexFilter>,
     action_key_context: ActionKeyContext,
     action_cache_checker: Arc<ActionCacheChecker>,
     action_execution_salt: String,
@@ -689,6 +694,7 @@ impl SkyframeActionExecutor {
             keep_going: config.keep_going,
             verbose_failures: config.verbose_failures,
             output_permissions: config.output_permissions,
+            archived_artifacts_mnemonics_filter: None,
             action_key_context: ActionKeyContext::new(),
             action_cache_checker: Arc::new(disabled_action_cache_checker()),
             action_execution_salt: String::new(),
@@ -733,7 +739,7 @@ impl SkyframeActionExecutor {
 
     /// The `statusReporter` argument of Java's `setActionExecutionProgressReportingObjects`
     /// (`statusReporterRef.set(statusReporter)`).
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3114 SkyframeExecutor.setActionExecutionProgressReportingObjects
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3109 SkyframeExecutor.setActionExecutionProgressReportingObjects
     pub fn set_action_execution_status_reporter(
         &self,
         status_reporter: Option<Arc<dyn ActionStatusReporter>>,
@@ -755,7 +761,7 @@ impl SkyframeActionExecutor {
     /// Sets the action cache checker and the salt of this build (the `actionCacheChecker` and
     /// `actionExecutionSalt` arguments of Java's `prepareForExecution` / `configureActionExecutor`).
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:331 SkyframeActionExecutor.prepareForExecution
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1030 SkyframeActionExecutor.configure
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1029 SkyframeActionExecutor.configure
     pub fn with_action_cache(mut self, setup: ActionCacheSetup) -> SkyframeActionExecutor {
         self.action_cache_checker = setup.action_cache_checker;
         self.action_execution_salt = setup.action_execution_salt;
@@ -777,7 +783,7 @@ impl SkyframeActionExecutor {
 
     /// Sets `rewindingEnabled` / `invocationRetriesEnabled` and the `LostInputsEvent` handler
     /// (`None`: a build without a remote cache, where no input can be lost).
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:355 SkyframeActionExecutor.prepareForExecution
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:331 SkyframeActionExecutor.prepareForExecution
     pub fn with_lost_inputs_policy(
         mut self,
         lost_inputs_policy: Option<LostInputsPolicy>,
@@ -798,7 +804,7 @@ impl SkyframeActionExecutor {
     /// here too ([`ExecutionFailure::LostInputs`], see [`Self::signal_lost_inputs`]); without
     /// rewinding, where `checkRewindingEnabled` throws before anything else happens, the
     /// executor handles it where it would report the failure, with the same result.
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:460 ActionExecutionFunction.handleLostInputs
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:453 ActionExecutionFunction.handleLostInputs
     // Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindStrategy.java:229 ActionRewindStrategy.prepareRewindPlanForLostInputs
     // Java: com/google/devtools/build/lib/skyframe/rewinding/ActionRewindStrategy.java:307 ActionRewindStrategy.checkRewindingEnabled
     fn handle_lost_inputs(
@@ -896,7 +902,7 @@ impl SkyframeActionExecutor {
     /// action, primary output path, out/err) and `setActionStartedEventAlreadyEmitted` /
     /// `setFromInputDiscovery` do; without it, it is the reported failure of
     /// [`Self::handle_lost_inputs_of_completion`].
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1557 SkyframeActionExecutor.enrichLostInputsException
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1553 SkyframeActionExecutor.enrichLostInputsException
     fn signal_lost_inputs(
         &self,
         listener: &dyn ExtendedEventHandler,
@@ -932,7 +938,7 @@ impl SkyframeActionExecutor {
     /// `ActionExecutionFunction.handleLostInputs`: the rewinding failure, reported as
     /// `processAndGetExceptionToThrow(env.getListener(), e.getPrimaryOutputPath(), action, ...,
     /// e.getFileOutErr(), ErrorTiming.AFTER_EXECUTION)` reports it.
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:509 ActionExecutionFunction.handleLostInputs
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:453 ActionExecutionFunction.handleLostInputs
     fn handle_lost_inputs_of_completion(
         &self,
         listener: &dyn ExtendedEventHandler,
@@ -1014,6 +1020,17 @@ impl SkyframeActionExecutor {
     }
 
     /// Sets `--subcommands` (`BlazeExecutor.reportsSubcommands`).
+    /// The build's `CoreOptions.archivedArtifactsMnemonicsFilter`, which Java reads from the
+    /// options `prepareForExecution` stores.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:420 SkyframeActionExecutor.archivedTreeArtifactsEnabledForMnemonic
+    pub fn with_archived_artifacts_mnemonics_filter(
+        mut self,
+        filter: RegexFilter,
+    ) -> SkyframeActionExecutor {
+        self.archived_artifacts_mnemonics_filter = Some(filter);
+        self
+    }
+
     pub fn with_show_subcommands(
         mut self,
         show_subcommands: ShowSubcommands,
@@ -1026,8 +1043,8 @@ impl SkyframeActionExecutor {
     /// (`CommandEnvironment.getFileCache`: `new SingleBuildFileCache(execRoot,
     /// PathFragment.create(directories.getRelativeOutputPath()), fs, syscallCache)`), which
     /// `ExecutionTool` hands the executor once per build.
-    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:1044 CommandEnvironment.getFileCache
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1035 SkyframeActionExecutor.configure
+    // Java: com/google/devtools/build/lib/runtime/CommandEnvironment.java:1039 CommandEnvironment.getFileCache
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1029 SkyframeActionExecutor.configure
     /// The graph of the command's `MemoizingEvaluator`, which `ActionExecutionFunction` hands
     /// the `SkyframeInputMetadataProvider` of each action
     /// (`new SkyframeInputMetadataProvider(skyframeActionExecutor.getEvaluator(), ...)`).
@@ -1096,7 +1113,17 @@ impl SkyframeActionExecutor {
         // Check that the action produces at least one tree artifact to simplify downstream logic:
         // we don't need to take archived tree artifacts into account if the action doesn't
         // produce at least one of them.
-        archived_tree_artifacts_enabled_for_mnemonic(action) && has_tree_artifact_outputs(action)
+        self.archived_tree_artifacts_enabled_for_mnemonic(action)
+            && has_tree_artifact_outputs(action)
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:420 SkyframeActionExecutor.archivedTreeArtifactsEnabledForMnemonic
+    fn archived_tree_artifacts_enabled_for_mnemonic(&self, action: &dyn Action) -> bool {
+        match &self.archived_artifacts_mnemonics_filter {
+            Some(filter) => filter.test(&action.get_mnemonic()),
+            // The default `-.*` excludes every mnemonic.
+            None => false,
+        }
     }
 
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:452 SkyframeActionExecutor.getOutputPermissions
@@ -1354,7 +1381,6 @@ impl SkyframeActionExecutor {
     }
 
     /// `ActionLogBufferPathGenerator.generate`: fresh stdout/stderr files for one action.
-    // Java: com/google/devtools/build/lib/exec/ActionLogBufferPathGenerator.java:42 ActionLogBufferPathGenerator.generate
     ///
     /// `action_file_system` is the resolver (`createPathResolver(actionFileSystem, execRoot)`):
     /// the paths are converted to it when there is one.
@@ -1385,7 +1411,7 @@ impl SkyframeActionExecutor {
     /// `ActionOutputMetadataStore.create(useArchivedTreeArtifacts(action), getOutputPermissions(),
     /// action.getOutputs(), ...)`, as `ActionExecutionFunction.checkCacheAndExecuteIfNeeded`
     /// creates it.
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:713 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:664 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
     pub fn create_output_metadata_store(
         &self,
         action: &dyn Action,
@@ -1435,7 +1461,7 @@ impl SkyframeActionExecutor {
     /// PORT: Java creates it in `ActionExecutionFunction` once the inputs are known and keeps it
     /// in the action's state; here it is created with the action's output metadata store, from
     /// the same input metadata, and the store holds it.
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:331 ActionExecutionFunction.computeInternal
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:213 ActionExecutionFunction.computeInternal
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:463 SkyframeActionExecutor.createActionFileSystem
     // Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:94 RemoteOutputService.createActionFileSystem
     fn create_action_file_system(
@@ -1455,7 +1481,7 @@ impl SkyframeActionExecutor {
             self.exec_root.as_fragment().clone(),
             // directories.getRelativeOutputPath(): `<product name>-out`.
             // PORT: Blaze's only product name is "bazel" (BlazeDirectories of the runtime).
-            // Java: com/google/devtools/build/lib/analysis/BlazeDirectories.java:232 BlazeDirectories.getRelativeOutputPath
+            // Java: com/google/devtools/build/lib/analysis/BlazeDirectories.java:248 BlazeDirectories.getRelativeOutputPath
             "bazel-out",
             input_metadata.clone() as Arc<dyn InputMetadataProvider>,
             input_fetcher,
@@ -1464,7 +1490,7 @@ impl SkyframeActionExecutor {
 
     /// `getActionContextRegistry().getContext(ImportantOutputHandler.class)`: `None` when no
     /// handler is registered for this build.
-    // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:396 CompletionFunction.informImportantOutputHandler
+    // Java: com/google/devtools/build/lib/skyframe/CompletionFunction.java:385 CompletionFunction.informImportantOutputHandler
     pub fn important_output_handler(
         &self,
     ) -> Option<Arc<dyn blaze_exec::exec::action_execution_context::ImportantOutputHandler>> {
@@ -1528,11 +1554,11 @@ impl SkyframeActionExecutor {
                 })
                 .clone()
         };
-        // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:87 ActionExecutionState.getResultOrDependOnFuture
+        // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:86 ActionExecutionState.getResultOrDependOnFuture
         if owner == *action_lookup_data {
             // This object is owned by the Skyframe node executed by the current thread, so we use
             // it to run the state machine.
-            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:149 ActionExecutionState.runStateMachine
+            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:150 ActionExecutionState.runStateMachine
             return cell
                 .get_or_init(|| {
                     self.run_action(
@@ -1572,7 +1598,7 @@ impl SkyframeActionExecutor {
         // PORT: Java registers a dependency on the primary action's completion future and
         // restarts; Blaze's evaluator does not restart, so this thread waits for the result.
         // `sharedActionCallback.actionStarted()` when the primary action is not done yet.
-        // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:116 ActionExecutionState.getResultOrDependOnFuture
+        // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:86 ActionExecutionState.getResultOrDependOnFuture
         if cell.get().is_none() {
             self.shared_action_started(
                 env.listener(),
@@ -1587,7 +1613,7 @@ impl SkyframeActionExecutor {
             // PORT: env.getListener().post(new SharedActionEvent(result, transformed)) is not
             // posted: its only subscriber, ExecutionGraphModule, stops with unported!
             // (--experimental_enable_execution_graph_log).
-            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:131 ActionExecutionState.getResultOrDependOnFuture
+            // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:86 ActionExecutionState.getResultOrDependOnFuture
             Ok(Some(result)) => match {
                 self.shared_action_completed(action_lookup_data);
                 result.transform_for_shared_action(action.as_ref())
@@ -1621,7 +1647,7 @@ impl SkyframeActionExecutor {
 
     /// `getSharedActionCallback(eventHandler, hasDiscoveredInputs, action, actionLookupData)
     /// .actionStarted()`.
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:316 SkyframeActionExecutor.getSharedActionCallback
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:309 SkyframeActionExecutor.getSharedActionCallback
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionState.java:250 ActionExecutionState.SharedActionCallback.actionStarted
     fn shared_action_started(
         &self,
@@ -1639,7 +1665,7 @@ impl SkyframeActionExecutor {
     }
 
     /// `getSharedActionCallback(...).actionCompleted()`.
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:323 SkyframeActionExecutor.getSharedActionCallback
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:309 SkyframeActionExecutor.getSharedActionCallback
     fn shared_action_completed(&self, action_lookup_data: &ActionLookupData) {
         let completion_receiver = self.progress_reporting.read().completion_receiver.clone();
         if let Some(completion_receiver) = completion_receiver {
@@ -1661,7 +1687,7 @@ impl SkyframeActionExecutor {
     ) -> SharedResult {
         // if (actionFileSystem != null) updateActionFileSystemContext(action, actionFileSystem,
         // outputMetadataStore): RemoteOutputService.updateActionFileSystemContext.
-        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:634 SkyframeActionExecutor.executeAction
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:622 SkyframeActionExecutor.executeAction
         // Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:112 RemoteOutputService.updateActionFileSystemContext
         // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:477 SkyframeActionExecutor.updateActionFileSystemContext
         if let Some(file_system) = output_metadata_store.get_action_file_system() {
@@ -1683,9 +1709,9 @@ impl SkyframeActionExecutor {
         // (the context of executeAction: getContext(action, ...))
         // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:710 SkyframeActionExecutor.getContext
         let result: SharedResult = (|| {
-            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1103 ActionRunner.run
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1087 ActionRunner.run
             let action_scope = profile_action_scope(action.as_ref());
-            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1111 ActionRunner.run
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1087 ActionRunner.run
             if let Some(message) = action.get_progress_message(None) {
                 // reporter.startTask(null, prependExecPhaseStats(message))
                 // Java: com/google/devtools/build/lib/events/Reporter.java:159 Reporter.startTask
@@ -1696,13 +1722,13 @@ impl SkyframeActionExecutor {
                 ));
             }
             // ActionRunner.<init>: this.statusReporter = statusReporterRef.get()
-            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1081 ActionRunner.<init>
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1067 ActionRunner.<init>
             let status_reporter = self.progress_reporting.read().status_reporter.clone();
             let event = ActionStartedEvent {
                 action: action.clone(),
                 nano_time_start: action_start_time,
             };
-            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1120 ActionRunner.run
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1087 ActionRunner.run
             if let Some(status_reporter) = &status_reporter {
                 status_reporter.update_status(&event);
             }
@@ -1720,9 +1746,9 @@ impl SkyframeActionExecutor {
                 // without one DISABLED; the action's output metadata store holds that file system.
                 // Both answer true to shouldDoEagerActionPrep() (OutputService.java:93); only
                 // REMOTE_FILE_SYSTEM answers true to inMemoryFileSystem() (OutputService.java:82).
-                // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1128 ActionRunner.run
+                // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1087 ActionRunner.run
                 let action_file_system = output_metadata_store.get_action_file_system();
-                // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1124 ActionRunner.run
+                // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1087 ActionRunner.run
                 let rewound_action_synchronizer = self.get_rewound_action_synchronizer();
                 let was_rewound = self.was_rewound(action.as_ref());
                 let _outer_lock = rewound_action_synchronizer
@@ -1735,11 +1761,23 @@ impl SkyframeActionExecutor {
                 // PORT: `prepare` takes only the exec root (`actionExecutionContext.getExecRoot()`);
                 // Java also passes the path resolver (to delete the outputs on the action file system,
                 // whose remote output tree is still empty here), the bulk deleter and
-                // cleanupArchivedArtifacts.
-                // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1131 ActionRunner.run
+                // cleanupArchivedArtifacts (`useArchivedTreeArtifacts(action)`). The archived tree
+                // artifacts of the outputs are deleted after `prepare`, where
+                // AbstractAction.deleteOutputs deletes them after the outputs; the actions that
+                // override `prepare` without deleteOutputs (RunfilesTreeAction,
+                // BazelWorkspaceStatusAction) have no tree outputs, so the flag is false for them.
+                // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1087 ActionRunner.run
                 let prepared = {
                     let _d = Profiler::instance().profile(ProfilerTask::INFO, "action.prepare");
-                    executable.prepare(context.get_exec_root())
+                    executable.prepare(context.get_exec_root()).and_then(|()| {
+                        if self.use_archived_tree_artifacts(action.as_ref()) {
+                            blaze_exec::actions::action_execution::delete_archived_tree_artifact_outputs(
+                                action.as_ref(),
+                            )
+                        } else {
+                            Ok(())
+                        }
+                    })
                 };
                 if let Err(e) = prepared {
                     return Err(self
@@ -1763,7 +1801,7 @@ impl SkyframeActionExecutor {
                 } else {
                     self.create_output_directories(action.as_ref())?;
                 }
-                // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1160 ActionRunner.run
+                // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1087 ActionRunner.run
                 let _inner_lock = rewound_action_synchronizer
                     .enter_action_execution(
                         action.as_ref(),
@@ -1773,7 +1811,7 @@ impl SkyframeActionExecutor {
                     .map_err(|_| ExecutionFailure::Interrupted)?;
                 self.execute_action_inner(env.listener(), action, &context)
             })();
-            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1199 ActionRunner.notifyActionCompletion
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1197 ActionRunner.notifyActionCompletion
             if let Some(status_reporter) = &status_reporter {
                 status_reporter.remove(action);
             }
@@ -1788,7 +1826,7 @@ impl SkyframeActionExecutor {
                     action_lookup_data: action_lookup_data.clone(),
                 }));
             }
-            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1211 ActionRunner.notifyActionCompletion
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1197 ActionRunner.notifyActionCompletion
             if let Some(message) = action.get_progress_message(None) {
                 let completion_receiver =
                     self.progress_reporting.read().completion_receiver.clone();
@@ -1808,7 +1846,7 @@ impl SkyframeActionExecutor {
 
             // A closure to post-process the executed action, doing work like updating cached state
             // with any newly discovered inputs, and writing the result to the action cache.
-            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1424 ActionPostprocessingStep.run
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1422 ActionPostprocessingStep.run
             // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1417 SkyframeActionExecutor.ActionRunner.ActionPostprocessingStep.<init>
             {
                 let _c = Profiler::instance().profile(ProfilerTask::INFO, "postprocessing.run");
@@ -1834,7 +1872,7 @@ impl SkyframeActionExecutor {
         // PORT: Java closes the context in executeAction, after getResultOrDependOnFuture; the
         // context lives in this function, which that call runs for the owning node. A shared
         // action's context (Java creates one for it too) has nothing to close here.
-        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:686 SkyframeActionExecutor.executeAction
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:622 SkyframeActionExecutor.executeAction
         if matches!(result, Ok(None)) {
             return result;
         }
@@ -1842,7 +1880,7 @@ impl SkyframeActionExecutor {
     }
 
     /// Executes the given action.
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1253 ActionRunner.executeAction
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1254 ActionRunner.executeAction
     fn execute_action_inner(
         &self,
         listener: &dyn ExtendedEventHandler,
@@ -1856,7 +1894,7 @@ impl SkyframeActionExecutor {
                 action.get_mnemonic()
             ));
         };
-        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1257 ActionRunner.executeAction
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1254 ActionRunner.executeAction
         let execute_scope = Profiler::instance().profile(ProfilerTask::INFO, "Action.execute");
         let executed = self
             .check_for_unsound_directory_inputs(
@@ -1868,7 +1906,7 @@ impl SkyframeActionExecutor {
             // An action's result (or intermediate state) may have been affected by lost inputs.
             // If an action filesystem is used, it may know whether inputs were lost. We should
             // fail fast if any were; rewinding may be able to fix it.
-            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1265 ActionRunner.executeAction
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1254 ActionRunner.executeAction
             .and_then(|r| {
                 Self::check_action_file_system_for_lost_inputs(
                     context.get_remote_action_file_system().as_ref(),
@@ -1913,13 +1951,13 @@ impl SkyframeActionExecutor {
                     .into());
             }
         };
-        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1283 ActionRunner.executeAction
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1254 ActionRunner.executeAction
         let _c =
             Profiler::instance().profile(ProfilerTask::ACTION_COMPLETE, "actuallyCompleteAction");
         self.actually_complete_action(listener, action, context, result)
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1302 ActionRunner.actuallyCompleteAction
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1297 ActionRunner.actuallyCompleteAction
     fn actually_complete_action(
         &self,
         listener: &dyn ExtendedEventHandler,
@@ -1972,7 +2010,7 @@ impl SkyframeActionExecutor {
             );
             // catch (ActionExecutionException actionException): maybeSignalLostInputs, then
             // report.
-            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1356 ActionRunner.actuallyCompleteAction
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1297 ActionRunner.actuallyCompleteAction
             let e = match Self::maybe_signal_lost_inputs(e, action.as_ref(), context) {
                 Ok(e) => e,
                 Err(lost_inputs_exception) => {
@@ -2011,7 +2049,7 @@ impl SkyframeActionExecutor {
             let outputs: Vec<ActionInputRef> =
                 action.get_outputs().iter().map(artifact_input).collect();
             let metadata = ActionMetadataSnapshot::of(action.as_ref());
-            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1340 ActionRunner.actuallyCompleteAction
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1297 ActionRunner.actuallyCompleteAction
             let finalized = {
                 let _c = Profiler::instance()
                     .profile(ProfilerTask::INFO, "outputService.finalizeAction");
@@ -2025,7 +2063,7 @@ impl SkyframeActionExecutor {
                     // from by rewinding rather than reported: `throw
                     // ActionExecutionException.fromExecException(e, action)`, which the catch of
                     // ActionExecutionException below hands to maybeSignalLostInputs.
-                    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1344 ActionRunner.actuallyCompleteAction
+                    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1297 ActionRunner.actuallyCompleteAction
                     SpawnCacheError::Exec(lost) if lost.get_lost_inputs().is_some() => {
                         let lost_inputs_exception = ActionExecutionException::from_exec_exception(
                             &lost,
@@ -2053,7 +2091,7 @@ impl SkyframeActionExecutor {
                 };
                 // InterruptedException is not caught: it leaves finalizeAction and this method
                 // unreported (`finalizeAction(...) throws ... InterruptedException`).
-                // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1340 ActionRunner.actuallyCompleteAction
+                // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1297 ActionRunner.actuallyCompleteAction
                 if e.kind() == std::io::ErrorKind::Interrupted {
                     return Err(ExecutionFailure::Interrupted);
                 }
@@ -2079,7 +2117,7 @@ impl SkyframeActionExecutor {
                 return Err(e.into());
             }
         }
-        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1389 ActionRunner.actuallyCompleteAction
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1297 ActionRunner.actuallyCompleteAction
         let primary_output_metadata =
             match output_metadata_store.get_output_metadata(&artifact_input(&primary_output)) {
                 Ok(Some(metadata)) => metadata,
@@ -2141,7 +2179,7 @@ impl SkyframeActionExecutor {
         is_action_cache_hit_for_metrics: bool,
     ) -> bool {
         let mut success = true;
-        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1634 SkyframeActionExecutor.checkOutputs
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1627 SkyframeActionExecutor.checkOutputs
         let _c = Profiler::instance().profile(ProfilerTask::INFO, "checkOutputs");
         for output in action.get_outputs() {
             // getOutputMetadata() has the side effect of adding the artifact to the cache if it's
@@ -2314,7 +2352,7 @@ impl SkyframeActionExecutor {
     }
 
     /// Reports the "directory dependency checking" warning for source directory inputs.
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1727 SkyframeActionExecutor.checkForUnsoundDirectoryInputs
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1728 SkyframeActionExecutor.checkForUnsoundDirectoryInputs
     fn check_for_unsound_directory_inputs(
         &self,
         action: &dyn Action,
@@ -2378,7 +2416,7 @@ impl SkyframeActionExecutor {
         Ok(())
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1762 SkyframeActionExecutor.checkForUnsoundDirectoryOutput
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1764 SkyframeActionExecutor.checkForUnsoundDirectoryOutput
     fn check_for_unsound_directory_output(
         &self,
         action: &dyn Action,
@@ -2415,7 +2453,7 @@ impl SkyframeActionExecutor {
         // PORT: cacheHitSemaphore (--experimental_throttle_action_cache_check) only throttles
         // concurrent cache checks; its wait time is a BEP metric. Not ported.
         self.check_action_cache_inputs_supported(action.as_ref());
-        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:781 SkyframeActionExecutor.checkActionCache
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:759 SkyframeActionExecutor.checkActionCache
         let _c =
             Profiler::instance().profile_with(ProfilerTask::ACTION_CHECK, || action.describe());
         let adapter = CacheCheckActionAdapter::new(action.as_ref(), &self.action_key_context);
@@ -2494,7 +2532,7 @@ impl SkyframeActionExecutor {
     /// PORT: `TestRunnerAction`'s `ActionCachedContext` is its arguments (event handler, exec
     /// root, `getContext(TestActionContext.class)`); the other implementations
     /// (`CoverageReportAction`) answer through `ExecutableAction::action_cache_hit`.
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:801 SkyframeActionExecutor.checkActionCache
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:759 SkyframeActionExecutor.checkActionCache
     fn notify_on_action_cache_hit(&self, action: &ActionRef) -> Option<bool> {
         // Java's `instanceof`: the analysis-side TestRunnerAction is viewed as the execution one.
         let Some(test_action): Option<Arc<TestRunnerAction>> =
@@ -2502,7 +2540,7 @@ impl SkyframeActionExecutor {
         else {
             // The other NotifyOnActionCacheHit actions (CoverageReportAction).
             // ActionCachedContext.getEventHandler(): selectEventHandler(action).
-            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:802 SkyframeActionExecutor.checkActionCache
+            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:759 SkyframeActionExecutor.checkActionCache
             let context_event_handler = self.select_event_handler(action.as_ref());
             return blaze_exec::actions::action_execution::as_executable(action.as_ref()).and_then(
                 |executable| {
@@ -2525,7 +2563,7 @@ impl SkyframeActionExecutor {
 
     /// `action instanceof RichDataProducingAction rdpa ?
     /// rdpa.reconstructRichDataOnActionCacheHit(inputMetadataProvider) : null`.
-    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:740 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:664 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
     pub fn reconstruct_rich_data_on_action_cache_hit(
         &self,
         action: &dyn Action,
@@ -2701,7 +2739,7 @@ impl SkyframeActionExecutor {
             // OutErr streams is sufficient.
             setup_action_fs_file_out_err(context.get_file_out_err(), action.as_ref())?;
         }
-        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:958 SkyframeActionExecutor.discoverInputs
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:922 SkyframeActionExecutor.discoverInputs
         env.listener().post(Arc::new(ScanningActionEvent {
             action: action.clone(),
         }));
@@ -2720,7 +2758,7 @@ impl SkyframeActionExecutor {
                     // Input discovery may have been affected by lost inputs. If an action filesystem is
                     // used, it may know whether inputs were lost. We should fail fast if any were;
                     // rewinding may be able to fix it.
-                    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:967 SkyframeActionExecutor.discoverInputs
+                    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:922 SkyframeActionExecutor.discoverInputs
                     Self::check_action_file_system_for_lost_inputs(
                         context.action_file_system.as_ref(),
                         action.as_ref(),
@@ -2735,7 +2773,7 @@ impl SkyframeActionExecutor {
                 // Input discovery failures may be caused by lost inputs. Lost input failures have
                 // higher priority because rewinding may be able to restore what was lost and allow
                 // the action to complete without error.
-                // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:976 SkyframeActionExecutor.discoverInputs
+                // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:922 SkyframeActionExecutor.discoverInputs
                 let e = if e.get_lost_inputs().is_none() {
                     match Self::check_action_file_system_for_lost_inputs(
                         context.action_file_system.as_ref(),
@@ -2754,7 +2792,7 @@ impl SkyframeActionExecutor {
                     // deps of the action.
                     // (setFromInputDiscovery(), then enrichLostInputsException; see
                     // signal_lost_inputs.)
-                    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:983 SkyframeActionExecutor.discoverInputs
+                    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:922 SkyframeActionExecutor.discoverInputs
                     return Err(self.signal_lost_inputs(
                         env.listener(),
                         &primary_output_path,
@@ -2778,7 +2816,7 @@ impl SkyframeActionExecutor {
             }
         })();
         // finally
-        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1002 SkyframeActionExecutor.discoverInputs
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:922 SkyframeActionExecutor.discoverInputs
         env.listener().post(Arc::new(StoppedScanningActionEvent {
             action: action.clone(),
         }));
@@ -2988,15 +3026,6 @@ fn disabled_action_cache_checker() -> ActionCacheChecker {
     )
 }
 
-/// `options.getOptions(CoreOptions.class).archivedArtifactsMnemonicsFilter.test(mnemonic)`.
-///
-/// PORT: `--archived_tree_artifact_mnemonics_filter` keeps its default `-.*` (disabled by
-/// default), which matches no mnemonic; the option is not threaded to the executor.
-// Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:420 SkyframeActionExecutor.archivedTreeArtifactsEnabledForMnemonic
-fn archived_tree_artifacts_enabled_for_mnemonic(_action: &dyn Action) -> bool {
-    false
-}
-
 // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:427 SkyframeActionExecutor.hasTreeArtifactOutputs
 fn has_tree_artifact_outputs(action: &dyn Action) -> bool {
     action.get_outputs().iter().any(|o| o.is_tree_artifact())
@@ -3114,7 +3143,7 @@ fn report_output_tree_artifact_errors(
     ));
 }
 
-// Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1774 SkyframeActionExecutor.getEventForUnsoundDirectory
+// Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1778 SkyframeActionExecutor.getEventForUnsoundDirectory
 fn get_event_for_unsound_directory(
     kind: EventKind,
     format: impl Fn(&str) -> String,
@@ -3148,27 +3177,27 @@ struct ActionOutputEventData {
 }
 
 impl blaze_events::event::ProcessOutput for ActionOutputEventData {
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:2014 SkyframeActionExecutor.ActionOutputEventData.getStdOutPath
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:2015 SkyframeActionExecutor.ActionOutputEventData.getStdOutPath
     fn get_std_out_path(&self) -> String {
         self.out_path.clone()
     }
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:2019 SkyframeActionExecutor.ActionOutputEventData.getStdOutSize
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:2020 SkyframeActionExecutor.ActionOutputEventData.getStdOutSize
     fn get_std_out_size(&self) -> std::io::Result<i64> {
         Ok(self.out.len() as i64)
     }
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:2024 SkyframeActionExecutor.ActionOutputEventData.getStdOut
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:2025 SkyframeActionExecutor.ActionOutputEventData.getStdOut
     fn get_std_out(&self) -> Vec<u8> {
         self.out.clone()
     }
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:2029 SkyframeActionExecutor.ActionOutputEventData.getStdErrPath
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:2030 SkyframeActionExecutor.ActionOutputEventData.getStdErrPath
     fn get_std_err_path(&self) -> String {
         self.err_path.clone()
     }
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:2034 SkyframeActionExecutor.ActionOutputEventData.getStdErrSize
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:2035 SkyframeActionExecutor.ActionOutputEventData.getStdErrSize
     fn get_std_err_size(&self) -> std::io::Result<i64> {
         Ok(self.err.len() as i64)
     }
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:2039 SkyframeActionExecutor.ActionOutputEventData.getStdErr
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:2040 SkyframeActionExecutor.ActionOutputEventData.getStdErr
     fn get_std_err(&self) -> Vec<u8> {
         self.err.clone()
     }
@@ -3177,7 +3206,7 @@ impl blaze_events::event::ProcessOutput for ActionOutputEventData {
 /// Handles the metadata of the outputs of the action during its execution.
 ///
 /// PORT: Java's `MISSING_TREE_ARTIFACT` marker is a `None` tree value.
-// Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:79 ActionOutputMetadataStore
+// Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:78 ActionOutputMetadataStore
 pub struct ActionOutputMetadataStore {
     archived_tree_artifacts_enabled: bool,
     output_permissions: OutputPermissions,
@@ -3194,7 +3223,7 @@ pub struct ActionOutputMetadataStore {
 }
 
 impl ActionOutputMetadataStore {
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:83 ActionOutputMetadataStore.create
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:82 ActionOutputMetadataStore.create
     pub fn create(
         archived_tree_artifacts_enabled: bool,
         output_permissions: OutputPermissions,
@@ -3219,7 +3248,7 @@ impl ActionOutputMetadataStore {
         self.action_file_system.as_ref()
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:130 ActionOutputMetadataStore.putArtifactData
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:128 ActionOutputMetadataStore.putArtifactData
     fn put_artifact_data(&self, artifact: &Artifact, value: FileArtifactValue) {
         blaze_util::check_argument!(
             !artifact.is_tree_artifact() && !artifact.is_child_of_declared_directory(),
@@ -3233,7 +3262,7 @@ impl ActionOutputMetadataStore {
     ///
     /// PORT: Java copies a `ConcurrentHashMap`; the entries are returned in the action's output
     /// order here.
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:138 ActionOutputMetadataStore.getAllArtifactData
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:136 ActionOutputMetadataStore.getAllArtifactData
     pub fn get_all_artifact_data(&self) -> IndexMap<Artifact, FileArtifactValue> {
         let data = self.artifact_data.lock();
         let mut result = IndexMap::new();
@@ -3277,7 +3306,7 @@ impl ActionOutputMetadataStore {
         result
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:162 ActionOutputMetadataStore.isKnownOutput
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:172 ActionOutputMetadataStore.isKnownOutput
     fn is_known_output(&self, artifact: &Artifact) -> bool {
         self.outputs.contains(artifact)
             || artifact
@@ -3290,7 +3319,7 @@ impl ActionOutputMetadataStore {
             .unwrap_or_else(|| panic!("ClassCastException: {} is not an Artifact", input))
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:147 ActionOutputMetadataStore.checkExists
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:152 ActionOutputMetadataStore.checkExists
     fn check_exists(
         value: FileArtifactValue,
         artifact: &Artifact,
@@ -3304,7 +3333,7 @@ impl ActionOutputMetadataStore {
         Ok(value)
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:155 ActionOutputMetadataStore.checkExists
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:152 ActionOutputMetadataStore.checkExists
     fn check_tree_exists(
         value: Option<Arc<TreeArtifactValue>>,
         artifact: &Artifact,
@@ -3318,7 +3347,7 @@ impl ActionOutputMetadataStore {
     }
 
     /// `getTreeArtifactValue(SpecialArtifact)`.
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:221 ActionOutputMetadataStore.getTreeArtifactValue
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:231 ActionOutputMetadataStore.getTreeArtifactValue
     fn get_tree(
         &self,
         artifact: &Artifact,
@@ -3341,12 +3370,12 @@ impl ActionOutputMetadataStore {
     /// `artifactPathResolver.toPath(artifact)`: the artifact's path on the action file system
     /// when there is one (`TransformResolver`), its own path otherwise (`IdentityResolver`).
     // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:75 IdentityResolver.toPath
-    // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:107 TransformResolver.toPath
+    // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:106 TransformResolver.toPath
     fn to_path(&self, artifact: &Artifact) -> Path {
         artifact_path_resolver_to_path(self.action_file_system.as_ref(), artifact)
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:236 ActionOutputMetadataStore.constructTreeArtifactValueFromFilesystem
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:245 ActionOutputMetadataStore.constructTreeArtifactValueFromFilesystem
     fn construct_tree_artifact_value_from_filesystem(
         &self,
         parent: &Artifact,
@@ -3389,8 +3418,24 @@ impl ActionOutputMetadataStore {
             },
         )?;
 
+        let mut archived_representation: Option<(ActionInputRef, FileArtifactValue)> = None;
         if self.archived_tree_artifacts_enabled {
-            blaze_util::unported!("ArchivedTreeArtifact.createForTree");
+            let archived_tree_artifact = Artifact::create_archived_tree_artifact_for_tree(parent);
+            let archived_stat_no_follow = self
+                .to_path(&archived_tree_artifact)
+                .stat_if_found(Symlinks::Nofollow)?;
+            if archived_stat_no_follow.is_some() {
+                // tree.setArchivedRepresentation(archivedTreeArtifact,
+                //     constructFileArtifactValue(archivedTreeArtifact, maybeAdapt(stat)))
+                // PORT: the store stats the archive again instead of taking the known stat (the
+                // same NOFOLLOW stat of the same path).
+                let archived_value =
+                    self.construct_file_artifact_value_from_filesystem(&archived_tree_artifact)?;
+                archived_representation =
+                    Some((artifact_input(&archived_tree_artifact), archived_value));
+            }
+            // PORT: skipped, the else branch's logger.atInfo() ("Archived tree artifact: %s not
+            // created"): Java log only.
         }
 
         // If the artifact was materialized in the filesystem as as symlink to another artifact,
@@ -3415,13 +3460,13 @@ impl ActionOutputMetadataStore {
 
         Ok(Some(Arc::new(TreeArtifactValue::build(
             tree,
-            None,
+            archived_representation,
             resolved_path,
         ))))
     }
 
     /// Sets the output permissions of a freshly created output file.
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:590 ActionOutputMetadataStore.setPathPermissionsIfFile
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:591 ActionOutputMetadataStore.setPathPermissionsIfFile
     fn set_path_permissions_if_file(&self, path: &Path) -> std::io::Result<()> {
         let stat = path.stat_if_found(Symlinks::Nofollow)?;
         if let Some(stat) = stat
@@ -3433,14 +3478,14 @@ impl ActionOutputMetadataStore {
         Ok(())
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:599 ActionOutputMetadataStore.setPathPermissions
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:600 ActionOutputMetadataStore.setPathPermissions
     fn set_path_permissions(&self, path: &Path) -> std::io::Result<()> {
         path.chmod(self.output_permissions.get_permissions_mode())
     }
 
     /// Constructs a new `FileArtifactValue` by reading from the file system.
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:381 ActionOutputMetadataStore.constructFileArtifactValueFromFilesystem
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:387 ActionOutputMetadataStore.constructFileArtifactValue
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:382 ActionOutputMetadataStore.constructFileArtifactValueFromFilesystem
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:388 ActionOutputMetadataStore.constructFileArtifactValue
     fn construct_file_artifact_value_from_filesystem(
         &self,
         artifact: &Artifact,
@@ -3541,7 +3586,7 @@ impl ActionOutputMetadataStore {
     }
 
     /// `prepareForActionExecution()`: enters execution mode and discards cached metadata.
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:383 ActionOutputMetadataStore.prepareForActionExecution
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:366 ActionOutputMetadataStore.prepareForActionExecution
     pub fn prepare_for_action_execution(&self) {
         check_state!(
             !self.execution_mode.swap(true, Ordering::SeqCst),
@@ -3552,7 +3597,7 @@ impl ActionOutputMetadataStore {
     }
 }
 
-// Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:548 ActionOutputMetadataStore.FileArtifactStatAndValue
+// Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:547 ActionOutputMetadataStore.FileArtifactStatAndValue
 struct FileArtifactStatAndValue {
     path_no_follow: Path,
     real_path: Option<Path>,
@@ -3563,7 +3608,7 @@ struct FileArtifactStatAndValue {
 /// `artifactPathResolver.toPath(artifact)` for the output metadata store's resolver
 /// (`ArtifactPathResolver.createPathResolver(actionFileSystem, execRoot)`).
 // Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:75 IdentityResolver.toPath
-// Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:107 TransformResolver.toPath
+// Java: com/google/devtools/build/lib/actions/ArtifactPathResolver.java:106 TransformResolver.toPath
 fn artifact_path_resolver_to_path(
     action_file_system: Option<&Arc<RemoteActionFileSystem>>,
     artifact: &Artifact,
@@ -3613,7 +3658,7 @@ fn stat_if_found_with_metadata(
 /// only reached through `constructFileArtifactValueFromFilesystem`; the archived tree artifact
 /// caller is not ported), so it is not a parameter. `action_file_system` is the
 /// `artifactPathResolver` (`None`: `IDENTITY`).
-// Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:478 ActionOutputMetadataStore.fileArtifactValueFromArtifact
+// Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:475 ActionOutputMetadataStore.fileArtifactValueFromArtifact
 fn file_artifact_value_from_artifact(
     artifact: &Artifact,
     action_file_system: Option<&Arc<RemoteActionFileSystem>>,
@@ -3703,7 +3748,7 @@ fn file_artifact_value_from_artifact(
 /// `ActionOutputMetadataStore.fileArtifactValueFromArtifact(artifact, null, xattrProvider, tsgm)`
 /// as `FilesystemValueChecker` calls it for an output of a kept `ACTION_EXECUTION` value (the
 /// identity path resolver: no action file system).
-// Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:478 ActionOutputMetadataStore.fileArtifactValueFromArtifact
+// Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:475 ActionOutputMetadataStore.fileArtifactValueFromArtifact
 pub(crate) fn file_artifact_value_for_output_check(
     artifact: &Artifact,
     tsgm: Option<&TimestampGranularityMonitor>,
@@ -3735,13 +3780,13 @@ fn file_artifact_value_from_stat(
     // FileStateValue.createWithStatNoFollow(rootedPath, stat, xattrProvider, tsgm), then
     // FileArtifactValue.createForNormalFile(fileStateValue.getDigest(),
     // fileStateValue.getContentsProxy(), stat.getSize()).
-    // Java: com/google/devtools/build/lib/actions/FileStateValue.java:86 FileStateValue.createWithStatNoFollow
+    // Java: com/google/devtools/build/lib/actions/FileStateValue.java:114 FileStateValue.createWithStatNoFollow
     if stat.is_file() {
         // A special file (SpecialFileStateValue.fromStat) and a regular file without a fast
         // digest (RegularFileStateValueWithContentsProxy: the stat carries no digest, and
         // `xattrProvider.getFastDigest` is null for a file system without digest xattrs) both
         // have no digest and the contents proxy of the stat.
-        // Java: com/google/devtools/build/lib/actions/FileStateValue.java:160 FileStateValue.createRegularFileStateValueFromPath
+        // Java: com/google/devtools/build/lib/actions/FileStateValue.java:147 FileStateValue.createRegularFileStateValueFromPath
         // (and SpecialFileStateValue.fromStat): tsgm.notifyDependenceOnFileTime.
         if let Some(tsgm) = tsgm {
             tsgm.notify_dependence_on_file_time(stat.get_last_change_time());
@@ -3765,7 +3810,7 @@ fn file_artifact_value_from_stat(
 }
 
 impl OutputMetadataStore for ActionOutputMetadataStore {
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:321 ActionOutputMetadataStore.injectFile
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:319 ActionOutputMetadataStore.injectFile
     fn inject_file(&self, output: &ActionInputRef, metadata: FileArtifactValue) {
         let output = self.artifact_of(output);
         blaze_util::check_argument!(
@@ -3781,7 +3826,7 @@ impl OutputMetadataStore for ActionOutputMetadataStore {
         self.put_artifact_data(output, metadata);
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:333 ActionOutputMetadataStore.injectTree
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:330 ActionOutputMetadataStore.injectTree
     fn inject_tree(&self, output: &ActionInputRef, tree: TreeArtifactValue) {
         let output = self.artifact_of(output);
         blaze_util::check_argument!(
@@ -3799,7 +3844,7 @@ impl OutputMetadataStore for ActionOutputMetadataStore {
             .insert(output.clone(), Some(Arc::new(tree)));
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:167 ActionOutputMetadataStore.getOutputMetadata
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:179 ActionOutputMetadataStore.getOutputMetadata
     fn get_output_metadata(
         &self,
         output: &ActionInputRef,
@@ -3853,7 +3898,7 @@ impl OutputMetadataStore for ActionOutputMetadataStore {
         ActionOutputMetadataStore::check_exists(value, artifact).map(Some)
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:221 ActionOutputMetadataStore.getTreeArtifactValue
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:231 ActionOutputMetadataStore.getTreeArtifactValue
     fn get_tree_artifact_value(
         &self,
         tree_artifact: &ActionInputRef,
@@ -3862,7 +3907,7 @@ impl OutputMetadataStore for ActionOutputMetadataStore {
         self.get_tree(artifact).map(|t| (*t).clone())
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:341 ActionOutputMetadataStore.markOmitted
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:337 ActionOutputMetadataStore.markOmitted
     fn mark_omitted(&self, output: &ActionInputRef) {
         let output = self.artifact_of(output);
         check_state!(
@@ -3873,14 +3918,14 @@ impl OutputMetadataStore for ActionOutputMetadataStore {
         self.omitted_outputs.lock().insert(output.clone());
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:348 ActionOutputMetadataStore.artifactOmitted
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:343 ActionOutputMetadataStore.artifactOmitted
     fn artifact_omitted(&self, artifact: &ActionInputRef) -> bool {
         self.omitted_outputs
             .lock()
             .contains(self.artifact_of(artifact))
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:353 ActionOutputMetadataStore.resetOutputs
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:348 ActionOutputMetadataStore.resetOutputs
     fn reset_outputs(&self, outputs: &[ActionInputRef]) {
         check_state!(
             self.execution_mode.load(Ordering::SeqCst),
@@ -4035,7 +4080,7 @@ impl blaze_actions::actions::action::InputMetadataProvider for KeyMetadataAdapte
             .and_then(|m| m.get_digest().map(<[u8]>::to_vec)))
     }
 
-    // Java: com/google/devtools/build/lib/actions/InputMetadataProvider.java:56 InputMetadataProvider.getTreeMetadata
+    // Java: com/google/devtools/build/lib/actions/InputMetadataProvider.java:60 InputMetadataProvider.getTreeMetadata
     fn get_tree_children(&self, tree: &Artifact) -> Option<Vec<Artifact>> {
         let value = self.0.get_tree_metadata(&artifact_input(tree))?;
         Some(
@@ -4171,7 +4216,7 @@ enum ActionInputMapValue {
 /// PORT: Java's `ActionInputMap` is an open-addressed table plus a trie of the tree artifacts'
 /// exec paths; here it is one hash map from exec path to key and value, and the trie lookups walk
 /// the ancestors of the path.
-// Java: com/google/devtools/build/lib/actions/ActionInputMap.java:53 ActionInputMap
+// Java: com/google/devtools/build/lib/actions/ActionInputMap.java:51 ActionInputMap
 // Java: com/google/devtools/build/lib/skyframe/ActionInputMetadataProvider.java:45 ActionInputMetadataProvider
 // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:52 SkyframeInputMetadataProvider
 // Java: com/google/devtools/build/lib/actions/DelegatingPairInputMetadataProvider.java:27 DelegatingPairInputMetadataProvider
@@ -4220,7 +4265,7 @@ impl ActionInputMetadata {
         }
     }
 
-    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:424 ActionInputMap.putIfAbsent
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:420 ActionInputMap.putIfAbsent
     fn put_if_absent(
         &self,
         input: ActionInputRef,
@@ -4264,7 +4309,7 @@ impl ActionInputMetadata {
         );
     }
 
-    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:393 ActionInputMap.putRunfilesMetadata
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:394 ActionInputMap.putRunfilesMetadata
     pub fn put_runfiles_metadata(&self, input: &Artifact, metadata: Arc<RunfilesArtifactValue>) {
         blaze_util::check_argument!(input.is_runfiles_tree(), "{}", input);
 
@@ -4277,13 +4322,13 @@ impl ActionInputMetadata {
         // ported InputMetadataProvider.
     }
 
-    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:402 ActionInputMap.putTreeArtifact
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:403 ActionInputMap.putTreeArtifact
     pub fn put_tree_artifact(&self, tree: &Artifact, tree_artifact_value: Arc<TreeArtifactValue>) {
         self.put_tree_artifact_input(artifact_input(tree), tree_artifact_value);
     }
 
     /// [`ActionInputMetadata::put_tree_artifact`] for an input the execution layer holds.
-    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:402 ActionInputMap.putTreeArtifact
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:403 ActionInputMap.putTreeArtifact
     pub fn put_tree_artifact_input(
         &self,
         tree: ActionInputRef,
@@ -4328,7 +4373,7 @@ impl ActionInputMetadata {
 
     /// The tree artifact of the map whose exec path is a prefix of `exec_path`
     /// (`treeArtifactsRoot.findTreeArtifactNodeAtPrefix(execPath)`).
-    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:118 TrieArtifact.findTreeArtifactNodeAtPrefix
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:116 TrieArtifact.findTreeArtifactNodeAtPrefix
     // (The trie's nodes are the map's tree entries: `TrieArtifact.add`/`put` are
     // `put_tree_artifact_input`.)
     // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:76 ActionInputMap.TrieArtifact.add
@@ -4415,7 +4460,7 @@ impl ActionInputMetadata {
         find_child_entry_by_exec_path(&tree, exec_path).map(|(_, value)| value.clone())
     }
 
-    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:258 ActionInputMap.getRunfilesMetadata
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:262 ActionInputMap.getRunfilesMetadata
     fn action_input_map_get_runfiles_metadata(
         &self,
         input: &ActionInputRef,
@@ -4431,8 +4476,8 @@ impl ActionInputMetadata {
         }
     }
 
-    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:320 ActionInputMap.getTreeMetadata
-    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:324 ActionInputMap.getTreeMetadata
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:319 ActionInputMap.getTreeMetadata
+    // Java: com/google/devtools/build/lib/actions/ActionInputMap.java:325 ActionInputMap.getTreeMetadata
     fn action_input_map_get_tree_metadata(
         &self,
         input: &ActionInputRef,
@@ -4494,13 +4539,13 @@ impl ActionInputMetadata {
     /// Allow Skyframe access while the returned guard is alive.
     ///
     /// This should only happen during input discovery, so we disallow it everywhere else.
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:153 SkyframeInputMetadataProvider.withSkyframeAllowed
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:151 SkyframeInputMetadataProvider.withSkyframeAllowed
     pub fn with_skyframe_allowed(&self) -> SkyframeAllowed<'_> {
         self.allow_skyframe.store(true, Ordering::SeqCst);
         SkyframeAllowed(self)
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:167 SkyframeInputMetadataProvider.getInputMetadataChecked
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:165 SkyframeInputMetadataProvider.getInputMetadataChecked
     // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:60 SkyframeInputMetadataProvider.SkyframeLookup.<init>
     // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:65 SkyframeInputMetadataProvider.SkyframeLookup.tryLookup
     fn skyframe_input_metadata_provider_get_input_metadata_checked(
@@ -4603,18 +4648,18 @@ impl Drop for SkyframeAllowed<'_> {
     }
 }
 
-// Java: com/google/devtools/build/lib/actions/ActionInputMap.java:480 ActionInputMap.isTreeArtifact
+// Java: com/google/devtools/build/lib/actions/ActionInputMap.java:492 ActionInputMap.isTreeArtifact
 fn is_tree_artifact_input(input: &ActionInputRef) -> bool {
     input.as_artifact().is_some_and(|a| a.is_tree_artifact())
 }
 
-// Java: com/google/devtools/build/lib/actions/ActionInputMap.java:488 ActionInputMap.isRunfilesTree
+// Java: com/google/devtools/build/lib/actions/ActionInputMap.java:496 ActionInputMap.isRunfilesTree
 fn is_runfiles_tree_input(input: &ActionInputRef) -> bool {
     input.as_artifact().is_some_and(|a| a.is_runfiles_tree())
 }
 
 /// The child of `tree` at `exec_path`, with its metadata.
-// Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:372 TreeArtifactValue.findChildEntryByExecPath
+// Java: com/google/devtools/build/lib/skyframe/TreeArtifactValue.java:375 TreeArtifactValue.findChildEntryByExecPath
 fn find_child_entry_by_exec_path<'a>(
     tree: &'a TreeArtifactValue,
     exec_path: &PathFragment,
@@ -4650,12 +4695,12 @@ impl InputMetadataProvider for ActionInputMapOnly<'_> {
         None
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ActionInputMetadataProvider.java:117 ActionInputMetadataProvider.getRunfilesMetadata
+    // Java: com/google/devtools/build/lib/skyframe/ActionInputMetadataProvider.java:116 ActionInputMetadataProvider.getRunfilesMetadata
     fn get_runfiles_metadata(&self, input: &ActionInputRef) -> Option<Arc<RunfilesArtifactValue>> {
         self.0.action_input_map_get_runfiles_metadata(input)
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ActionInputMetadataProvider.java:128 ActionInputMetadataProvider.getInput
+    // Java: com/google/devtools/build/lib/skyframe/ActionInputMetadataProvider.java:127 ActionInputMetadataProvider.getInput
     fn get_input(&self, exec_path: &PathFragment) -> Option<ActionInputRef> {
         self.0.action_input_map_get_input(exec_path)
     }
@@ -4664,7 +4709,7 @@ impl InputMetadataProvider for ActionInputMapOnly<'_> {
 /// `DelegatingPairInputMetadataProvider(actionInputMetadataProvider,
 /// skyframeInputMetadataProvider)`: `state.compositeInputMetadataProvider`.
 impl InputMetadataProvider for ActionInputMetadata {
-    // Java: com/google/devtools/build/lib/actions/DelegatingPairInputMetadataProvider.java:38 DelegatingPairInputMetadataProvider.getInputMetadataChecked
+    // Java: com/google/devtools/build/lib/actions/DelegatingPairInputMetadataProvider.java:39 DelegatingPairInputMetadataProvider.getInputMetadataChecked
     fn get_input_metadata(
         &self,
         input: &ActionInputRef,
@@ -4678,19 +4723,19 @@ impl InputMetadataProvider for ActionInputMetadata {
         }
     }
 
-    // Java: com/google/devtools/build/lib/actions/DelegatingPairInputMetadataProvider.java:48 DelegatingPairInputMetadataProvider.getTreeMetadata
+    // Java: com/google/devtools/build/lib/actions/DelegatingPairInputMetadataProvider.java:49 DelegatingPairInputMetadataProvider.getTreeMetadata
     // (the secondary, SkyframeInputMetadataProvider, answers null for trees, filesets and
     // runfiles, so these return the input map's answer)
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:195 SkyframeInputMetadataProvider.getTreeMetadata
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:207 SkyframeInputMetadataProvider.getFileset
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:218 SkyframeInputMetadataProvider.getRunfilesMetadata
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:197 SkyframeInputMetadataProvider.getTreeMetadata
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:209 SkyframeInputMetadataProvider.getFileset
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:220 SkyframeInputMetadataProvider.getRunfilesMetadata
     // PORT: skipped, not methods of Blaze's InputMetadataProvider (no caller at the pin reads them through these providers): SkyframeInputMetadataProvider.getEnclosingTreeMetadata SkyframeInputMetadataProvider.getFilesets SkyframeInputMetadataProvider.getRunfilesTrees
     fn get_tree_metadata(&self, input: &ActionInputRef) -> Option<Arc<TreeArtifactValue>> {
         // SkyframeInputMetadataProvider.getTreeMetadata returns null.
         self.action_input_map_get_tree_metadata(input)
     }
 
-    // Java: com/google/devtools/build/lib/actions/DelegatingPairInputMetadataProvider.java:62 DelegatingPairInputMetadataProvider.getFileset
+    // Java: com/google/devtools/build/lib/actions/DelegatingPairInputMetadataProvider.java:63 DelegatingPairInputMetadataProvider.getFileset
     fn get_fileset(&self, _input: &ActionInputRef) -> Option<Arc<FilesetOutputTree>> {
         None
     }
@@ -4701,12 +4746,12 @@ impl InputMetadataProvider for ActionInputMetadata {
         self.action_input_map_get_runfiles_metadata(input)
     }
 
-    // Java: com/google/devtools/build/lib/actions/DelegatingPairInputMetadataProvider.java:103 DelegatingPairInputMetadataProvider.getInput
+    // Java: com/google/devtools/build/lib/actions/DelegatingPairInputMetadataProvider.java:102 DelegatingPairInputMetadataProvider.getInput
     fn get_input(&self, exec_path: &PathFragment) -> Option<ActionInputRef> {
         if let Some(input) = self.action_input_map_get_input(exec_path) {
             return Some(input);
         }
-        // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:236 SkyframeInputMetadataProvider.getInput
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeInputMetadataProvider.java:231 SkyframeInputMetadataProvider.getInput
         if let Some(result) = self.seen.lock().get(exec_path) {
             return Some(result.clone());
         }
@@ -4748,7 +4793,7 @@ impl ExtendedEventHandler for ProgressSuppressingEventHandler {
 /// exceptions, which nothing prints; the failure is returned unchanged. The message uses the Rust
 /// `io::Error` text where Java has `IOException.getMessage()`.
 // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:737 SkyframeActionExecutor.closeContext
-// Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:537 ActionExecutionContext.close
+// Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:538 ActionExecutionContext.close
 fn close_context<T>(
     file_out_err: &FileOutErr,
     action: &ActionRef,
@@ -4775,7 +4820,7 @@ fn close_context<T>(
 
 /// The `ActionExecutionContext` for one action (or, without an output metadata store, the
 /// `ActionExecutionContext.forInputDiscovery` of one action).
-// Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:59 ActionExecutionContext
+// Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:50 ActionExecutionContext
 struct ActionExecutionContextImpl<'a> {
     /// The action the context was created for: the action of the progress events
     /// ([`ActionExecutionContext::post_progress`]).
@@ -4886,7 +4931,7 @@ impl ActionExecutionContext for ActionExecutionContextImpl<'_> {
     /// PORT: the posted events hold the action (`ActionRef`); the metadata the strategies pass
     /// is the action this context was created for (a snapshot of it), so the context's own
     /// action is posted.
-    // Java: com/google/devtools/build/lib/exec/SpawnRunner.java:116 SpawnRunner.ProgressStatus.postTo
+    // Java: com/google/devtools/build/lib/exec/SpawnRunner.java:117 SpawnRunner.ProgressStatus.postTo
     fn post_progress(&self, _action: &dyn ActionExecutionMetadata, progress: &ProgressStatus) {
         let event_handler = self.get_event_handler();
         let action = self.action.clone();
@@ -5479,7 +5524,7 @@ mod action_output_metadata_store_tests {
 
     /// The metadata of a declared symlink output is read with `readlink`, never by following the
     /// link: a dangling target is fine.
-    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:487 ActionOutputMetadataStore.fileArtifactValueFromArtifact
+    // Java: com/google/devtools/build/lib/skyframe/ActionOutputMetadataStore.java:475 ActionOutputMetadataStore.fileArtifactValueFromArtifact
     #[test]
     fn declared_symlink_output_has_unresolved_symlink_metadata() {
         let (_dir, symlink) = create_symlink_artifact();
@@ -5712,7 +5757,7 @@ mod action_output_metadata_store_tests {
         );
     }
 
-    // Java: src/test/java/com/google/devtools/build/lib/skyframe/ActionOutputMetadataStoreTest.java:400 ActionOutputMetadataStoreTest.fileArtifactMaterializedAsSymlinkToFileArtifact
+    // Java: src/test/java/com/google/devtools/build/lib/skyframe/ActionOutputMetadataStoreTest.java:401 ActionOutputMetadataStoreTest.fileArtifactMaterializedAsSymlinkToFileArtifact
     #[test]
     fn file_artifact_materialized_as_symlink_to_file_artifact() {
         // @TestParameter ArtifactType artifactType, @TestParameter ResolvedPathDepth depth
@@ -5779,7 +5824,7 @@ mod action_output_metadata_store_tests {
         }
     }
 
-    // Java: src/test/java/com/google/devtools/build/lib/skyframe/ActionOutputMetadataStoreTest.java:452 ActionOutputMetadataStoreTest.treeArtifactMaterializedAsSymlinkToNonArtifact
+    // Java: src/test/java/com/google/devtools/build/lib/skyframe/ActionOutputMetadataStoreTest.java:453 ActionOutputMetadataStoreTest.treeArtifactMaterializedAsSymlinkToNonArtifact
     #[test]
     fn tree_artifact_materialized_as_symlink_to_non_artifact() {
         let f = ActionFsFixture::new();
@@ -5839,7 +5884,7 @@ mod action_output_metadata_store_tests {
         chmod(resolved_path.get_path_string(), 0o755);
     }
 
-    // Java: src/test/java/com/google/devtools/build/lib/skyframe/ActionOutputMetadataStoreTest.java:482 ActionOutputMetadataStoreTest.treeArtifactMaterializedAsSymlinkToAnotherTreeArtifact
+    // Java: src/test/java/com/google/devtools/build/lib/skyframe/ActionOutputMetadataStoreTest.java:483 ActionOutputMetadataStoreTest.treeArtifactMaterializedAsSymlinkToAnotherTreeArtifact
     #[test]
     fn tree_artifact_materialized_as_symlink_to_another_tree_artifact() {
         // @TestParameter ResolvedPathDepth depth
@@ -6432,19 +6477,19 @@ mod action_input_map_tests {
 
 /// `profiler.profileAction(ProfilerTask.ACTION, mnemonic, describe(), primary output exec path,
 /// getOwnerLabelAsString(action), getOwnerConfigurationAsString(action))`.
-// Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1103 ActionRunner.run
+// Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1087 ActionRunner.run
 fn profile_action_scope(action: &dyn Action) -> blaze_util::profiler::SilentCloseable {
     let profiler = Profiler::instance();
     if !(profiler.is_active() && profiler.is_profiling(ProfilerTask::ACTION)) {
         return blaze_util::profiler::SilentCloseable::nop();
     }
     let owner = action.get_owner();
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1174 ActionRunner.getOwnerLabelAsString
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1177 ActionRunner.getOwnerLabelAsString
     let owner_label = owner
         .get_label()
         .map(|l| l.get_canonical_form())
         .unwrap_or_default();
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1186 ActionRunner.getOwnerConfigurationAsString
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1189 ActionRunner.getOwnerConfigurationAsString
     let owner_configuration = owner.get_configuration_checksum().to_string();
     profiler.profile_action(
         ProfilerTask::ACTION,

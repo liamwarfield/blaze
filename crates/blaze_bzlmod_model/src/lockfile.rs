@@ -26,6 +26,8 @@ use crate::version::java_string_compare;
 // adapter directly at the field it serializes (marked per adapter).
 // PORT: skipped GsonTypeAdapterUtil.newGsonBuilder: Gson adapter registry (see above).
 // PORT: skipped OptionalChecksumTypeAdapterFactory.create: Gson adapter registry (see above).
+// PORT: skipped, the Gson adapter registry (the lockfile is written and read by hand): DelegateTypeAdapterFactory.<init>, GsonTypeAdapterUtil.OptionalTypeAdapter.<init>, GsonTypeAdapterUtil.OptionalChecksumTypeAdapterFactory.create
+// PORT: skipped, the private constructor of a static-only class: GsonTypeAdapterUtil.<init>
 // PORT: skipped DelegateTypeAdapterFactory.create: Gson adapter registry (see above).
 
 /// The current lockfile version.

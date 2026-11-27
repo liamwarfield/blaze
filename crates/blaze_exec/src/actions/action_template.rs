@@ -126,3 +126,31 @@ pub fn as_action_template(action: &dyn Action) -> Option<&dyn ActionTemplate> {
     let caster = *registry().read().get(&any.type_id())?;
     caster(any)
 }
+
+/// `ActionTemplateExpansionValue.key(actionLookupKey, actionIndex)`: the key type lives in
+/// blaze_sky_exec, which installs the factory with [`set_action_template_expansion_key_factory`]
+/// (templates that compute their action key from a dummy expansion, as `SpawnActionTemplate`,
+/// are defined in crates that cannot depend on it).
+pub type ActionTemplateExpansionKeyFactory = fn(ActionLookupKeyRef, i32) -> ActionLookupKeyRef;
+
+static EXPANSION_KEY_FACTORY: std::sync::OnceLock<ActionTemplateExpansionKeyFactory> =
+    std::sync::OnceLock::new();
+
+/// Installs the [`ActionTemplateExpansionKeyFactory`] (first call wins).
+pub fn set_action_template_expansion_key_factory(factory: ActionTemplateExpansionKeyFactory) {
+    let _ = EXPANSION_KEY_FACTORY.set(factory);
+}
+
+/// `ActionTemplateExpansionValue.key(action_lookup_key, action_index)`.
+// Java: com/google/devtools/build/lib/skyframe/ActionTemplateExpansionValue.java:53 ActionTemplateExpansionValue.key
+pub fn action_template_expansion_key(
+    action_lookup_key: ActionLookupKeyRef,
+    action_index: i32,
+) -> ActionLookupKeyRef {
+    match EXPANSION_KEY_FACTORY.get() {
+        Some(factory) => factory(action_lookup_key, action_index),
+        None => blaze_util::unported!(
+            "ActionTemplateExpansionValue.key (no factory installed by blaze_sky_exec)"
+        ),
+    }
+}

@@ -1,0 +1,348 @@
+#!/usr/bin/env python3
+"""A scripted client of the Starlark debug server (starlark_debugging.proto). See `client help`."""
+
+import socket
+import sys
+import time
+
+USAGE = """\
+usage: scripts/starlark-debug/client <port> <workspace> [--timeout <seconds>]
+       scripts/starlark-debug/client help
+
+Connects to the debug server of a build started with
+  --experimental_skylark_debug --experimental_skylark_debug_server_port=<port>
+on 127.0.0.1:<port> (retrying for up to the timeout, default 120 s), and plays the scenario
+of the probe workspace written by scripts/starlark-debug/e2e:
+
+  - breakpoints at <workspace>/pkg/BUILD:3 and <workspace>/pkg/defs.bzl:3, then
+    StartDebugging;
+  - at the BUILD breakpoint: list frames, step INTO (into helper()), list frames, step OVER,
+    evaluate "vals[1]" and "name" (a local: an error), step OUT, list frames, continue;
+  - at the defs.bzl breakpoint (the rule implementation): list frames, get the children of the
+    local "items", step OVER, list frames, continue;
+  - then reads events until the server closes the connection.
+
+Prints a transcript on stdout: one line per request and per event, with the workspace path
+replaced by <WS>, thread ids by T1, T2, ... in order of appearance, thread names and value ids
+left out. Pauses with reason INITIALIZING (threads that ran before StartDebugging; their
+number is a race) and their ThreadContinued events are not printed.
+"""
+
+# ---- a minimal protobuf codec --------------------------------------------------------------
+
+
+def enc_varint(n):
+    if n < 0:
+        n += 1 << 64
+    out = bytearray()
+    while True:
+        b = n & 0x7F
+        n >>= 7
+        if n:
+            out.append(b | 0x80)
+        else:
+            out.append(b)
+            return bytes(out)
+
+
+def enc_field(num, value):
+    """value: int (varint), str/bytes (length-delimited), or list of (num, value) (message)."""
+    if isinstance(value, bool):
+        value = int(value)
+    if isinstance(value, int):
+        return enc_varint(num << 3) + enc_varint(value)
+    if isinstance(value, str):
+        value = value.encode("utf-8")
+    elif isinstance(value, list):
+        value = enc_msg(value)
+    return enc_varint((num << 3) | 2) + enc_varint(len(value)) + value
+
+
+def enc_msg(fields):
+    return b"".join(enc_field(n, v) for n, v in fields)
+
+
+def dec_varint(buf, i):
+    shift = n = 0
+    while True:
+        b = buf[i]
+        i += 1
+        n |= (b & 0x7F) << shift
+        if not b & 0x80:
+            return n, i
+        shift += 7
+
+
+def dec_msg(buf):
+    """Returns {field number: [raw values]} (ints, or bytes for length-delimited fields)."""
+    out = {}
+    i = 0
+    while i < len(buf):
+        key, i = dec_varint(buf, i)
+        num, wt = key >> 3, key & 7
+        if wt == 0:
+            v, i = dec_varint(buf, i)
+        elif wt == 2:
+            ln, i = dec_varint(buf, i)
+            v = bytes(buf[i:i + ln])
+            i += ln
+        elif wt == 1:
+            v = buf[i:i + 8]
+            i += 8
+        elif wt == 5:
+            v = buf[i:i + 4]
+            i += 4
+        else:
+            raise ValueError(f"wire type {wt}")
+        out.setdefault(num, []).append(v)
+    return out
+
+
+def one(m, num, default=None):
+    return m.get(num, [default])[-1]
+
+
+def text(m, num):
+    v = one(m, num, b"")
+    return v.decode("utf-8", "replace")
+
+
+def signed(n):
+    return n - (1 << 64) if n >= 1 << 63 else n
+
+
+# ---- the session ---------------------------------------------------------------------------
+
+PAUSE_REASONS = {0: "UNSET", 1: "STEPPING", 2: "ALL_THREADS_PAUSED", 3: "PAUSE_THREAD_REQUEST",
+                 4: "HIT_BREAKPOINT", 5: "CONDITIONAL_BREAKPOINT_ERROR", 6: "INITIALIZING"}
+STEPPING = {"NONE": 0, "INTO": 1, "OVER": 2, "OUT": 3}
+
+
+class Session:
+    def __init__(self, sock, workspace):
+        self.sock = sock
+        self.buf = b""
+        self.workspace = workspace
+        self.threads = {}
+        self.seq = 0
+        self.pending = []  # unnumbered events read while waiting for a response
+        self.initializing = set()
+
+    def out(self, line):
+        print(line.replace(self.workspace, "<WS>"), flush=True)
+
+    def tid(self, raw):
+        if raw not in self.threads:
+            self.threads[raw] = f"T{len(self.threads) + 1}"
+        return self.threads[raw]
+
+    def read_event(self):
+        """The next DebugEvent as a dict, or None at the end of the stream."""
+        while True:
+            try:
+                n, i = dec_varint(self.buf, 0)
+                if len(self.buf) >= i + n:
+                    msg = self.buf[i:i + n]
+                    self.buf = self.buf[i + n:]
+                    return dec_msg(msg)
+            except IndexError:
+                pass
+            chunk = self.sock.recv(65536)
+            if not chunk:
+                return None
+            self.buf += chunk
+
+    def request(self, payload_num, payload_fields, label):
+        self.seq += 1
+        seq = self.seq
+        self.out(f"> {label}")
+        self.sock.sendall(enc_varint(len(enc_msg([(1, seq), (payload_num, payload_fields)])))
+                          + enc_msg([(1, seq), (payload_num, payload_fields)]))
+        while True:
+            ev = self.read_event()
+            if ev is None:
+                self.out("< (connection closed)")
+                return None
+            if one(ev, 1, 0) == seq:
+                return ev
+            self.pending.append(ev)
+
+    def next_unnumbered(self):
+        while True:
+            ev = self.pending.pop(0) if self.pending else self.read_event()
+            if ev is None:
+                return None
+            if self.print_unnumbered(ev):
+                return ev
+
+    def print_unnumbered(self, ev):
+        """Prints an unnumbered event; False for one that is left out."""
+        if 1001 in ev:
+            t = dec_msg(one(ev, 1001))
+            th = dec_msg(one(t, 1, b""))
+            raw = signed(one(th, 1, 0))
+            reason = PAUSE_REASONS.get(one(th, 3, 0), "?")
+            if reason == "INITIALIZING":
+                self.initializing.add(raw)
+                return False
+            line = f"< ThreadPaused {self.tid(raw)} {reason} at {self.loc(one(th, 4))}"
+            if 5 in th:
+                line += f" error={text(dec_msg(one(th, 5)), 1)!r}"
+            self.out(line)
+            ev["_thread"] = raw
+            return True
+        if 1002 in ev:
+            raw = signed(one(dec_msg(one(ev, 1002)), 1, 0))
+            if raw in self.initializing:
+                self.initializing.discard(raw)
+                return False
+            self.out(f"< ThreadContinued {self.tid(raw)}")
+            return False
+        if 99 in ev:
+            self.out(f"< Error {text(dec_msg(one(ev, 99)), 1)!r}")
+            return False
+        self.out(f"< unnumbered event with fields {sorted(ev)}")
+        return False
+
+    def loc(self, raw):
+        if raw is None:
+            return "(no location)"
+        m = dec_msg(raw)
+        return f"{text(m, 1)}:{one(m, 2, 0)}:{one(m, 3, 0)}"
+
+    def value(self, raw):
+        m = dec_msg(raw)
+        kids = " +children" if one(m, 4, 0) else ""
+        return f"{text(m, 1)}: {text(m, 3)} = {text(m, 2)}{kids}", one(m, 5, 0)
+
+    def response_error(self, ev):
+        if ev is not None and 99 in ev:
+            self.out(f"< Error {text(dec_msg(one(ev, 99)), 1)!r}")
+            return True
+        return False
+
+    def list_frames(self, raw_tid):
+        ev = self.request(104, [(1, raw_tid)], f"ListFrames {self.tid(raw_tid)}")
+        if ev is None or self.response_error(ev):
+            return {}
+        ids = {}
+        frames = dec_msg(one(ev, 104, b"")).get(1, [])
+        self.out(f"< ListFrames: {len(frames)} frames")
+        for f in frames:
+            fm = dec_msg(f)
+            self.out(f"    frame {text(fm, 1)} at {self.loc(one(fm, 3))}")
+            for s in fm.get(2, []):
+                sm = dec_msg(s)
+                self.out(f"      scope {text(sm, 1)}")
+                for b in sm.get(2, []):
+                    line, vid = self.value(b)
+                    self.out(f"        {line}")
+                    ids.setdefault(text(dec_msg(b), 1), vid)
+        return ids
+
+    def evaluate(self, raw_tid, statement):
+        ev = self.request(103, [(1, raw_tid), (2, statement)],
+                          f"Evaluate {self.tid(raw_tid)} {statement!r}")
+        if ev is None or self.response_error(ev):
+            return
+        r = dec_msg(one(ev, 103, b""))
+        self.out(f"< Evaluate: {self.value(one(r, 1, b''))[0]}")
+
+    def get_children(self, raw_tid, value_id, label):
+        ev = self.request(107, [(1, raw_tid), (2, value_id)],
+                          f"GetChildren {self.tid(raw_tid)} {label}")
+        if ev is None or self.response_error(ev):
+            return
+        kids = dec_msg(one(ev, 107, b"")).get(1, [])
+        self.out(f"< GetChildren: {len(kids)}")
+        for k in kids:
+            self.out(f"    {self.value(k)[0]}")
+
+    def resume(self, raw_tid, stepping):
+        ev = self.request(102, [(1, raw_tid), (2, STEPPING[stepping])],
+                          f"ContinueExecution {self.tid(raw_tid)} {stepping}")
+        self.response_error(ev)
+
+    def wait_pause(self):
+        while True:
+            ev = self.next_unnumbered()
+            if ev is None:
+                self.out("< (connection closed)")
+                return None
+            if "_thread" in ev:
+                return ev["_thread"]
+
+
+def connect(port, timeout):
+    deadline = time.time() + timeout
+    while True:
+        try:
+            return socket.create_connection(("127.0.0.1", port), timeout=5)
+        except OSError:
+            if time.time() > deadline:
+                raise
+            time.sleep(0.2)
+
+
+def main(argv):
+    if not argv or argv[0] in ("help", "--help"):
+        print(USAGE)
+        return 0
+    if len(argv) not in (2, 4):
+        print(USAGE)
+        return 2
+    port, workspace = int(argv[0]), argv[1].rstrip("/")
+    timeout = float(argv[3]) if len(argv) == 4 and argv[2] == "--timeout" else 120.0
+    sock = connect(port, timeout)
+    sock.settimeout(300)
+    s = Session(sock, workspace)
+    build, defs = f"{workspace}/pkg/BUILD", f"{workspace}/pkg/defs.bzl"
+    ev = s.request(101, [(1, [(1, [(1, build), (2, 3)])]), (1, [(1, [(1, defs), (2, 3)])])],
+                   "SetBreakpoints <WS>/pkg/BUILD:3 <WS>/pkg/defs.bzl:3")
+    s.response_error(ev)
+    ev = s.request(105, [], "StartDebugging")
+    s.response_error(ev)
+
+    t = s.wait_pause()  # BUILD:3
+    if t is None:
+        return 1
+    s.list_frames(t)
+    s.resume(t, "INTO")
+    t = s.wait_pause()
+    if t is None:
+        return 1
+    s.list_frames(t)
+    s.resume(t, "OVER")
+    t = s.wait_pause()
+    if t is None:
+        return 1
+    s.evaluate(t, "vals[1]")
+    s.evaluate(t, "name")
+    s.resume(t, "OUT")
+    t = s.wait_pause()
+    if t is None:
+        return 1
+    s.list_frames(t)
+    s.resume(t, "NONE")
+
+    t = s.wait_pause()  # defs.bzl:3, in the rule implementation
+    if t is None:
+        return 1
+    ids = s.list_frames(t)
+    if ids.get("items"):
+        s.get_children(t, ids["items"], "items")
+    s.resume(t, "OVER")
+    t = s.wait_pause()
+    if t is None:
+        return 1
+    s.list_frames(t)
+    s.resume(t, "NONE")
+
+    while s.next_unnumbered() is not None:
+        pass
+    s.out("< (connection closed)")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

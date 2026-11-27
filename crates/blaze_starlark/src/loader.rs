@@ -55,6 +55,11 @@ impl LoadMap {
     pub fn get(&self, load_string: &str) -> Option<&FrozenModule> {
         self.modules.get(load_string)
     }
+
+    /// The loaded modules (in no particular order).
+    pub fn modules(&self) -> impl Iterator<Item = &FrozenModule> {
+        self.modules.values()
+    }
 }
 
 impl FileLoader for LoadMap {

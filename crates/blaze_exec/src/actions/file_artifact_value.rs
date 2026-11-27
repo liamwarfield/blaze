@@ -143,7 +143,11 @@ pub enum FileArtifactValue {
         digest: Vec<u8>,
         size: i64,
         location_index: i32,
-        expiration_time_millis: NotInEquality<Option<i64>>,
+        /// `RemoteFileArtifactValueWithMaterializationData.expirationTime` (epoch milliseconds):
+        /// changed in place by `setExpirationTime` (the lease extension), so shared by the clones
+        /// of this value as Java's one object is.
+        // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:830 RemoteFileArtifactValueWithMaterializationData.expirationTime
+        expiration_time_millis: NotInEquality<ExpirationTime>,
         in_memory_output: NotInEquality<bool>,
         /// `RemoteFileArtifactValueWithMaterializationData.proxy`: set when the file contents
         /// are materialized in the local file system (`setContentsProxy`). `None` for a plain
@@ -208,6 +212,34 @@ impl<T> PartialEq for NotInEquality<T> {
 }
 
 impl<T> Eq for NotInEquality<T> {}
+
+/// The changeable expiration time of a remote value (`None` is null): one cell shared by the
+/// clones of the value, as every holder of Java's value (Skyframe, the output metadata store,
+/// the file system) sees `setExpirationTime`. Not compared, not hashed; whoever serializes the
+/// value reads its current time, as Java does.
+#[derive(Clone)]
+pub struct ExpirationTime(Arc<Mutex<Option<i64>>>);
+
+impl ExpirationTime {
+    pub fn new(millis: Option<i64>) -> ExpirationTime {
+        ExpirationTime(Arc::new(Mutex::new(millis)))
+    }
+
+    /// The time as it is now.
+    pub fn get(&self) -> Option<i64> {
+        *self.0.lock()
+    }
+
+    pub fn set(&self, millis: Option<i64>) {
+        *self.0.lock() = millis;
+    }
+}
+
+impl fmt::Debug for ExpirationTime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.get(), f)
+    }
+}
 
 impl FileArtifactValue {
     /// `getType()`.
@@ -304,6 +336,46 @@ impl FileArtifactValue {
             }
             // Java: FileArtifactValue.java:1347 ProxyFileArtifactValue.setContentsProxy
             FileArtifactValue::Proxy { delegate, .. } => delegate.set_contents_proxy(proxy),
+            _ => {}
+        }
+    }
+
+    /// `getExpirationTime()` in epoch milliseconds: `None` (null) but for a remote value with
+    /// materialization data and a time (`fromEpochMilli`: a negative value is null), and the
+    /// values that delegate to one.
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:210 FileArtifactValue.getExpirationTime
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:857 RemoteFileArtifactValueWithMaterializationData.getExpirationTime
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1053 ResolvedSymlinkArtifactValue.getExpirationTime
+    pub fn get_expiration_time(&self) -> Option<i64> {
+        match self {
+            FileArtifactValue::RemoteFile {
+                expiration_time_millis,
+                ..
+            } => expiration_time_millis.0.get().filter(|millis| *millis >= 0),
+            FileArtifactValue::ResolvedSymlink { delegate, .. } => delegate.get_expiration_time(),
+            _ => None,
+        }
+    }
+
+    /// `setExpirationTime(newExpirationTime)` (epoch milliseconds, `None` for null): changes the
+    /// value in place for every holder; does nothing but for a remote value with materialization
+    /// data (and the values that delegate to one).
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:218 FileArtifactValue.setExpirationTime
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:862 RemoteFileArtifactValueWithMaterializationData.setExpirationTime
+    // Java: com/google/devtools/build/lib/actions/FileArtifactValue.java:1058 ResolvedSymlinkArtifactValue.setExpirationTime
+    pub fn set_expiration_time(&self, millis: Option<i64>) {
+        match self {
+            FileArtifactValue::RemoteFile {
+                expiration_time_millis,
+                contents_proxy: NotInEquality(Some(_)),
+                ..
+            } => {
+                // toEpochMilli: null is -1.
+                expiration_time_millis.0.set(Some(millis.unwrap_or(-1)));
+            }
+            FileArtifactValue::ResolvedSymlink { delegate, .. } => {
+                delegate.set_expiration_time(millis)
+            }
             _ => {}
         }
     }
@@ -472,7 +544,7 @@ impl FileArtifactValue {
             digest,
             size,
             location_index,
-            expiration_time_millis: NotInEquality(None),
+            expiration_time_millis: NotInEquality(ExpirationTime::new(None)),
             in_memory_output: NotInEquality(false),
             contents_proxy: NotInEquality(None),
             materialized_as_toplevel_output: NotInEquality(None),
@@ -492,7 +564,7 @@ impl FileArtifactValue {
             digest,
             size,
             location_index,
-            expiration_time_millis: NotInEquality(expiration_time_millis),
+            expiration_time_millis: NotInEquality(ExpirationTime::new(expiration_time_millis)),
             in_memory_output: NotInEquality(in_memory_output),
             contents_proxy: NotInEquality(Some(Arc::new(Mutex::new(None)))),
             materialized_as_toplevel_output: NotInEquality(Some(Arc::new(

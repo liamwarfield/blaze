@@ -35,6 +35,10 @@ use tonic::metadata::{
     AsciiMetadataKey, AsciiMetadataValue, BinaryMetadataKey, BinaryMetadataValue, MetadataMap,
 };
 use tonic::transport::Channel;
+
+use crate::grpc::connection_pool::{
+    Connection, ConnectionFactory, DynamicConnectionPool, SharedConnection,
+};
 use tonic_prost::ProstCodec;
 
 use crate::common::NetworkTime;
@@ -269,6 +273,10 @@ pub type CapabilitiesFetcher =
 struct Inner {
     /// The transport; `None` when it could not be built (see `connection_failure`).
     channel: Option<Channel>,
+    /// The connections of the channel (`DynamicConnectionPool`), when it was given a factory
+    /// of transports (see [`ReferenceCountedChannel::with_connection_pool`]); without it every
+    /// call uses `channel`.
+    pool: Option<Arc<DynamicConnectionPool<ChannelConnection>>>,
     /// The `IOException` of `ChannelFactory.newChannel` when the transport could not be built
     /// (see [`ReferenceCountedChannel::failed_to_create`]).
     connection_failure: Option<Arc<io::Error>>,
@@ -333,6 +341,7 @@ impl ReferenceCountedChannel {
         ReferenceCountedChannel {
             inner: Arc::new(Inner {
                 channel: Some(channel),
+                pool: None,
                 connection_failure: None,
                 capabilities_gate: false,
                 authority: authority.to_string(),
@@ -360,6 +369,7 @@ impl ReferenceCountedChannel {
         ReferenceCountedChannel {
             inner: Arc::new(Inner {
                 channel: None,
+                pool: None,
                 connection_failure: Some(Arc::new(error)),
                 capabilities_gate: false,
                 authority: authority.to_string(),
@@ -469,6 +479,40 @@ impl ReferenceCountedChannel {
         self
     }
 
+    /// Puts the channel's calls on a `DynamicConnectionPool` of transports made by `factory`:
+    /// a call holds one of the `max_concurrency_per_connection` places of a connection until it
+    /// ends; once every connection is full another one is made, up to `max_connections` (0: no
+    /// limit), and past that a call waits for a place.
+    // Java: com/google/devtools/build/lib/remote/ReferenceCountedChannel.java:69 ReferenceCountedChannel.<init>
+    pub fn with_connection_pool(
+        mut self,
+        factory: Arc<dyn Fn() -> Channel + Send + Sync>,
+        max_concurrency_per_connection: i32,
+        max_connections: i32,
+    ) -> ReferenceCountedChannel {
+        let connection_factory: Arc<dyn ConnectionFactory<ChannelConnection>> =
+            Arc::new(ChannelConnectionFactory(factory));
+        match Arc::get_mut(&mut self.inner) {
+            Some(inner) => {
+                inner.pool = Some(Arc::new(DynamicConnectionPool::new(
+                    connection_factory,
+                    max_concurrency_per_connection,
+                    max_connections,
+                )))
+            }
+            None => panic!("IllegalStateException: the channel is already shared"),
+        }
+        self
+    }
+
+    /// The number of connections the channel's pool has made (1 without a pool).
+    pub fn num_connections(&self) -> usize {
+        match &self.inner.pool {
+            Some(pool) => pool.num_connections(),
+            None => 1,
+        }
+    }
+
     /// The deadline of a call: the earlier of the explicit one and the service config's.
     fn deadline_for(&self, method: &Method, options: &CallOptions) -> Option<Duration> {
         let configured = lookup_method_timeout(&self.inner.method_timeouts, method);
@@ -549,6 +593,10 @@ impl ReferenceCountedChannel {
         if remaining == 0 {
             // PORT: the tonic channel closes its connection when the last clone is dropped.
             self.inner.shutdown.store(true, Ordering::SeqCst);
+            // deallocate(): dynamicConnectionPool.close()
+            if let Some(pool) = &self.inner.pool {
+                pool.close();
+            }
             true
         } else {
             false
@@ -657,15 +705,35 @@ impl ReferenceCountedChannel {
         ))
     }
 
-    fn grpc(&self) -> Grpc<Channel> {
-        Grpc::new(
-            self.inner
-                .channel
-                .clone()
-                .expect("start_call fails a call on a channel that could not be created"),
-        )
-        .max_decoding_message_size(self.inner.max_inbound_message_size)
-        .max_encoding_message_size(usize::MAX)
+    /// The transport of a call and its place on a pooled connection, held until the call ends
+    /// (`withChannelConnection`: `Single.using(sharedConnection, ..., SharedConnection::close)`).
+    // Java: com/google/devtools/build/lib/remote/ReferenceCountedChannel.java:156 ReferenceCountedChannel.withChannelConnection
+    async fn grpc(
+        &self,
+    ) -> Result<(Grpc<Channel>, Option<SharedConnection<ChannelConnection>>), tonic::Status> {
+        let (channel, connection) = match &self.inner.pool {
+            Some(pool) => {
+                let connection = pool
+                    .create()
+                    .await
+                    .map_err(crate::common::errors::call_not_started)?;
+                (
+                    connection.get_underlying_connection().0.clone(),
+                    Some(connection),
+                )
+            }
+            None => (
+                self.inner
+                    .channel
+                    .clone()
+                    .expect("start_call fails a call on a channel that could not be created"),
+                None,
+            ),
+        };
+        let grpc = Grpc::new(channel)
+            .max_decoding_message_size(self.inner.max_inbound_message_size)
+            .max_encoding_message_size(usize::MAX);
+        Ok((grpc, connection))
     }
 
     fn request<T>(
@@ -722,8 +790,10 @@ impl ReferenceCountedChannel {
         listeners.on_request(&request);
         let deadline = self.deadline_for(&method, &options);
         let (request, _cancel) = Self::cancellable_request(request, headers, deadline);
+        // The call waits for a place on a connection before it starts (outside its deadline).
+        let (grpc, _connection) = self.grpc().await?;
         let call = async {
-            let mut grpc = self.grpc();
+            let mut grpc = grpc;
             grpc.ready()
                 .await
                 .map_err(|e| not_ready(e, &self.inner.authority, self.lifecycle()))?;
@@ -766,8 +836,10 @@ impl ReferenceCountedChannel {
         let deadline = self.deadline_for(&method, &options);
         let deadline_at = deadline.map(|d| tokio::time::Instant::now() + d);
         let (request, cancel) = Self::cancellable_request(request, headers, deadline);
+        // The call waits for a place on a connection before it starts (outside its deadline).
+        let (grpc, _connection) = self.grpc().await?;
         let call = async {
-            let mut grpc = self.grpc();
+            let mut grpc = grpc;
             grpc.ready()
                 .await
                 .map_err(|e| not_ready(e, &self.inner.authority, self.lifecycle()))?;
@@ -794,6 +866,7 @@ impl ReferenceCountedChannel {
                 idle_timeout,
                 method,
                 _cancel: cancel,
+                _connection,
             }),
             Err(status) => {
                 listeners.on_close(&status);
@@ -826,8 +899,10 @@ impl ReferenceCountedChannel {
         // Dropping this call (an interrupt) or its end with requests left (the server answered
         // early) resets the stream: hyper would otherwise go on sending the rest.
         let (request, _cancel) = Self::cancellable_request(observed, headers, deadline);
+        // The call waits for a place on a connection before it starts (outside its deadline).
+        let (grpc, _connection) = self.grpc().await?;
         let call = async {
-            let mut grpc = self.grpc();
+            let mut grpc = grpc;
             grpc.ready()
                 .await
                 .map_err(|e| not_ready(e, &self.inner.authority, self.lifecycle()))?;
@@ -878,8 +953,10 @@ impl ReferenceCountedChannel {
         let deadline = self.deadline_for(&method, &options);
         let deadline_at = deadline.map(|d| tokio::time::Instant::now() + d);
         let (request, cancel) = Self::cancellable_request(requests, headers, deadline);
+        // The call waits for a place on a connection before it starts (outside its deadline).
+        let (grpc, _connection) = self.grpc().await?;
         let call = async {
-            let mut grpc = self.grpc();
+            let mut grpc = grpc;
             grpc.ready()
                 .await
                 .map_err(|e| not_ready(e, &self.inner.authority, self.lifecycle()))?;
@@ -900,6 +977,7 @@ impl ReferenceCountedChannel {
                 idle_timeout: None,
                 method,
                 _cancel: cancel,
+                _connection,
             }),
             Err(status) => {
                 listeners.on_close(&status);
@@ -1967,6 +2045,8 @@ pub struct ResponseStream<Resp> {
     /// Cancels the call when the stream is dropped (see
     /// [`ReferenceCountedChannel::cancellable_request`]).
     _cancel: CancelOnDrop,
+    /// The call's place on its pooled connection, given back when the stream goes away.
+    _connection: Option<SharedConnection<ChannelConnection>>,
 }
 
 /// Cancels a call's request side when dropped (`ClientCall.cancel`).
@@ -2469,5 +2549,29 @@ mod tests {
         assert!(is_tls_alert("received fatal alert: HandshakeFailure"));
         assert!(!is_tls_alert("invalid peer certificate: UnknownIssuer"));
         assert!(!is_tls_alert("Connection reset by peer (os error 104)"));
+    }
+}
+
+/// A pooled connection: one transport (`ChannelConnectionFactory.ChannelConnection`).
+///
+/// PORT: `close()` shuts the `ManagedChannel` down in Java; a tonic channel closes its
+/// connection when its last clone is dropped (the pool drops it when closed).
+// Java: com/google/devtools/build/lib/remote/grpc/ChannelConnectionFactory.java:33 ChannelConnectionFactory.ChannelConnection
+#[derive(Clone)]
+pub struct ChannelConnection(pub Channel);
+
+impl Connection for ChannelConnection {
+    // Java: com/google/devtools/build/lib/remote/grpc/ChannelConnectionFactory.java:52 ChannelConnectionFactory.ChannelConnection.close
+    fn close(&self) {}
+}
+
+/// Makes a transport per connection (`ChannelConnectionFactory.create`).
+// Java: com/google/devtools/build/lib/remote/grpc/ChannelConnectionFactory.java:24 ChannelConnectionFactory
+struct ChannelConnectionFactory(Arc<dyn Fn() -> Channel + Send + Sync>);
+
+impl ConnectionFactory<ChannelConnection> for ChannelConnectionFactory {
+    fn create(&self) -> futures::future::BoxFuture<'static, io::Result<ChannelConnection>> {
+        let channel = (self.0)();
+        Box::pin(async move { Ok(ChannelConnection(channel)) })
     }
 }

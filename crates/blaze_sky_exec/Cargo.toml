@@ -31,5 +31,8 @@ libc.workspace = true
 
 [dev-dependencies]
 blaze_starlark = { path = "../blaze_starlark" }
+# The in-process multi-command fixture of RewindingTest (a dev-dependency cycle through
+# blaze_runtime; integration tests link one copy of this crate).
+blaze_buildtool_testing = { path = "../blaze_buildtool_testing" }
 tempfile.workspace = true
 serde_json.workspace = true

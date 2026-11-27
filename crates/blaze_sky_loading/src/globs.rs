@@ -216,6 +216,12 @@ impl Key for GlobsKey {
 // Java: com/google/devtools/build/lib/packages/producers/GlobError.java:21 GlobError
 type GlobError = IOException;
 
+// Java: com/google/devtools/build/lib/skyframe/GlobException.java:28 GlobException.<init>
+// PORT: the GlobException is `SkyFunctionException::transient/persistent` around the error.
+// PORT: skipped, unreachable: Bazel never calls setGlobUnderSingleDep, so packages use SINGLE_GLOBS_HYBRID (GLOBS, this file) and nothing requests GLOB: GlobFunction.complete, GlobFunction.create, GlobFunctionWithRecursionInSingleFunction.compute
+// PORT: skipped, unreachable with SINGLE_GLOBS_HYBRID (see above): GlobFunctionWithRecursionInSingleFunction.State.acceptPathFragmentsWithoutPackageFragment, GlobFunctionWithRecursionInSingleFunction.State.acceptGlobError
+// PORT: skipped, unreachable with SINGLE_GLOBS_HYBRID (see above): GlobValue.getMatches, GlobValue.key, GlobValue.internalKey
+// PORT: skipped, unreachable with SINGLE_GLOBS_HYBRID (see above): GlobValueWithImmutableSet.<init>, GlobValueWithImmutableSet.getMatches, GlobValueWithImmutableSet.equals, GlobValueWithImmutableSet.hashCode
 /// Wraps the first error of a glob computation (Java `GlobException.handleExceptions`).
 // Java: com/google/devtools/build/lib/skyframe/GlobException.java:39 GlobException.handleExceptions
 fn handle_exceptions(error: Option<GlobError>) -> Result<(), ComputeError> {

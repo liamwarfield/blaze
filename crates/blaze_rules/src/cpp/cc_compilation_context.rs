@@ -143,17 +143,17 @@ impl CcCompilationContext {
         }
     }
 
-    // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:209 CcCompilationContext.getHeaderInfo
+    // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:210 CcCompilationContext.getHeaderInfo
     pub fn get_header_info(&self) -> &Arc<HeaderInfoData> {
         &self.header_info
     }
 
-    // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:492 CcCompilationContext.getHeaderModule
+    // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:494 CcCompilationContext.getHeaderModule
     pub fn get_header_module(&self, use_pic: bool) -> Option<&Artifact> {
         self.header_info.get_module(use_pic)
     }
 
-    // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:496 CcCompilationContext.getSeparateHeaderModule
+    // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:498 CcCompilationContext.getSeparateHeaderModule
     pub fn get_separate_header_module(&self, use_pic: bool) -> Option<&Artifact> {
         self.header_info.get_separate_module(use_pic)
     }
@@ -161,7 +161,7 @@ impl CcCompilationContext {
     /// Returns the modules that a compilation in this context could use directly: the modules
     /// of its direct dependencies as well as the separate module of this context (except for
     /// the compile of the separate module itself, which is indicated by `separate`).
-    // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:408 CcCompilationContext.getDirectModules
+    // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:409 CcCompilationContext.getDirectModules
     pub fn get_direct_modules(&self, use_pic: bool, separate: bool) -> NestedSet<Artifact> {
         let header_info = &self.header_info;
         let mut modules: IndexSet<Artifact> = IndexSet::new();
@@ -189,7 +189,7 @@ impl CcCompilationContext {
 
     /// Returns the immutable list of include directories to be added with "-F" (possibly empty
     /// but never null).
-    // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:132 CcCompilationContext.getFrameworkIncludeDirs
+    // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:131 CcCompilationContext.getFrameworkIncludeDirs
     pub fn get_framework_include_dirs(&self) -> Vec<PathFragment> {
         self.framework_include_dirs
             .clone()
@@ -226,7 +226,7 @@ impl CcCompilationContext {
         env: &dyn blaze_exec::exec::action_execution_context::ActionExecutionContext,
         use_pic: bool,
         create_modular_headers: bool,
-    ) -> Option<IncludeScanningHeaderDataBuilder> {
+    ) -> Result<Option<IncludeScanningHeaderDataBuilder>, blaze_exec::actions::ExecException> {
         let header_info = self.get_header_info();
         let transitive_header_infos = header_info.get_transitive_collection();
         let mut tree_artifacts: Vec<Artifact> = Vec::new();
@@ -266,17 +266,17 @@ impl CcCompilationContext {
                 None,
             );
         }
-        if !handle_tree_artifacts(env, &mut path_to_legal_artifact, &tree_artifacts) {
-            return None;
+        if !handle_tree_artifacts(env, &mut path_to_legal_artifact, &tree_artifacts)? {
+            return Ok(None);
         }
         remove_artifacts_from_set(&mut modular_headers, &header_info.modular_public_headers);
         remove_artifacts_from_set(&mut modular_headers, &header_info.modular_private_headers);
         remove_artifacts_from_set(&mut modular_headers, &header_info.textual_headers);
         remove_artifacts_from_set(&mut modular_headers, &header_info.separate_module_headers);
-        Some(IncludeScanningHeaderDataBuilder::new(
+        Ok(Some(IncludeScanningHeaderDataBuilder::new(
             path_to_legal_artifact,
             modular_headers,
-        ))
+        )))
     }
 
     /// Returns a list of all headers from `includes` that are properly declared as well as all
@@ -332,7 +332,10 @@ impl CcCompilationContext {
             header_info.get_module(use_pic)
         };
         if let Some(own) = own {
-            modules.shift_remove(own);
+            // Java: com/google/devtools/build/lib/collect/compacthashset/CompactHashSet.java:407 CompactHashSet.moveEntry
+            // `modules` is a CompactHashSet in Java; its `remove` moves the last entry into the
+            // removed slot, so the iteration order changes. `swap_remove` does the same.
+            modules.swap_remove(own);
         }
         modules.into_iter().collect()
     }
@@ -369,25 +372,26 @@ fn handle_artifact(
 /// success.
 ///
 /// If a TreeArtifact's value is missing, returns false, and leave pathToLegalArtifact
-/// unmodified.
+/// unmodified. An interrupted read is `Err(ExecException::Interrupted)` (Java's
+/// `InterruptedException`).
 // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:240 IncludeScanningHeaderDataHelper.handleTreeArtifacts
 pub fn handle_tree_artifacts(
     env: &dyn blaze_exec::exec::action_execution_context::ActionExecutionContext,
     path_to_legal_artifact: &mut HashMap<PathFragment, Artifact>,
     tree_artifacts: &[Artifact],
-) -> bool {
+) -> Result<bool, blaze_exec::actions::ExecException> {
     if tree_artifacts.is_empty() {
-        return true;
+        return Ok(true);
     }
     // env.getValuesAndExceptions(treeArtifacts); if (env.valuesMissing()) return false. A value
     // missing although none was reported missing is Java's BugReport and `return false`, which
     // the all-or-nothing read folds into the same answer.
-    let mut values = None;
+    let mut values = Ok(None);
     env.with_environment_for_discovering_inputs(&mut |env| {
         values = env.get_tree_artifact_values(tree_artifacts);
     });
-    let Some(values) = values else {
-        return false;
+    let Some(values) = values? else {
+        return Ok(false);
     };
     for tree_artifact_value in values {
         for tree_file_artifact in tree_artifact_value.get_children() {
@@ -405,7 +409,7 @@ pub fn handle_tree_artifacts(
             );
         }
     }
-    true
+    Ok(true)
 }
 
 /// Passes a list of headers to the include scanning helper for handling, and optionally adds
@@ -477,5 +481,96 @@ fn get_cpp_module_map(info: &StarlarkInfo) -> Option<Artifact> {
             ),
         },
         None => panic!("NullPointerException: CppModuleMap.getArtifact"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use blaze_actions::{ArtifactOwner, ArtifactRoot};
+    use blaze_vfs::{DigestHashFunction, Path, Root, UnixFileSystem};
+
+    /// An artifact with the given exec path (only identity and exec paths are read here).
+    fn artifact(exec_path: &str) -> Artifact {
+        let fs = UnixFileSystem::create(DigestHashFunction::Sha256);
+        let root = ArtifactRoot::as_source_root(Root::from_path(Path::create(
+            PathFragment::create("/workspace"),
+            &fs,
+        )));
+        Artifact::new_source_artifact(
+            root,
+            PathFragment::create(exec_path),
+            ArtifactOwner::NullOwner,
+        )
+    }
+
+    fn leaf(module: &Artifact, header: &Artifact) -> Arc<HeaderInfoData> {
+        Arc::new(HeaderInfoData {
+            header_module: Some(module.clone()),
+            pic_header_module: None,
+            modular_public_headers: vec![header.clone()],
+            modular_private_headers: Vec::new(),
+            textual_headers: Vec::new(),
+            separate_module_headers: Vec::new(),
+            separate_module: None,
+            separate_pic_module: None,
+            deps: Vec::new(),
+        })
+    }
+
+    fn context(header_info: Arc<HeaderInfoData>) -> CcCompilationContext {
+        let empty = || NestedSetBuilder::empty_set(Order::STABLE_ORDER);
+        CcCompilationContext {
+            declared_include_srcs: empty(),
+            transitive_modules: empty(),
+            transitive_pic_modules: empty(),
+            direct_module_maps: empty(),
+            non_code_inputs: empty(),
+            cpp_module_map: None,
+            header_info,
+            include_dirs: Ok(Vec::new()),
+            quote_include_dirs: Ok(Vec::new()),
+            system_include_dirs: Ok(Vec::new()),
+            framework_include_dirs: Ok(Vec::new()),
+            external_include_dirs: Ok(Vec::new()),
+        }
+    }
+
+    /// Review 2026-11-26 rewinding round 3, IS-2: Java's `modules` is a `CompactHashSet`, whose
+    /// `remove` moves the last entry into the removed slot (`CompactHashSet.moveEntry`). The scan
+    /// finds the modules [A, own, B, C] in transitive header-info order; removing the own
+    /// (separate) module leaves [A, C, B].
+    #[test]
+    fn compute_used_modules_removes_own_module_as_compact_hash_set() {
+        let (a, own, b, c) = (
+            artifact("x/a.pcm"),
+            artifact("x/own.pcm"),
+            artifact("y/b.pcm"),
+            artifact("z/c.pcm"),
+        );
+        let (ha, hs, hb, hc) = (
+            artifact("x/a.h"),
+            artifact("x/s.h"),
+            artifact("y/b.h"),
+            artifact("z/c.h"),
+        );
+        // getTransitiveCollection: this, then the other deps, then the largest dep's collection
+        // (the first of equal size): deps [c, b] iterate as [this, b, c].
+        let this = Arc::new(HeaderInfoData {
+            header_module: Some(a.clone()),
+            pic_header_module: None,
+            modular_public_headers: vec![ha.clone()],
+            modular_private_headers: Vec::new(),
+            textual_headers: Vec::new(),
+            separate_module_headers: vec![hs.clone()],
+            separate_module: Some(own.clone()),
+            separate_pic_module: None,
+            deps: vec![leaf(&c, &hc), leaf(&b, &hb)],
+        });
+        let includes: HashSet<Artifact> = [ha, hs, hb, hc].into_iter().collect();
+        let used = context(this).compute_used_modules(
+            /* use_pic= */ false, &includes, /* separate= */ true,
+        );
+        assert_eq!(used, vec![a, c, b]);
     }
 }

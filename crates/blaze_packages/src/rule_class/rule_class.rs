@@ -289,6 +289,7 @@ pub enum RuleClassNamePredicateType {
 /// A predicate over rule class names (Java `RuleClass.Builder.RuleClassNamePredicate`).
 // Java: com/google/devtools/build/lib/packages/RuleClass.java:505 RuleClass.Builder.RuleClassNamePredicate
 #[derive(Debug, Clone)]
+// Java: com/google/devtools/build/lib/packages/RuleClass.java:635 RuleClass.Builder.RuleClassNamePredicate.DescribedPredicate.<init>
 pub struct RuleClassNamePredicate {
     rule_class_names: IndexSet<String>,
     predicate_type: RuleClassNamePredicateType,

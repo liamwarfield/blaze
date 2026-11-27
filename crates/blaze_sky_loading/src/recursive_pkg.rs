@@ -183,6 +183,9 @@ impl RecursivePkgValue {
 /// The result of processing a directory (Java `ProcessPackageDirectoryResult`).
 // Java: com/google/devtools/build/lib/skyframe/ProcessPackageDirectoryResult.java:27 ProcessPackageDirectoryResult
 pub(crate) struct ProcessPackageDirectoryResult {
+    // Java: com/google/devtools/build/lib/skyframe/ProcessPackageDirectoryResult.java:39 ProcessPackageDirectoryResult.packageExists
+    // Java: com/google/devtools/build/lib/skyframe/ProcessPackageDirectoryResult.java:43 ProcessPackageDirectoryResult.getChildDeps
+    // PORT: skipped, always empty at the pin (its one constructor call passes ImmutableMap.of()): ProcessPackageDirectoryResult.getAdditionalValuesToAggregate
     pub(crate) package_exists: bool,
     /// Java `getChildDeps()`: the subdirectories to visit, as the RECURSIVE_PKG keys whose fields
     /// are Java's `getSkyKeyForSubdirectory` arguments (callers map them to their own keys).
@@ -707,6 +710,8 @@ pub fn package_error_message_function(
 /// The key of PACKAGE_ERROR. `Debug` prints `PACKAGE_ERROR:<pkg>`.
 // Java: com/google/devtools/build/lib/skyframe/PackageErrorFunction.java:45 PackageErrorFunction.key
 #[derive(Clone, PartialEq, Eq, Hash)]
+// Java: com/google/devtools/build/lib/skyframe/PackageErrorFunction.java:53 PackageErrorFunction.Key.<init>
+// PORT: skipped, a newtype key (Key::FUNCTION; no interning): PackageErrorFunction.Key.create, PackageErrorFunction.Key.intern, PackageErrorFunction.Key.functionName, PackageErrorFunction.Key.getSkyKeyInterner
 pub struct PackageErrorKey(pub PackageIdentifier);
 
 impl fmt::Debug for PackageErrorKey {
@@ -748,6 +753,7 @@ pub fn package_error_function(
         Ok(None) => Ok(None),
         Ok(Some(pkg)) => {
             assert!(pkg.get_package().contains_errors(), "{:?}", key);
+            // Java: com/google/devtools/build/lib/skyframe/PackageErrorFunction.java:98 PackageErrorFunction.PackageErrorFunctionException.<init>
             Err(SkyFunctionException::persistent(
                 NoSuchPackageException::build_file_contains_errors(package_identifier.clone()),
             )

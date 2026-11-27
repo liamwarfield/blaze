@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# The distribution of the `authput` case of early-answer-probe: N runs per side, alternating
+# oracle and Blaze, one line per run.
+#
+# usage: scripts/remote-http/authput-dist <BLAZE_BINARY> <N> <OUT_FILE>
+#        scripts/remote-http/authput-dist help
+#
+# Each line: `<side> run=<i> exit <code>, <secs> s warn=<warning kinds> good_puts=<PUTs with the
+# good token> first_put=len=<length of the first PUT the server logged> order=<the lengths of
+# the PUTs in the server's order, b/g for the bad/good token>`.
+# The probe's own directories: $EARLY_PROBE_BASE/{oracle,blaze} (see early-answer-probe).
+# Appends to OUT_FILE and prints each line; keeps each run's server log as
+# log/authput.server.<i>.log.
+set -uo pipefail
+if [[ $# -lt 3 || "$1" == "help" ]]; then
+  sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+  [[ "${1:-}" == "help" ]] && exit 0
+  exit 2
+fi
+BIN="$(realpath "$1")"; N="$2"; OUT="$3"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+BASE="${EARLY_PROBE_BASE:-$HOME/.cache/blaze/work/remote-9/early-probe}"
+line() {
+  local side="$1" i="$2" log="$BASE/$1/log"
+  local summary warn good first order
+  summary=$(grep '^exit' "$log/authput.out" | sed 's/, helper calls.*//')
+  warn=""
+  grep -q 'Multiple errors' "$log/authput.out" && warn+="Multiple errors+"
+  grep -q 'timed out' "$log/authput.out" && warn+="timed out+"
+  if [[ -z "$warn" ]]; then
+    warn=$(grep -m1 'WARNING: Remote Cache' "$log/authput.out" | sed 's/^.*\(WARNING: Remote Cache: [^\n]*\)/\1/')
+    [[ -n "$warn" ]] && warn+="+"
+  fi
+  good=$(grep -c "^PUT .*auth='Bearer good'" "$log/authput.server.log")
+  first=$(grep -m1 '^PUT' "$log/authput.server.log" | sed 's/.* \(len=[0-9]*\) .*/\1/')
+  order=$(grep '^PUT' "$log/authput.server.log" \
+    | sed "s/.* len=\([0-9]*\) auth='Bearer \(.\).*/\1\2/" | paste -sd, -)
+  cp "$log/authput.server.log" "$log/authput.server.$i.log"
+  echo "$side run=$i $summary warn=$warn good_puts=$good first_put=$first order=$order"
+}
+for i in $(seq 1 "$N"); do
+  "$HERE/early-answer-probe" oracle oracle authput > /dev/null
+  line oracle "$i" | tee -a "$OUT"
+  "$HERE/early-answer-probe" "$BIN" blaze authput > /dev/null
+  line blaze "$i" | tee -a "$OUT"
+done

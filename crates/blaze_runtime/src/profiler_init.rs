@@ -112,6 +112,15 @@ impl LocalInstrumentationOutput {
     }
 }
 
+// The callers build each output with `LocalInstrumentationOutput::new` (all six fields; `name`
+// and `path` are the parameters Builder.build checks for null). Bazel's InstrumentationOutputFactory
+// holds only the local builder, the BEP artifact builder (unported, behind
+// --experimental_stream_log_file_uploads) and no redirect builder, so the factory's methods are
+// inlined where they are called (see `init_profiler` and the command log in bazel_modules.rs).
+// PORT: skipped, see above: LocalInstrumentationOutput.Builder.setName, LocalInstrumentationOutput.Builder.setPath, LocalInstrumentationOutput.Builder.setConvenienceName, LocalInstrumentationOutput.Builder.setAppend, LocalInstrumentationOutput.Builder.setInternal, LocalInstrumentationOutput.Builder.setCreateParent, LocalInstrumentationOutput.Builder.build
+// PORT: skipped, see above: InstrumentationOutputBuilder.setName, InstrumentationOutputBuilder.setDestination, InstrumentationOutputBuilder.setDestinationRelatedToType, InstrumentationOutputBuilder.setOptions, InstrumentationOutputBuilder.setCreateParent, InstrumentationOutputBuilder.build
+// PORT: skipped, see above: InstrumentationOutputFactory.<init>, InstrumentationOutputFactory.Builder.setLocalInstrumentationOutputBuilderSupplier, InstrumentationOutputFactory.Builder.setBuildEventArtifactInstrumentationOutputBuilderSupplier, InstrumentationOutputFactory.Builder.setRedirectInstrumentationOutputBuilderSupplier, InstrumentationOutputFactory.Builder.setLocalTempLoggingDirPathStr, InstrumentationOutputFactory.Builder.build
+
 /// `ProfilerStartedEvent`: the profile the command writes, if any.
 // Java: com/google/devtools/build/lib/buildtool/buildevent/ProfilerStartedEvent.java:21 ProfilerStartedEvent
 #[derive(Clone, Default)]
@@ -142,7 +151,7 @@ pub fn profile_starting(event: ProfilerStartedEvent) {
 
 /// The part of `BuildSummaryStatsModule.buildComplete` that stops the profiler and lists the
 /// profile in the build tool logs. Returns the error message to report, if any.
-// Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:196 BuildSummaryStatsModule.buildComplete
+// Java: com/google/devtools/build/lib/runtime/BuildSummaryStatsModule.java:154 BuildSummaryStatsModule.buildComplete
 pub fn stop_and_publish_profile(
     build_tool_log_collection: &mut blaze_buildtool::buildtool::build_result::BuildToolLogCollection,
 ) -> Option<String> {
@@ -172,7 +181,7 @@ pub fn stop_and_publish_profile(
 /// The dispatcher's `finally`: the profiler might still be running when an exception is thrown
 /// before BuildCompleteEvent is emitted or BlazeModule#completeCommand() is called. So we still
 /// need to try to stop the profiler here. Returns the error message to report, if any.
-// Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:871 BlazeCommandDispatcher.execExclusively
+// Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:363 BlazeCommandDispatcher.execExclusively
 pub fn stop_and_clear_current() -> Option<String> {
     let profiler_started_event = PROFILE_EVENT.lock().clone().unwrap_or_default();
     let mut error = None;
@@ -217,7 +226,7 @@ pub fn manage_profiles(dir: &Path, command_id: &str, retention_window: i32) -> i
 }
 
 /// Whether the command records a profile (`tracerEnabled`).
-// Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:424 BlazeCommandDispatcher.execExclusively
+// Java: com/google/devtools/build/lib/runtime/BlazeCommandDispatcher.java:363 BlazeCommandDispatcher.execExclusively
 pub fn tracer_enabled(
     common_options: &CommonCommandOptions,
     command_name: &str,
@@ -276,7 +285,7 @@ pub fn init_profiler(
                         // InstrumentationOutputFactory.createInstrumentationOutput(profileName,
                         // PathFragment.create(profileName), OUTPUT_BASE, env, eventHandler,
                         // null, null): Bazel has no redirecting builder.
-                        // Java: com/google/devtools/build/lib/runtime/InstrumentationOutputFactory.java:126 InstrumentationOutputFactory.createInstrumentationOutput
+                        // Java: com/google/devtools/build/lib/runtime/InstrumentationOutputFactory.java:128 InstrumentationOutputFactory.createInstrumentationOutput
                         event_handler.handle(HandlerEvent::warn(
                             "Redirecting to write Instrumentation Output on a different machine \
                              is not supported. Defaulting to writing output locally.",
@@ -297,6 +306,7 @@ pub fn init_profiler(
                         )?;
                         // createLocalOutputWithConvenientName(profileName, profilePath,
                         // profileName).
+                        // Java: com/google/devtools/build/lib/runtime/InstrumentationOutputFactory.java:65 InstrumentationOutputFactory.createLocalOutputWithConvenientName
                         profile = Some(Arc::new(LocalInstrumentationOutput::new(
                             profile_name,
                             profile_path,

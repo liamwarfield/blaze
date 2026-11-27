@@ -492,10 +492,12 @@ impl RegularRunnableExtension {
                     services.process_wrapper_kill_delay,
                     services.process_wrapper_graceful_sigterm,
                 );
+                let execute_wasm = starlark_semantics.experimental_repository_ctx_execute_wasm;
                 let module_ctx = ModuleCtx {
                     extension_id: extension_id.to_string(),
                     os: base.get_os(),
                     fields: prepared.fields.clone(),
+                    identifying_string_for_logging: base.identifying_string_for_logging.clone(),
                 };
                 let payload = ExternalContext {
                     base,
@@ -516,7 +518,9 @@ impl RegularRunnableExtension {
                     starlark_semantics.clone(),
                     Some(main_repository_mapping.clone()),
                     payload,
-                    move |heap| heap.alloc(module_ctx),
+                    move |heap| {
+                        crate::starlark::context::alloc_module_ctx(heap, module_ctx, execute_wasm)
+                    },
                     |return_value, _eval| Ok(extract_metadata(return_value)),
                 );
                 let mut context = outcome.context;

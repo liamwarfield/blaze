@@ -1036,8 +1036,10 @@ impl RepositoryFetchFunction {
                 // PORT: skipped, profiling (ProfilerTask.STARLARK_REPOSITORY_FN).
                 let ctx_name = repo_definition.name.clone();
                 let ctx_os = context.base.get_os();
+                let ctx_identifying_string = context.base.identifying_string_for_logging.clone();
                 let ctx_workspace_root = self.services.directories.workspace.clone();
                 let ctx_repo_definition = repo_definition.clone();
+                let ctx_execute_wasm = starlark_semantics.experimental_repository_ctx_execute_wasm;
                 let ImplementationOutcome {
                     result,
                     mut context,
@@ -1050,12 +1052,17 @@ impl RepositoryFetchFunction {
                     main_repo_mapping.clone(),
                     context,
                     |heap| {
-                        heap.alloc(RepositoryCtx {
-                            name: ctx_name,
-                            repo_definition: ctx_repo_definition,
-                            workspace_root: ctx_workspace_root,
-                            os: ctx_os,
-                        })
+                        crate::starlark::context::alloc_repository_ctx(
+                            heap,
+                            RepositoryCtx {
+                                name: ctx_name,
+                                repo_definition: ctx_repo_definition,
+                                workspace_root: ctx_workspace_root,
+                                os: ctx_os,
+                                identifying_string_for_logging: ctx_identifying_string,
+                            },
+                            ctx_execute_wasm,
+                        )
                     },
                     extract_return_value,
                 );

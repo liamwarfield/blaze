@@ -325,10 +325,9 @@ fn to_execution_bulk_transfer_error(e: io::Error) -> io::Error {
     )
 }
 
-/// `RemoteOutputService.finalizeAction`: `actionInputFetcher.finalizeAction(action,
-/// outputMetadataStore)`. `leaseService.finalizeAction()` only starts the lease extension
-/// (`RemoteLeaseExtension`), which is not ported and fails loudly where it would be created
-/// (`LeaseService::new`), so it is left out here.
+/// `RemoteOutputService.finalizeAction`'s `actionInputFetcher.finalizeAction(action,
+/// outputMetadataStore)`; its `leaseService.finalizeAction()` is added by the build command's
+/// finalizer (`blaze_runtime` `build_remote.rs`).
 // Java: com/google/devtools/build/lib/remote/RemoteOutputService.java:170 RemoteOutputService.finalizeAction
 impl blaze_exec::exec::action_execution_context::ActionFinalizer for RemoteActionInputFetcher {
     fn finalize_action(

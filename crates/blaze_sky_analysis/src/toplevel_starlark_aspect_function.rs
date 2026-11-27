@@ -201,6 +201,9 @@ impl SkyFunction for ToplevelStarlarkAspectFunction {
         )?;
 
         let mut state = State::new(self.store_transitive_packages);
+        state
+            .transitive_state
+            .set_prerequisite_packages(self.services.prerequisite_packages.get().cloned());
 
         // Configuration of top level target could change during the analysis phase with rule
         // transitions. In order not to wait for the complete configuration of the assigned

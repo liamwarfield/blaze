@@ -22,7 +22,7 @@ use blaze_skyframe::{
 use blaze_starlark::StarlarkSemantics;
 
 /// `PrecomputedValue.STARLARK_SEMANTICS` (the same node as blaze_sky_loading's, by name).
-// Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:84 PrecomputedValue.STARLARK_SEMANTICS
+// Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:85 PrecomputedValue.STARLARK_SEMANTICS
 static STARLARK_SEMANTICS: blaze_skyframe::precomputed::Precomputed<StarlarkSemantics> =
     blaze_skyframe::precomputed::Precomputed::new("starlark_semantics");
 use blaze_vfs::{Path, RootedPath};
@@ -1499,6 +1499,7 @@ fn get_baseline_options(
 /// Registers the configuration functions on an evaluator builder. The client must be a
 /// [`ConfigurationEnvironment`].
 pub fn register_configuration_functions(builder: EvaluatorBuilder) -> EvaluatorBuilder {
+    register_debug_prints();
     builder
         .function(
             <BuildConfigurationKey as Key>::FUNCTION,
@@ -1511,6 +1512,39 @@ pub fn register_configuration_functions(builder: EvaluatorBuilder) -> EvaluatorB
             let platforms = client(env).platforms.clone();
             platforms.compute(key, env)
         })
+}
+
+/// `SkyValue.debugPrint` of the configuration values whose Java text is deterministic (see
+/// `blaze_skyframe::dump::dump_values`). Not registered: `PLATFORM_MAPPING` (Java prints its
+/// `optionsClasses`, which the value here does not keep) and `PLATFORM` (the record prints
+/// `PlatformInfo`, not ported).
+fn register_debug_prints() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:525 BuildConfigurationValue.debugPrint
+        blaze_skyframe::dump::register_debug_print::<BuildConfigurationValue>(|v| {
+            // `this.options` is the configuration's CoreOptions (OptionsBase.toString).
+            let core_options: &dyn blaze_options::OptionsBase =
+                v.get_options().get::<CoreOptions>().expect("CoreOptions");
+            format!(
+                "BuildConfigurationValue: {}\n  {}\n",
+                v.checksum(),
+                core_options.java_to_string_with_class_name(
+                    crate::fragment_options_class::CORE_OPTIONS.get_name()
+                )
+            )
+        });
+        // The record's toString; the value here is the options themselves (BASELINE_OPTIONS is
+        // the only function whose value is an `Arc<BuildOptions>`).
+        // Java: com/google/devtools/build/lib/analysis/config/transitions/BaselineOptionsValue.java:50 BaselineOptionsValue
+        blaze_skyframe::dump::register_to_string::<Arc<BuildOptions>>(|o| {
+            format!("BaselineOptionsValue[toOptions={o:?}]")
+        });
+        // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyValue.java:121 BuildConfigurationKeyValue.toString
+        blaze_skyframe::dump::register_to_string::<BuildConfigurationKey>(|k| {
+            format!("BuildConfigurationKeyValue{{buildConfigurationKey={k:?}}}")
+        });
+    });
 }
 
 // -------------------------------------------------------------------------------------------

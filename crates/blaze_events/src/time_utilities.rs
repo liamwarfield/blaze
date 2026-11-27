@@ -6,6 +6,7 @@ use crate::java_format::java_format_fixed;
 
 /// Converts time to the user-friendly string representation; `time_in_ns` is the length of time
 /// in nanoseconds.
+// PORT: skipped, the private constructor of a static-only class: TimeUtilities.<init>
 // Java: com/google/devtools/build/lib/util/TimeUtilities.java:26 TimeUtilities.prettyTime
 pub fn pretty_time(time_in_ns: f64) -> String {
     let ms = time_in_ns / 1000000.0;

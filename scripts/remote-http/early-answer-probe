@@ -15,7 +15,7 @@
 #        outputs come back through GET, answered with Content-Encoding: snappy); the output's
 #        sha256 is recorded.
 # One workspace and one output user root per side:
-#   ~/.cache/blaze/work/remote-7/early-probe/<side-name>/{ws,ur,log}
+#   $EARLY_PROBE_BASE/<side-name>/{ws,ur,log} (default ~/.cache/blaze/work/remote-9/early-probe)
 # Writes log/<mode>.out (the build's output, with the elapsed seconds) and log/<mode>.server.log
 # (the server's request log). The server is shut down and the output base expunged at the end.
 # Runs under systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0, Blaze with
@@ -29,18 +29,23 @@ fi
 CACHE="$HOME/.cache/blaze"
 if [[ "$1" == "oracle" ]]; then BIN="$CACHE/oracle/bazel-9.3.2-linux-x86_64"; else BIN="$(realpath "$1")"; fi
 SIDE="$2"; MODE="$3"
-BASE="$CACHE/work/remote-7/early-probe/$SIDE"
+BASE="${EARLY_PROBE_BASE:-$CACHE/work/remote-9/early-probe}/$SIDE"
 HERE="$(cd "$(dirname "$0")" && pwd)"
 if [[ "${EARLY_PROBE_IN_UNIT:-}" != "1" ]]; then
   mkdir -p "$BASE"
   exec systemd-run --user --collect --wait --quiet --pipe -p MemoryMax=12G -p MemorySwapMax=0 \
     --setenv=HOME="$HOME" --setenv=PATH=/usr/bin:/bin --setenv=EARLY_PROBE_IN_UNIT=1 \
-    --setenv=BLAZE_SERVER_MODE=daemon --setenv=BIG_SIZE="${BIG_SIZE:-67108864}" "$(realpath "$0")" "$@"
+    --setenv=BLAZE_SERVER_MODE=daemon --setenv=EARLY_PROBE_BASE="${EARLY_PROBE_BASE:-$CACHE/work/remote-9/early-probe}" --setenv=BIG_SIZE="${BIG_SIZE:-67108864}" "$(realpath "$0")" "$@"
 fi
 WS="$BASE/ws"; UR="$BASE/ur"; LOG="$BASE/log"
 mkdir -p "$WS" "$UR" "$LOG"
 cd "$WS"
-: > MODULE.bazel
+# The pinned lockfile (as http-variants-probe), so that module resolution reads no registry
+# file through the credential helper.
+LOCKFILE="$HOME/.cache/blaze/src/bazel-9.3.2/src/test/tools/bzlmod/MODULE.bazel.lock"
+version=$(sed -n "s|.*modules/rules_shell/\([^/]*\)/source\.json.*|\1|p" "$LOCKFILE" | head -1)
+printf 'module(name = "test")\nbazel_dep(name = "rules_shell", version = "%s")\n' "$version" > MODULE.bazel
+cp "$LOCKFILE" MODULE.bazel.lock
 cat > BUILD <<B
 genrule(name = "big", outs = ["big.bin"], cmd = "head -c ${BIG_SIZE:-67108864} /dev/zero > \$@ && echo -n abcabc >> \$@")
 B
@@ -60,8 +65,8 @@ python3 "$HERE/early-answer-server.py" "$port" "$server_mode" "$LOG/$MODE.server
 SERVER=$!
 sleep 1
 extra=()
-[[ "$MODE" == auth ]] && extra=(--credential_helper="$BASE/helper")
-[[ "$MODE" == authput ]] && extra=(--credential_helper="$BASE/helper" --noremote_accept_cached)
+[[ "$MODE" == auth ]] && extra=(--credential_helper=127.0.0.1="$BASE/helper")
+[[ "$MODE" == authput ]] && extra=(--credential_helper=127.0.0.1="$BASE/helper" --noremote_accept_cached)
 bazel() { "$BIN" --output_user_root="$UR" --max_idle_secs=60 "$@"; }
 start=$(date +%s.%N)
 bazel build --jobs=4 --remote_cache=http://127.0.0.1:$port --remote_timeout=10 "${extra[@]}" //:big \

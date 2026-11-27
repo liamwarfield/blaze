@@ -29,6 +29,7 @@ pub mod stubs {
 }
 
 pub mod channel;
+pub mod connection_pool;
 
 pub use channel::{
     AttachHeadersInterceptor, CallCredentials, CallListener, CallOptions, ClientInterceptor,

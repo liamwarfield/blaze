@@ -277,6 +277,7 @@ impl InvalidIgnorePathException {
 }
 
 /// Repository-relative path of the bazelignore file.
+// PORT: skipped, the function is a plain function (no state to construct): IgnoredSubdirectoriesFunction.<init>
 // Java: com/google/devtools/build/lib/skyframe/IgnoredSubdirectoriesFunction.java:58 IgnoredSubdirectoriesFunction.BAZELIGNORE_REPOSITORY_RELATIVE_PATH
 pub const BAZELIGNORE_REPOSITORY_RELATIVE_PATH: &str = ".bazelignore";
 
@@ -335,6 +336,8 @@ fn get_ignored_prefixes(
             );
         }
     };
+    // Java: com/google/devtools/build/lib/skyframe/IgnoredSubdirectoriesFunction.java:206 IgnoredSubdirectoriesFunction.PathFragmentLineProcessor.processLine
+    // Java: com/google/devtools/build/lib/skyframe/IgnoredSubdirectoriesFunction.java:223 IgnoredSubdirectoriesFunction.PathFragmentLineProcessor.getResult
     // Java: PathFragmentLineProcessor over CharStreams.readLines (splits on \n, \r\n and \r).
     let mut fragments: IndexSet<PathFragment> = IndexSet::new();
     for line in read_lines(&contents) {

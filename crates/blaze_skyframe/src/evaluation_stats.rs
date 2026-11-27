@@ -36,8 +36,10 @@ pub struct EvaluationStats {
 // Java: com/google/devtools/build/skyframe/SkyframeGraphStatsEvent.java:23 SkyframeGraphStatsEvent
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct SkyframeGraphStatsEvent {
+    // Java: com/google/devtools/build/skyframe/SkyframeGraphStatsEvent.java:40 SkyframeGraphStatsEvent.getGraphSize
     /// `getGraphSize()`: `InMemoryGraph.valuesSize()`.
     pub graph_size: i32,
+    // Java: com/google/devtools/build/skyframe/SkyframeGraphStatsEvent.java:44 SkyframeGraphStatsEvent.getEvaluationStats
     pub evaluation_stats: EvaluationStats,
 }
 

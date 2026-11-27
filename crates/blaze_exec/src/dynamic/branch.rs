@@ -550,6 +550,7 @@ impl Branch {
     }
 
     /// `throw new DynamicInterruptedException(message)`.
+    // Java: com/google/devtools/build/lib/dynamic/DynamicInterruptedException.java:19 DynamicInterruptedException.<init>
     pub(crate) fn dynamic_interrupted_exception(&self, _message: String) -> ExecException {
         // The message is only logged (debug); ExecException::Interrupted carries none.
         self.dynamic_interrupted.store(true, Ordering::SeqCst);

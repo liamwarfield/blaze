@@ -705,8 +705,11 @@ fn main() -> ExitCode {
         // BlazeDirectories.getActionTempsDirectory(execRoot).
         action_temps_directory: exec_root.get_relative_str("bazel-out/_tmp/actions"),
         writable_outputs: false,
+        archived_artifacts_mnemonics_filter: None,
         output_filter: None,
         remote: Default::default(),
+        // No runtime modules in the replay tool.
+        module_spawn_strategy_registrations: Vec::new(),
     };
     let ws_for_status = workspace.clone();
     let prepared = match prepare_for_execution(&config, reporter.clone(), None, &|contexts, env| {

@@ -37,7 +37,6 @@ use super::starlark_bazel_module::TypeCheckedTag;
 use crate::env_handle::SkyEnv;
 use crate::repository::repo_recorded_input::wrap_env_vars;
 use crate::starlark::base_external_context::StarlarkBaseExternalContext;
-use crate::starlark::context::ModuleCtx;
 
 fn eval_error(msg: impl fmt::Display) -> starlark::Error {
     starlark::Error::new_other(anyhow::anyhow!("{msg}"))
@@ -178,7 +177,9 @@ pub fn module_ctx_methods(builder: &mut MethodsBuilder) {
     /// breadth-first search starting from the root module.
     // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionContext.java:124 ModuleExtensionContext.getModules
     #[starlark(attribute)]
-    fn modules<'v>(this: &ModuleCtx, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
+    fn modules<'v>(this: Value<'v>, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
+        let this =
+            crate::starlark::context::module_ctx_of(this).expect("the receiver is a module_ctx");
         heap.add_reference(&this.fields.frozen_heap);
         Ok(this.fields.modules.to_value())
     }
@@ -187,7 +188,9 @@ pub fn module_ctx_methods(builder: &mut MethodsBuilder) {
     /// parameter of `extension_metadata` or else `{}`.
     // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionContext.java:141 ModuleExtensionContext.getFacts
     #[starlark(attribute)]
-    fn facts<'v>(this: &ModuleCtx, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
+    fn facts<'v>(this: Value<'v>, heap: Heap<'v>) -> starlark::Result<Value<'v>> {
+        let this =
+            crate::starlark::context::module_ctx_of(this).expect("the receiver is a module_ctx");
         heap.add_reference(&this.fields.frozen_heap);
         Ok(this.fields.facts.to_value())
     }
@@ -196,9 +199,11 @@ pub fn module_ctx_methods(builder: &mut MethodsBuilder) {
     /// `devDependency = True`.
     // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionContext.java:159 ModuleExtensionContext.isDevDependency
     fn is_dev_dependency<'v>(
-        this: &ModuleCtx,
+        this: Value<'v>,
         #[starlark(require = pos)] tag: Value<'v>,
     ) -> starlark::Result<bool> {
+        let this =
+            crate::starlark::context::module_ctx_of(this).expect("the receiver is a module_ctx");
         let _ = this;
         Ok(unpack_tag("is_dev_dependency", tag)?.is_dev_dependency())
     }
@@ -207,9 +212,11 @@ pub fn module_ctx_methods(builder: &mut MethodsBuilder) {
     /// `sort_key` objects to determine the relative order of tags, even across tag classes.
     // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionContext.java:182 ModuleExtensionContext.getTagSortKey
     fn tag_sort_key<'v>(
-        this: &ModuleCtx,
+        this: Value<'v>,
         #[starlark(require = pos)] tag: Value<'v>,
     ) -> starlark::Result<Value<'v>> {
+        let this =
+            crate::starlark::context::module_ctx_of(this).expect("the receiver is a module_ctx");
         let _ = this;
         Ok(unpack_tag("tag_sort_key", tag)?.get_sort_key())
     }
@@ -217,7 +224,9 @@ pub fn module_ctx_methods(builder: &mut MethodsBuilder) {
     /// Whether the root module uses this extension as a non-dev dependency.
     // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionContext.java:203 ModuleExtensionContext.rootModuleHasNonDevDependency
     #[starlark(attribute)]
-    fn root_module_has_non_dev_dependency(this: &ModuleCtx) -> starlark::Result<bool> {
+    fn root_module_has_non_dev_dependency<'v>(this: Value<'v>) -> starlark::Result<bool> {
+        let this =
+            crate::starlark::context::module_ctx_of(this).expect("the receiver is a module_ctx");
         Ok(this.fields.root_module_has_non_dev_dependency)
     }
 
@@ -229,13 +238,15 @@ pub fn module_ctx_methods(builder: &mut MethodsBuilder) {
     /// `dict`) give starlark-rust's or the casts' messages here.
     // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleExtensionContext.java:310 ModuleExtensionContext.extensionMetadata
     fn extension_metadata<'v>(
-        this: &ModuleCtx,
+        this: Value<'v>,
         #[starlark(require = named, default = NoneType)] root_module_direct_deps: Value<'v>,
         #[starlark(require = named, default = NoneType)] root_module_direct_dev_deps: Value<'v>,
         #[starlark(require = named, default = false)] reproducible: bool,
         #[starlark(require = named)] facts: Option<Value<'v>>,
         heap: Heap<'v>,
     ) -> starlark::Result<ModuleExtensionMetadata> {
+        let this =
+            crate::starlark::context::module_ctx_of(this).expect("the receiver is a module_ctx");
         let _ = this;
         // defaultValue = "{}"
         let facts = facts.unwrap_or_else(|| {

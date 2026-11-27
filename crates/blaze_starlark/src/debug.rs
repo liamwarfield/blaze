@@ -68,7 +68,29 @@ pub fn debugger() -> Option<Arc<dyn Debugger>> {
 }
 
 /// The hook installed in an evaluator: Java's `if (fr.dbg != null) fr.dbg.before(...)`.
-struct Hook(Arc<dyn Debugger>);
+///
+/// It calls the debugger set when the statement runs (Java: the one the frame captured when it
+/// was created): code compiled with the hook can outlive its command in a kept graph, and must
+/// not call a closed server of an earlier command.
+///
+/// starlark-rust compiles each top-level statement as a `PossibleGc` statement with the span of
+/// the statement, followed by the statement itself: the hook is called twice, one call right
+/// after the other, with the same span. Java calls the debugger once per statement, so the
+/// second call is not passed on. (A top-level statement starts at column 1, and no statement
+/// runs twice in a row with the same span at the top level: a loop body is indented.)
+struct Hook {
+    /// The span of the last call, when it was a top-level statement's first call.
+    last_top_level: Option<(String, u32, u32)>,
+    /// The evaluator executes a module's top level (its call stack starts with the module's
+    /// frame), not a function called from Rust.
+    executes_module: bool,
+}
+
+thread_local! {
+    // Whether the evaluator whose hook is running on this thread executes a module (read by
+    // `frames` while the debugger has the thread paused).
+    static EXECUTES_MODULE: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
 
 impl<'e> BeforeStmtFuncDyn<'e> for Hook {
     fn call<'v>(
@@ -79,20 +101,51 @@ impl<'e> BeforeStmtFuncDyn<'e> for Hook {
     ) -> starlark::Result<()> {
         // A "continued" instruction is the rest of the statement that is running (after a
         // call returned); Java calls the debugger once per statement.
-        if !continued {
-            let location = DebugLocation::of(span);
-            self.0.before(eval, &location);
+        if continued {
+            return Ok(());
+        }
+        let location = DebugLocation::of(span);
+        let key = (
+            span.filename().to_owned(),
+            span.span.begin().get(),
+            span.span.end().get(),
+        );
+        let top_level =
+            self.executes_module && location.column == 1 && eval.call_stack_count() <= 1;
+        if top_level && self.last_top_level.as_ref() == Some(&key) {
+            // The statement after its `PossibleGc`.
+            self.last_top_level = None;
+            return Ok(());
+        }
+        self.last_top_level = if top_level { Some(key) } else { None };
+        if let Some(dbg) = debugger() {
+            let outer = EXECUTES_MODULE.with(|m| m.replace(self.executes_module));
+            dbg.before(eval, &location);
+            EXECUTES_MODULE.with(|m| m.set(outer));
         }
         Ok(())
     }
 }
 
-/// Installs the debugger's hook in a fresh evaluator, before it compiles anything (the frames
-/// of Java's thread capture the debugger when they are created). Does nothing without a
-/// debugger.
+/// Installs the debugger's hook in a fresh evaluator that executes a module's top level,
+/// before it compiles anything (the frames of Java's thread capture the debugger when they are
+/// created). Does nothing without a debugger.
 pub fn install_hook(eval: &mut Evaluator<'_, '_, '_>) {
-    if let Some(dbg) = debugger() {
-        eval.before_stmt_for_dap(BeforeStmtFunc::Dyn(Box::new(Hook(dbg))));
+    install(eval, true);
+}
+
+/// [`install_hook`] for an evaluator that calls a function from Rust (a rule or aspect
+/// implementation, a callback): its call stack has no top-level frame, as in Java.
+pub fn install_hook_for_call(eval: &mut Evaluator<'_, '_, '_>) {
+    install(eval, false);
+}
+
+fn install(eval: &mut Evaluator<'_, '_, '_>, executes_module: bool) {
+    if debugger().is_some() {
+        eval.before_stmt_for_dap(BeforeStmtFunc::Dyn(Box::new(Hook {
+            last_top_level: None,
+            executes_module,
+        })));
     }
 }
 
@@ -130,9 +183,12 @@ pub fn step_control(depth: usize, stepping: Stepping) -> Option<ReadyToPause> {
 }
 
 /// The call-stack depth Java's `getCallStackSize` gives: the frames of the calls plus the
-/// top-level frame.
+/// top-level frame. starlark-rust runs a module's top level in a frame of its own (`module`), so
+/// its count is Java's; a function called from Rust (a rule implementation) has no top-level
+/// frame in either.
+// Java: net/starlark/java/eval/StarlarkThread.java getCallStackSize
 pub fn call_stack_size(eval: &Evaluator<'_, '_, '_>) -> usize {
-    eval.call_stack_count() + 1
+    eval.call_stack_count()
 }
 
 // The modules of the files evaluated while a debugger is set, by file name: the globals of a
@@ -142,6 +198,9 @@ pub fn call_stack_size(eval: &Evaluator<'_, '_, '_>) -> usize {
 struct DebugModule {
     frozen: Option<FrozenModule>,
     predeclared: Option<Globals>,
+    /// The names `load` binds file-locally (not module globals: Java `Module.getGlobals()`
+    /// leaves them out); empty for a file whose loads bind globally (BUILD).
+    load_bound: Vec<String>,
 }
 
 static MODULE_GLOBALS: LazyLock<RwLock<HashMap<String, DebugModule>>> =
@@ -158,6 +217,28 @@ pub fn register_predeclared(file: &str, globals: &Globals) {
             .or_default()
             .predeclared = Some(globals.clone());
     }
+}
+
+/// Records the names `file`'s `load` statements bind file-locally (when a debugger is set).
+pub fn register_load_bound(file: &str, names: Vec<String>) {
+    if DEBUGGER.read().unwrap().is_some() {
+        MODULE_GLOBALS
+            .write()
+            .unwrap()
+            .entry(file.to_owned())
+            .or_default()
+            .load_bound = names;
+    }
+}
+
+/// The names `file`'s loads bind file-locally.
+pub fn load_bound_of_file(file: &str) -> Vec<String> {
+    MODULE_GLOBALS
+        .read()
+        .unwrap()
+        .get(file)
+        .map(|m| m.load_bound.clone())
+        .unwrap_or_default()
 }
 
 /// Records the frozen module of `file` (when a debugger is set).
@@ -284,16 +365,28 @@ pub fn frames(eval: &Evaluator<'_, '_, '_>, current: &DebugLocation) -> Vec<Debu
             location: next,
             frame_index: Some(i),
         });
-        // A frame's recorded location is that of the call it made: where its caller is.
-        next = frame
-            .location
-            .as_ref()
-            .map(|l| DebugLocation::of(l.as_ref()));
+        // A frame's recorded location is that of the call it made: where its caller is, at
+        // the call's `(` (Java `CallExpression.getLparenLocation`, the frame's location while
+        // the call runs).
+        next = frame.location.as_ref().map(|l| {
+            let at = crate::error::Location::bazel_position(l);
+            DebugLocation {
+                file: at.file,
+                line: at.line as i32,
+                column: at.column as i32,
+            }
+        });
     }
-    result.push(DebugFrame {
-        function_name: TOP_LEVEL.to_owned(),
-        location: next,
-        frame_index: None,
-    });
+    // The top-level frame of a module being executed (starlark-rust's `module` frame, which
+    // `into_frames` leaves out). A function called from Rust (a rule implementation) has none,
+    // as in Java, where such a thread's stack starts with the function
+    // (`install_hook_for_call`).
+    if EXECUTES_MODULE.with(|m| m.get()) {
+        result.push(DebugFrame {
+            function_name: TOP_LEVEL.to_owned(),
+            location: next,
+            frame_index: None,
+        });
+    }
     result
 }

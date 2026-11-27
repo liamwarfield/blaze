@@ -50,6 +50,7 @@ pub mod bzl_compile;
 pub mod bzl_load;
 pub mod compile_one_dependency_transformer;
 pub mod containing_package_lookup;
+pub mod debug_print;
 pub mod diff_awareness;
 pub mod directories;
 pub mod directory_listing;

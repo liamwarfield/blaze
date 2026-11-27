@@ -110,6 +110,20 @@
 > `discard_analysis_cache_test`). Both defects are assigned. Failures by family:
 > `~/.cache/blaze/work/root-runs/8ecc520-failures/by-family.tsv` (163 rows) and
 > `8ecc520-daemon-failures/by-family.tsv` (99 rows).
+>
+> **Correction, 2026-11-27 03:00: the server-mode run above was disturbed and its seven
+> timeouts are not established as a Blaze defect.** The execution implementer could not
+> reproduce the analysis hangs with the same binary (70 clean hand iterations of the
+> `disk_cache_test` steps, the seven targets twice, and one whole server-mode run of its own,
+> label `skymeld-hang-8ecc-full`: 195 targets and 2,818 functions retained, no analysis hang;
+> that run is the implementer's, not a root measurement). During root's run another
+> implementer's randomized test ran beside it (server peak 11.8 GiB), and the agents' slice
+> was over its `MemoryHigh` often that night, which throttles every process in it. Two of the
+> seven are a harness defect instead: the tests' shared, writable repository cache keeps the
+> contents the deferred-download tests serve, so later runs get a cache hit and the test
+> waits forever on its fifo (`external_integration_test` shards 1 and 15). Server mode at
+> `8ecc520` is measured again, undisturbed, at the next checkpoint; until then the best root
+> measurement in server mode stays `38cd662` with 2,803.
 
 
 First full run of Bazel's own shell and Python integration tests (237 targets) against Blaze,
@@ -148,6 +162,46 @@ First full run of Bazel's own shell and Python integration tests (237 targets) a
   `scripts/ut-analysis/families blaze-v0.1.0` (new tool) then groups those causes into
   families. It maps the `unported:` causes by class. For the rest it uses rules I wrote after
   reading the logs.
+- **Tests' repository cache (harness batch B, 2026-11-27; applies to runs from then on).**
+  Upstream CI (`.bazelrc` config `ci-linux`) gives the tests the outer build's own
+  `--repository_cache` as `REPOSITORY_CACHE`, writable, for the length of one CI job;
+  `testenv.sh` and `test_base.py` write it into the inner bazelrc. The harness used to keep one
+  shared, writable tests' cache across runs, so a download a test made stayed for every later
+  target and run; `external_integration_test#test_deferred_download_*` then got a cache hit for
+  the contents they serve through fifos and hung. Now every test action runs through
+  `--run_under=~/.cache/blaze/upstream-tests/run-under/repository-cache`, which gives it a
+  private reflink copy (btrfs; 0.05 s warm for 701 entries, no data copied) of the outer
+  cache's downloads, with an empty repo contents cache. It runs the test by the same path and
+  arguments `test-setup.sh` uses, as its own child (so the test's parent, process group leader
+  and `SHLVL` differ), traps the timeout's SIGTERM so the test's own handler finishes as
+  without it, and deletes the copy afterwards. Nothing a test writes reaches another shard,
+  target or run.
+  This is stricter than CI, where shards and targets of one job share the cache. The outer
+  cache held 1,479 entries (7.4 GB) that tests had written into it on 2026-11-18 during the
+  baseline runs; `prepare clean-cache` showed the outer build uses only the other 701, which
+  are exactly the downloads `prepare` made. The 1,479 and the old shared tests' cache (8,662
+  entries, 12 GB, plus a 1.3 GB repo contents cache) were deleted; the list is
+  `~/.cache/blaze/upstream-tests/clean-cache-20261127T030603.txt`. The oracle baseline
+  `corpus/upstream-tests/oracle-9.3.2.json` was recorded with those entries present and has not
+  been re-measured.
+- **Functions after an XML writer overflow** (harness problem 3). `run rerun-unmeasured
+  --label <suite label> --binary <same binary>` reruns, one invocation each
+  (`--test_filter=<fn>`, sharding off, unmodified test), exactly the functions that never ran
+  because unittest.bash's XML writer overflowed in their shard. The results go to
+  results.json `"rerun"`, never into the suite figures; `compare` prints them on their own
+  line, as the audit-3 ruling on per-function results requires. A function rerun again keeps
+  every attempt; its status stays the first attempt's.
+- **Checks before a figure** (audit of batch B, C2 and C3). `compare check <label>` prints
+  whether a label has no pass taken from test.log and exactly one complete, OOM-free run with
+  the per-action cache, no wrapper error, a wrapper call per test attempt and the committed
+  scripts' sha256; `--baseline` also requires `high +0` and `oom_kill +0` in the memory note.
+  `summarize` refuses runs measured under different harnesses and records the scripts' sha256
+  and the cache mode in the baseline file.
+- **Disturbance note.** Each run writes `memory-slice-<stamp>.json` (the agents' slice
+  `memory.events` at start and end, and the other units in the jobs slice at the start) and
+  prints the difference on its final line. `high` (the slice over its `MemoryHigh`) is the
+  signal; `max` and `oom_kill` count the whole subtree, other agents' units at their own
+  `MemoryMax` and the run's own unit included (`memory.events.local` is kept too).
 - **First cause only.** A function is counted under the first cause in its log. Fixing that
   cause can expose a later one, so a family's count is an upper bound on the passes it can
   give.
@@ -336,23 +390,37 @@ oracle too.)
 
 ## Harness problems
 
-1. **Build failures recorded as `not_run`.** `external_repo_completion_test` failed to build
-   (its genrule runs `blaze help completion`). The BEP `targetCompleted` event carries
-   `failureDetail` but no `success: false`, because proto3 leaves the default out. `run`'s
-   `collect` checks only `success is False`, so it records `not_run` and `compare` counts the
-   target as absent, not lost. `run` should also treat a `failureDetail` as `build_fail`.
-2. **test.xml that does not parse drops functions.** Four Blaze test.xml files are not
-   well-formed (ANSI escape bytes from Blaze's colored output inside the failure text):
-   `rc_options_test`, `ui_test` shards 2, 6 and 9. `run`'s `parse_xml` returns nothing for
-   them. Their functions go missing, including 7 that test.log shows as `PASSED`.
-   `classify` reads test.log for these. `run` could fall back to the
-   `PASSED|FAILED: <fn>` lines.
+Status after harness batch B (2026-11-27, `docs/reviews/2026-11-27-harness-batch-b.md`).
+
+1. **Build failures recorded as `not_run`.** Fixed in audit-3 batch A (2026-11-19): `run` reads
+   a BEP `failureDetail` without `success: false` (proto3 leaves the default out) as
+   `build_fail`, and `compare` counts its functions as lost, not absent.
+   `external_repo_completion_test` was the case.
+2. **Functions missing from test.xml.** Batch A read test.xml after removing the characters
+   XML 1.0 forbids (ANSI escapes: `rc_options_test`, `ui_test` shards 2, 6, 9). Batch B: when
+   the XML is not the framework's finished report (it does not parse, unittest.bash's XML
+   writer overflowed, the test was killed, or Bazel wrote a stand-in), the functions it lacks
+   are read from test.log with `"source": "log"`, only from the framework's own lines at
+   function boundaries: the outer `** <fn> ****` start lines (outside `-- Test log:` dumps,
+   and in the order unittest.bash runs that shard), the coloured `PASSED: <fn>` line closing
+   the function's segment, and absltest's `[ RUN ]`/`[ OK ]`. Any `FAILED` or `terminated`
+   line for a name wins; anything ambiguous is left unmeasured, never passed. Only names the
+   target's sources define count. At `8ecc520` this moved 3 names (suite) and 2 names (server
+   mode) from absent to lost, all failures.
 3. **unittest.bash's XML writer overflows.** When one function's log is very large, the perl
-   writer fails with `Argument list too long` and the suite stops (51 functions here). This is
-   an upstream flaw, and the oracle hits it too. It means a single failure in
-   `build_event_stream_test` or `remote_build_event_uploader_test` hides every later function
-   in that shard.
-4. `--dry-run` creates the results directory for its label.
+   writer fails with `Argument list too long` and the suite stops. This is an upstream flaw,
+   and the oracle hits it too, so the suite count keeps those functions unmeasured. At
+   `8ecc520`: `build_event_stream_test` shard 1 (21 functions), `build_without_the_bytes_test`
+   shard 5 (7), and in suite mode `watchfs_test` (3). `run rerun-unmeasured` measures them
+   apart (Method).
+4. `--dry-run` writes nothing (fixed in batch A; checked again in batch B, also for
+   `rerun-unmeasured --dry-run`).
+5. **Shared, writable tests' repository cache.** Fixed in batch B (Method). Until then a
+   download a test made stayed for later targets and runs. `external_integration_test` passed
+   only in the first oracle baseline run (`oracle-9.3.2-v0a`, 2026-11-18 00:29, which wrote the
+   APPLE and BANANA entries at 00:49:57); shards 1 and 15 timed out in the three later
+   baseline runs and in the Blaze runs since, on both binaries. So the baseline counts the
+   target and those shards' functions as flaky or not passing, not as Blaze's losses.
 
 ## Raw results
 

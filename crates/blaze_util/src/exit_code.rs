@@ -127,6 +127,7 @@ impl fmt::Display for ExitCode {
 }
 
 /// An [`ExitCode`] and its optional [`FailureDetail`].
+// PORT: skipped, a private constructor of the comparator's singleton (the comparison functions are free functions): DetailedExitCode.DetailedExitCodeComparator.<init>
 // Java: com/google/devtools/build/lib/util/DetailedExitCode.java:31 DetailedExitCode
 #[derive(Clone, Debug, PartialEq)]
 pub struct DetailedExitCode {

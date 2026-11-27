@@ -32,6 +32,9 @@
 //! - **One runtime per process at a time.** The runtime sets process-wide state (the custom
 //!   exit code files, the crash handling); fixtures of one test binary are serialized.
 
+pub mod action_event_recorder;
+pub mod spawn_controller;
+
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -103,7 +106,7 @@ impl BlazeModule for TestModule {
 
 /// A workspace and one in-process runtime that runs several commands (see the module
 /// documentation).
-// Java: src/test/java/com/google/devtools/build/lib/buildtool/util/BuildIntegrationTestCase.java:150 BuildIntegrationTestCase
+// Java: src/test/java/com/google/devtools/build/lib/buildtool/util/BuildIntegrationTestCase.java:185 BuildIntegrationTestCase
 pub struct BuildIntegrationTestCase {
     runtime: Arc<BlazeRuntime>,
     dispatcher: Arc<BlazeCommandDispatcher>,
@@ -281,6 +284,32 @@ impl BuildIntegrationTestCase {
         self.hooks.lock().push(Arc::new(hook));
     }
 
+    /// `runtimeWrapper.registerSubscriber(subscriber)`: `subscriber` gets the events of every
+    /// later command's event bus.
+    // Java: src/test/java/com/google/devtools/build/lib/buildtool/util/BlazeRuntimeWrapper.java:178 BlazeRuntimeWrapper.registerSubscriber
+    pub fn register_subscriber(&self, subscriber: Arc<dyn blaze_events::EventBus>) {
+        self.on_before_command(move |env| env.get_event_bus().register(subscriber.clone()));
+    }
+
+    /// Injects `listener` into the Skyframe graph from the next build on (Java wraps the server's
+    /// evaluator at the next `BuildStartingEvent`).
+    ///
+    /// PORT: Blaze builds an evaluator per executor, over the graph the server keeps between
+    /// commands when there is one: the listener is injected into the kept graph and into every
+    /// graph created from now on (until this fixture is dropped). It also sees the events of the
+    /// next command before its build starts (loading); the rewinding tests filter by event type
+    /// and key.
+    // Java: src/test/java/com/google/devtools/build/lib/buildtool/util/BuildIntegrationTestCase.java:301 BuildIntegrationTestCase.injectListenerAtStartOfNextBuild
+    pub fn inject_listener_at_start_of_next_build(
+        &self,
+        listener: Arc<dyn blaze_skyframe::graph_listener::Listener>,
+    ) {
+        if let Some(evaluator) = self.get_kept_evaluator() {
+            evaluator.inject_graph_listener_for_testing(listener.clone());
+        }
+        blaze_skyframe::graph_listener::inject_into_new_graphs_for_testing(listener);
+    }
+
     /// `write(relativePath, lines...)`: a workspace file, each line ending in `\n`.
     // Java: src/test/java/com/google/devtools/build/lib/buildtool/util/BuildIntegrationTestCase.java:963 BuildIntegrationTestCase.write
     pub fn write(&self, relative_path: &str, lines: &[&str]) -> PathBuf {
@@ -430,5 +459,18 @@ impl BuildIntegrationTestCase {
 impl Default for BuildIntegrationTestCase {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl Drop for BuildIntegrationTestCase {
+    /// The listeners of [`BuildIntegrationTestCase::inject_listener_at_start_of_next_build`] end
+    /// with the fixture (Java's go with the test's server).
+    fn drop(&mut self) {
+        blaze_skyframe::graph_listener::clear_pending_for_new_graphs_for_testing();
+        // cleanUp's last step: "If there was a crash in test case, main thread was interrupted."
+        // It also clears a status a command leaves set (RemoteExecutionService.shutdown
+        // re-asserts the interrupt of an interrupted build on the command thread).
+        // Java: src/test/java/com/google/devtools/build/lib/buildtool/util/BuildIntegrationTestCase.java:398 BuildIntegrationTestCase.cleanUp
+        blaze_shell::thread_interrupt::interrupted();
     }
 }

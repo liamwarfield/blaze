@@ -164,6 +164,8 @@ pub fn register_bzlmod_functions(
             env,
         )
     });
+    // `new RegistryFunction(registryFactory, workspaceRoot)`: the config holds both.
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/RegistryFunction.java:56 RegistryFunction.<init>
     let c = config.clone();
     builder = builder.typed_function::<RegistryKey, _>(move |key, env| {
         registry_functions::compute_registry(&c, key, env)

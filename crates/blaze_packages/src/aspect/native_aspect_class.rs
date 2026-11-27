@@ -35,6 +35,10 @@ pub trait NativeAspectClass: Send + Sync + 'static {
     fn as_any(&self) -> &dyn Any;
 }
 
+// PORT: skipped, Skyframe serialization (remote analysis caching) is not ported: NativeAspectClass.Codec.getEncodedClass
+// PORT: skipped, Skyframe serialization (remote analysis caching) is not ported: NativeAspectClass.Codec.serialize
+// PORT: skipped, Skyframe serialization (remote analysis caching) is not ported: NativeAspectClass.Codec.deserialize
+
 impl PartialEq for dyn NativeAspectClass {
     fn eq(&self, other: &dyn NativeAspectClass) -> bool {
         self.get_name() == other.get_name()

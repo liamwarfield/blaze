@@ -77,20 +77,20 @@ pub fn configuration_id_of_key(key: Option<&BuildConfigurationKey>) -> Option<St
 ///
 /// `equals` and `hashCode` compare the fields, as the derives do; `toString` (a
 /// `MoreObjects.toStringHelper` for debugging) is the `Debug` derive.
-// Java: com/google/devtools/build/lib/causes/Cause.java:24 Cause
+// Java: com/google/devtools/build/lib/causes/Cause.java:21 Cause
 // Java: com/google/devtools/build/lib/causes/AnalysisFailedCause.java:71 AnalysisFailedCause.equals
 // Java: com/google/devtools/build/lib/causes/AnalysisFailedCause.java:84 AnalysisFailedCause.hashCode
 // Java: com/google/devtools/build/lib/causes/LabelCause.java:65 LabelCause.equals
 // PORT: skipped, debugging text (the Debug derive stands for it): AnalysisFailedCause.toString, LabelCause.toString
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Cause {
-    // Java: com/google/devtools/build/lib/causes/AnalysisFailedCause.java:30 AnalysisFailedCause
+    // Java: com/google/devtools/build/lib/causes/AnalysisFailedCause.java:28 AnalysisFailedCause
     AnalysisFailed {
         label: Label,
         configuration: String,
         detailed_exit_code: DetailedExitCode,
     },
-    // Java: com/google/devtools/build/lib/causes/LoadingFailedCause.java:27 LoadingFailedCause
+    // Java: com/google/devtools/build/lib/causes/LoadingFailedCause.java:24 LoadingFailedCause
     LoadingFailed {
         label: Label,
         detailed_exit_code: DetailedExitCode,
@@ -136,7 +136,7 @@ impl Cause {
 /// PORT: the comparator orders by numeric exit code. Every code analysis produces here
 /// (`Analysis.*`, `PackageLoading.*`) maps to exit code 1 (BUILD_FAILURE), so the first non-null
 /// code always wins the tie.
-// Java: com/google/devtools/build/lib/util/DetailedExitCodeComparator.java:44 DetailedExitCodeComparator.chooseMoreImportantWithFirstIfTie
+// Java: com/google/devtools/build/lib/util/DetailedExitCode.java:190 DetailedExitCode.DetailedExitCodeComparator.chooseMoreImportantWithFirstIfTie
 pub fn choose_more_important_with_first_if_tie(
     first: Option<DetailedExitCode>,
     second: Option<DetailedExitCode>,
@@ -150,7 +150,7 @@ pub fn choose_more_important_with_first_if_tie(
 
 /// An exception indicating that there was a problem during the construction of a
 /// `ConfiguredTargetValue`.
-// Java: com/google/devtools/build/lib/skyframe/ConfiguredValueCreationException.java:36 ConfiguredValueCreationException
+// Java: com/google/devtools/build/lib/skyframe/ConfiguredValueCreationException.java:37 ConfiguredValueCreationException
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("{message}")]
 pub struct ConfiguredValueCreationException {
@@ -266,11 +266,12 @@ pub enum DependencyEvaluationCause {
 }
 
 /// Exception that signals an error during the evaluation of a configured target dependency.
-// Java: com/google/devtools/build/lib/analysis/config/DependencyEvaluationException.java:36 DependencyEvaluationException
+// Java: com/google/devtools/build/lib/analysis/config/DependencyEvaluationException.java:38 DependencyEvaluationException
 #[derive(Clone, Debug, thiserror::Error)]
 #[error("{message}")]
 pub struct DependencyEvaluationException {
     message: String,
+    // Java: com/google/devtools/build/lib/analysis/config/DependencyEvaluationException.java:88 DependencyEvaluationException.getCause
     cause: DependencyEvaluationCause,
     /// Null denotes whatever default exit code callers choose.
     detailed_exit_code: Option<DetailedExitCode>,
@@ -611,7 +612,7 @@ pub fn catch_configured_target_error(
 }
 
 /// A target and its configuration (`None` for the null configuration).
-// Java: com/google/devtools/build/lib/analysis/TargetAndConfiguration.java:30 TargetAndConfiguration
+// Java: com/google/devtools/build/lib/analysis/TargetAndConfiguration.java:29 TargetAndConfiguration
 #[derive(Clone, Debug)]
 pub struct TargetAndConfiguration {
     target: Target,
@@ -645,16 +646,18 @@ impl TargetAndConfiguration {
 }
 
 /// Transitive state of a configured target's dependency resolution (root causes, packages).
-// Java: com/google/devtools/build/lib/analysis/TransitiveDependencyState.java:46 TransitiveDependencyState
+// Java: com/google/devtools/build/lib/analysis/TransitiveDependencyState.java:41 TransitiveDependencyState
 pub struct TransitiveDependencyState {
     transitive_root_causes: NestedSetBuilder<Cause>,
     /// Non-null when transitive packages are tracked.
     package_collector: Option<PackageCollector>,
+    /// Java `prerequisitePackages` (`p -> null` when `None`).
+    prerequisite_packages: Option<blaze_analysis::analysis_services::PrerequisitePackageFunction>,
 }
 
 /// Collects package metadata of dependencies to be unified in a NestedSet, with bookkeeping so
 /// the result is deterministic (Skyframe work may complete in arbitrary order).
-// Java: com/google/devtools/build/lib/analysis/TransitiveDependencyState.java:166 TransitiveDependencyState.PackageCollector
+// Java: com/google/devtools/build/lib/analysis/TransitiveDependencyState.java:161 TransitiveDependencyState.PackageCollector
 struct PackageCollector {
     /// Keeps packages that were added directly as a list. These will be sorted.
     packages: Vec<Arc<PackageMetadata>>,
@@ -690,7 +693,7 @@ fn configured_target_key_ordering(
 
 impl PackageCollector {
     /// Constructs the deterministically ordered result. It's safe to call this multiple times.
-    // Java: com/google/devtools/build/lib/analysis/TransitiveDependencyState.java:186 TransitiveDependencyState.PackageCollector.buildSet
+    // Java: com/google/devtools/build/lib/analysis/TransitiveDependencyState.java:182 TransitiveDependencyState.PackageCollector.buildSet
     fn build_set(&self) -> NestedSet<RepoMappingPackageMetadata> {
         let mut result = NestedSetBuilder::stable_order();
         let mut packages = self.packages.clone();
@@ -713,6 +716,28 @@ impl PackageCollector {
 }
 
 impl TransitiveDependencyState {
+    /// Sets Java's `prerequisitePackages` constructor argument (the default is `p -> null`,
+    /// which makes every dependency's package a Skyframe lookup).
+    pub fn set_prerequisite_packages(
+        &mut self,
+        prerequisite_packages: Option<
+            blaze_analysis::analysis_services::PrerequisitePackageFunction,
+        >,
+    ) {
+        self.prerequisite_packages = prerequisite_packages;
+    }
+
+    /// The package of a dependency if the graph already has it (no dependency edge).
+    // Java: com/google/devtools/build/lib/analysis/TransitiveDependencyState.java:145 TransitiveDependencyState.getDependencyPackage
+    pub fn get_dependency_package(
+        &self,
+        package_id: &blaze_cmdline::PackageIdentifier,
+    ) -> Option<Arc<blaze_packages::package::package::Package>> {
+        self.prerequisite_packages
+            .as_ref()
+            .and_then(|f| f(package_id))
+    }
+
     // Java: com/google/devtools/build/lib/analysis/TransitiveDependencyState.java:76 TransitiveDependencyState.<init>
     pub fn new(store_transitive_packages: bool) -> Self {
         TransitiveDependencyState {
@@ -726,6 +751,7 @@ impl TransitiveDependencyState {
             } else {
                 None
             },
+            prerequisite_packages: None,
         }
     }
 
@@ -855,7 +881,7 @@ fn aspect_key_descriptor_graph_compare(
 }
 
 /// Tagged union of the errors of the dependency map producers (Java `DependencyError`).
-// Java: com/google/devtools/build/lib/analysis/producers/DependencyError.java:37 DependencyError
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyError.java:30 DependencyError
 #[derive(Clone, Debug)]
 pub enum DependencyError {
     DependencyOptionsParsing(String),
@@ -900,7 +926,7 @@ impl DependencyError {
 
 /// Tagged union of the errors of the dependency context producers (Java
 /// `DependencyContextError`).
-// Java: com/google/devtools/build/lib/analysis/producers/DependencyContextError.java:27 DependencyContextError
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyContextError.java:24 DependencyContextError
 #[derive(Clone, Debug)]
 pub enum DependencyContextError {
     /// `ToolchainException`: P's error type, carried with its message and the
@@ -914,7 +940,7 @@ pub enum DependencyContextError {
 }
 
 /// A dependency edge whose target could not be loaded (Java `MissingEdgeError`).
-// Java: com/google/devtools/build/lib/analysis/producers/MissingEdgeError.java:36 MissingEdgeError
+// Java: com/google/devtools/build/lib/analysis/producers/MissingEdgeError.java:47 MissingEdgeError
 #[derive(Clone, Debug)]
 pub struct MissingEdgeError {
     kind: DependencyKind,

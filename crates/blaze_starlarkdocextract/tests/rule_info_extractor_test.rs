@@ -103,7 +103,6 @@ fn all_builtin_attribute_types_supported() {
 
 // Java: src/test/java/com/google/devtools/build/lib/starlarkdocextract/RuleInfoExtractorTest.java:88 RuleInfoExtractorTest.allNativeRulesAreSupported
 #[test]
-#[ignore = "the default of a native ComputedDefault/LateBoundDefault (e.g. $native_build_rule's deprecation, testonly, package_metadata) prints as Java's StarlarkValue.repr, `<unknown object <Java class name>>`; the class names are not ported (unported! StarlarkValue.repr)"]
 fn all_native_rules_are_supported() {
     let extractor_context = context_extracting_natively_defined_attrs();
     let rule_class_provider = RuleClassProvider::create_bazel();

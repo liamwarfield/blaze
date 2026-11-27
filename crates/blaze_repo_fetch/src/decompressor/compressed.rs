@@ -137,6 +137,8 @@ pub(crate) fn decompress(
         io::copy(&mut decompressor_stream, &mut out)?;
         out.flush()?;
     }
+    // PORT: the base class's setFileAttributes is a no-op; only GzFunction overrides it.
+    // Java: com/google/devtools/build/lib/bazel/repository/decompressor/CompressedFunction.java:53 CompressedFunction.setFileAttributes
     // Java: com/google/devtools/build/lib/bazel/repository/decompressor/GzFunction.java:48 GzFunction.setFileAttributes
     if let Some(meta) = gzip_meta {
         // Commons Compress reports the gzip MTIME in milliseconds (seconds * 1000) and Bazel

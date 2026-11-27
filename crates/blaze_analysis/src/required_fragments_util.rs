@@ -29,6 +29,7 @@ use crate::providers::required_config_fragments_provider::{
 };
 
 /// Java `ClassName.getSimpleNameWithOuter(clazz)`: the class name after its package.
+// PORT: skipped, the private constructor of a static-only class: ClassName.<init>
 // Java: com/google/devtools/build/lib/util/ClassName.java:26 ClassName.getSimpleNameWithOuter
 pub fn get_simple_name_with_outer(java_name: &str) -> &str {
     match java_name.rfind('.') {

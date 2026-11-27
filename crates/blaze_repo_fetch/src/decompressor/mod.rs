@@ -53,6 +53,13 @@ impl DecompressorDescriptor {
 }
 
 impl DecompressorDescriptorBuilder {
+    // PORT: the setters are the methods of this builder (one per Java setter).
+    // Java: com/google/devtools/build/lib/bazel/repository/decompressor/DecompressorDescriptor.java:57 DecompressorDescriptor.Builder.setContext
+    // Java: com/google/devtools/build/lib/bazel/repository/decompressor/DecompressorDescriptor.java:59 DecompressorDescriptor.Builder.setArchivePath
+    // Java: com/google/devtools/build/lib/bazel/repository/decompressor/DecompressorDescriptor.java:61 DecompressorDescriptor.Builder.setDestinationPath
+    // Java: com/google/devtools/build/lib/bazel/repository/decompressor/DecompressorDescriptor.java:63 DecompressorDescriptor.Builder.setPrefix
+    // Java: com/google/devtools/build/lib/bazel/repository/decompressor/DecompressorDescriptor.java:65 DecompressorDescriptor.Builder.setStripComponents
+    // Java: com/google/devtools/build/lib/bazel/repository/decompressor/DecompressorDescriptor.java:67 DecompressorDescriptor.Builder.setRenameFiles
     pub fn set_context(mut self, context: &str) -> Self {
         self.context = context.to_string();
         self

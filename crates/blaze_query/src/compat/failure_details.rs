@@ -7,7 +7,7 @@
 
 use blaze_cmdline::TargetParsingException;
 use blaze_packages::exceptions::DetailedExitCode as PackagesDetailedExitCode;
-use blaze_protos::failure_details::{FailureDetail, TargetPatterns, failure_detail::Category};
+use blaze_protos::failure_details::FailureDetail;
 use blaze_query_engine::DetailedExitCode;
 
 /// The `FailureDetail` of a blaze_packages `DetailedExitCode`.
@@ -26,11 +26,13 @@ pub fn from_packages(detailed_exit_code: &PackagesDetailedExitCode) -> DetailedE
 
 /// Java `TargetParsingException.getDetailedExitCode().getFailureDetail()`.
 // Java: com/google/devtools/build/lib/cmdline/TargetParsingException.java:76 TargetParsingException.getDetailedExitCode
+///
+/// The exception's own detailed exit code: the cause's (a `NoSuchThingException`'s, e.g.
+/// `PackageLoading.TARGET_MISSING`) when it wraps one, else a `TargetPatterns` failure detail of
+/// its code (`TargetParsingException.createFailureDetail`).
 pub fn target_parsing_failure_detail(e: &TargetParsingException) -> FailureDetail {
-    FailureDetail {
-        message: e.to_string(),
-        category: Some(Category::TargetPatterns(TargetPatterns {
-            code: e.get_code() as i32,
-        })),
-    }
+    e.get_detailed_exit_code()
+        .get_failure_detail()
+        .expect("TargetParsingException.getDetailedExitCode() has a failure detail")
+        .clone()
 }

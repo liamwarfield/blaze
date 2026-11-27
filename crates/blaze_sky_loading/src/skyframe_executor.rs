@@ -298,6 +298,7 @@ pub fn register_loading_functions(
     builder: EvaluatorBuilder,
     config: &LoadingFunctionsConfig,
 ) -> EvaluatorBuilder {
+    crate::debug_print::register_debug_prints();
     let external_files_helper = Arc::new(ExternalFilesHelper::create_with_knowledge(
         config.pkg_locator.clone(),
         config.external_file_action,

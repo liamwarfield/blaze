@@ -8,7 +8,9 @@
 //! Here the part of each producer before its `PrerequisitesProducer` runs first, in index order
 //! (`plan_dependency`); the configured targets are then requested in the order of Java's
 //! lookup rounds (see `produce_dependency_map`, "request order") and each result is stored at
-//! its index, which yields the same map. Materializers (dormant dependencies) are not ported.
+//! its index, which yields the same map. The dependencies a materializer chooses, and those of a
+//! materializer target, are produced where Java enqueues their producers, one after the other
+//! (`produce_one_dependency`), not in the lookup rounds of the other dependencies.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -35,6 +37,7 @@ use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::configured_target_and_data::ConfiguredTargetAndData;
 use blaze_analysis::configured_target_key::ConfiguredTargetKey;
 use blaze_analysis::dependency_kind::DependencyKind;
+use blaze_analysis::providers::materialized_deps_info::MaterializedDepsInfo;
 use blaze_analysis::rule::rule_error_consumer::AnalysisRootCauseEvent;
 use blaze_analysis::toolchains::toolchain_context::ToolchainContext;
 use blaze_analysis::toolchains::{ToolchainCollection, UnloadedToolchainContext};
@@ -208,18 +211,36 @@ enum AttributeConfiguration {
 pub struct DependencyMapOutcome {
     /// `acceptDependencyMap`: `None` when there was an error or a dependency is missing.
     pub dependency_map: Option<PrerequisiteMap>,
-    /// `acceptMaterializerTargets` (always `None`: materializers are not ported).
+    /// `acceptMaterializerTargets`.
     pub materializer_targets: Option<PrerequisiteMap>,
     /// `acceptDependencyMapError(DependencyError)`: the most important error.
     pub dependency_map_error: Option<DependencyError>,
 }
 
-/// Errors seen while computing one map (Java `DependencyMapProducer.lastError`).
+/// Errors seen while computing one map (Java `DependencyMapProducer.lastError`), and the
+/// materializer targets accepted (Java `DependencyMapProducer.materializerTargets`).
 struct ErrorState {
     last_error: Option<DependencyError>,
+    materializer_targets: Option<PrerequisiteMap>,
 }
 
 impl ErrorState {
+    // Java: com/google/devtools/build/lib/analysis/producers/DependencyMapProducer.java:388 DependencyMapProducer.acceptMaterializerTarget
+    fn accept_materializer_target(
+        &mut self,
+        dependency_kind: &DependencyKind,
+        target: ConfiguredTargetAndData,
+    ) {
+        // Lazily allocate since materializers should be relatively rare.
+        let targets = self.materializer_targets.get_or_insert_with(IndexMap::new);
+        // OrderedSetMultimap.put: a set of values per key; ConfiguredTargetAndData has
+        // identity equality, so every new object is added.
+        targets
+            .entry(dependency_kind.clone())
+            .or_default()
+            .push(target);
+    }
+
     // Java: com/google/devtools/build/lib/analysis/producers/DependencyMapProducer.java:466 DependencyMapProducer.emitErrorIfMostImportant
     fn accept_dependency_error(&mut self, error: DependencyError) {
         match &self.last_error {
@@ -243,7 +264,10 @@ pub fn produce_dependency_map(
     parameters: &mut PrerequisiteParameters<'_>,
     dependency_labels: &DependencyLabels,
 ) -> Produced<DependencyMapOutcome> {
-    let mut errors = ErrorState { last_error: None };
+    let mut errors = ErrorState {
+        last_error: None,
+        materializer_targets: None,
+    };
     let (computed_attribute_aspects, computed_toolchains_aspects) =
         match compute_aspect_propagation_edges(parameters, dependency_labels) {
             Ok(computed) => computed,
@@ -274,6 +298,16 @@ pub fn produce_dependency_map(
     // Java: attributeResolutionStep(tasks, forMaterializers=true, ...), then
     // attributeResolutionStep(tasks, forMaterializers=false, ...).
     for for_materializers in [true, false] {
+        // Java runs the second step only once every producer of the first step is done: a
+        // materializer must not see a dependency that is still missing.
+        if !for_materializers
+            && missing
+            && dependency_labels
+                .keys()
+                .any(|k| k.get_attribute().is_some_and(|a| a.is_materializing()))
+        {
+            return Ok(None);
+        }
         // Java: com/google/devtools/build/lib/analysis/producers/DependencyMapProducer.java:275 DependencyMapProducer.attributeResolutionStep
         let mut pending: Vec<PendingPrerequisites<'_>> = Vec::new();
         let mut index = 0;
@@ -282,17 +316,17 @@ pub fn produce_dependency_map(
             let skip = for_materializers != for_dependency_resolution;
 
             // Only call materializer when materialization results are ready
-            if !for_materializers {
-                if let Some(attribute) = kind.get_attribute() {
-                    if attribute.is_materializing() {
-                        blaze_util::unported!(
-                            "DependencyMapProducer.getMaterializationResultMaybe",
-                            "attribute '{}'",
-                            attribute.get_name()
-                        );
-                    }
-                }
-            }
+            let materialization_results: Option<Vec<Label>> = if for_materializers {
+                None
+            } else {
+                get_materialization_result_maybe(
+                    parameters,
+                    kind,
+                    dependency_labels,
+                    &results,
+                    &mut errors,
+                )
+            };
 
             // The list of aspects is evaluated here to be done once per attribute, rather than
             // once per dependency.
@@ -331,6 +365,40 @@ pub fn produce_dependency_map(
                 let current_index = index;
                 index += 1;
                 if skip {
+                    continue;
+                }
+                if let Some(materialization_results) = &materialization_results {
+                    // DependencyResolver should have left this as null
+                    blaze_util::check_state!(label.is_none());
+                    // Java: com/google/devtools/build/lib/analysis/producers/DependencyMapProducer.java:219 DependencyMapProducer.MaterializedDependencySink
+                    // One producer per label; the values are flattened in label order once
+                    // all are there (a missing or failed one leaves the entry empty).
+                    let mut flattened = Vec::new();
+                    let mut complete = true;
+                    for (i, materialized) in materialization_results.iter().enumerate() {
+                        match produce_one_dependency(
+                            env,
+                            parameters,
+                            kind,
+                            materialized,
+                            &aspects,
+                            /* originating_materializer_target= */ None,
+                            &mut errors,
+                        )? {
+                            OneDependency::Missing => {
+                                missing = true;
+                                complete = false;
+                            }
+                            OneDependency::Error => complete = false,
+                            OneDependency::Values(values) => {
+                                let _ = i;
+                                flattened.extend(values);
+                            }
+                        }
+                    }
+                    if complete {
+                        results[current_index] = Some(flattened);
+                    }
                     continue;
                 }
                 let Some(label) = label else {
@@ -435,6 +503,7 @@ pub fn produce_dependency_map(
                     p.configuration.clone(),
                     p.execution_platform_label.clone(),
                     &p.propagating_aspects,
+                    /* originating_materializer_target= */ None,
                     &mut errors,
                 )? {
                     None => missing = true,
@@ -483,9 +552,213 @@ pub fn produce_dependency_map(
 
     Ok(Some(DependencyMapOutcome {
         dependency_map: Some(output),
-        materializer_targets: None,
+        materializer_targets: errors.materializer_targets,
         dependency_map_error: None,
     }))
+}
+
+/// The labels a materializing attribute's materializer chooses, or `None` when `kind` is not
+/// a materializing attribute or the materializer failed (the error is accepted).
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyMapProducer.java:172 DependencyMapProducer.getMaterializationResultMaybe
+fn get_materialization_result_maybe(
+    parameters: &mut PrerequisiteParameters<'_>,
+    kind: &DependencyKind,
+    dependency_labels: &DependencyLabels,
+    results: &[Option<Vec<ConfiguredTargetAndData>>],
+    errors: &mut ErrorState,
+) -> Option<Vec<Label>> {
+    let attribute = kind.get_attribute()?;
+
+    if !attribute.is_materializing() {
+        return None;
+    }
+
+    // By this point, we know the attribute is a materializingDefault. Compute the attributes
+    // available to it...
+    let attrs = create_materializer_map(dependency_labels, results);
+    let rule = parameters
+        .associated_rule()
+        .expect("NullPointerException: associatedRule of a materializing attribute")
+        .clone();
+    let prerequisites_for_materializer = compute_prerequisites_for_materializer(&rule, &attrs);
+
+    // ...then invoke the function,
+    let materializing_default = attribute.get_materializer().clone();
+    let attribute_map = parameters
+        .attribute_map
+        .expect("NullPointerException: attributeMap of a rule");
+    let materializer_result = match blaze_analysis::starlark::starlark_materializer::resolve(
+        &materializing_default,
+        &rule,
+        attribute_map,
+        &prerequisites_for_materializer,
+        parameters.event_handler,
+    ) {
+        Ok(labels) => labels,
+        Err(e) => {
+            parameters.event_handler.handle(&Event::error_at(
+                event_location(Some(&parameters.location())),
+                e.message_with_stack(),
+            ));
+            errors.accept_dependency_error(DependencyError::Materializer(
+                materializer_attribute_exception(
+                    &attribute.get_public_name(),
+                    parameters.label(),
+                    &e.message,
+                ),
+            ));
+            return None;
+        }
+    };
+
+    // ...then return its return value as the value of the attribute.
+    // (BuildType.LABEL.cast / LABEL_LIST.cast: `resolve` returns the labels.)
+    Some(materializer_result)
+}
+
+/// `MaterializerException.materializerAttributeException`'s message.
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyMapProducer.java:151 DependencyMapProducer.MaterializerException.materializerAttributeException
+fn materializer_attribute_exception(public_name: &str, label: &Label, message: &str) -> String {
+    format!(
+        "Error while evaluating materializer on attribute '{public_name}' of target '{label}': \
+         {message}"
+    )
+}
+
+/// `MaterializerException.materializerRuleException`'s message.
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyMapProducer.java:161 DependencyMapProducer.MaterializerException.materializerRuleException
+fn materializer_rule_exception(public_name: &str, label: &Label, message: &str) -> String {
+    format!(
+        "Error while evaluating materializer target in attribute '{public_name}' of target \
+         '{label}': {message}"
+    )
+}
+
+/// The prerequisites computed so far, by attribute name (Java's
+/// `ImmutableSortedKeyListMultimap`: keys sorted, values in entry order).
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyMapProducer.java:415 DependencyMapProducer.createMaterializerMap
+fn create_materializer_map(
+    dependency_labels: &DependencyLabels,
+    results: &[Option<Vec<ConfiguredTargetAndData>>],
+) -> std::collections::BTreeMap<String, Vec<ConfiguredTargetAndData>> {
+    let mut result: std::collections::BTreeMap<String, Vec<ConfiguredTargetAndData>> =
+        std::collections::BTreeMap::new();
+    let mut i = 0;
+    // It's correct to iterate once per entry (not once per key), which is what's needed to keep
+    // in sync with `results`.
+    for (kind, labels) in dependency_labels {
+        for _ in labels {
+            let deps = &results[i];
+            i += 1;
+            let Some(deps) = deps else {
+                continue;
+            };
+            let Some(attribute) = kind.get_attribute() else {
+                continue;
+            };
+            // An empty `result` means the entry is skipped due to a missing exec group.
+            if !deps.is_empty() {
+                result
+                    .entry(attribute.get_name().to_owned())
+                    .or_default()
+                    .extend(deps.iter().cloned());
+            }
+        }
+    }
+    result
+}
+
+/// The configured targets of the rule's `for_dependency_resolution` dependency attributes, by
+/// attribute name (Java's `TreeMap` copied into an `ImmutableMap`: sorted by name).
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyMapProducer.java:123 DependencyMapProducer.computePrerequisitesForMaterializer
+fn compute_prerequisites_for_materializer(
+    rule: &Rule,
+    dependency_map: &std::collections::BTreeMap<String, Vec<ConfiguredTargetAndData>>,
+) -> IndexMap<String, Vec<ConfiguredTarget>> {
+    let mut result: std::collections::BTreeMap<String, Vec<ConfiguredTarget>> =
+        std::collections::BTreeMap::new();
+
+    for attribute in rule
+        .get_rule_class_object()
+        .get_attribute_provider()
+        .get_attributes()
+        .iter()
+    {
+        if attribute.get_type().get_label_class() != blaze_packages::types::LabelClass::Dependency
+            || !attribute.is_for_dependency_resolution()
+        {
+            continue;
+        }
+
+        result.insert(
+            attribute.get_name().to_owned(),
+            dependency_map
+                .get(attribute.get_name())
+                .map(|deps| {
+                    deps.iter()
+                        .map(|d| d.get_configured_target().clone())
+                        .collect()
+                })
+                .unwrap_or_default(),
+        );
+    }
+
+    result.into_iter().collect()
+}
+
+/// The outcome of one `DependencyProducer` run to its end.
+enum OneDependency {
+    /// A dependency is missing (Skyframe restart).
+    Missing,
+    /// An error was accepted.
+    Error,
+    /// `acceptDependencyValues`.
+    Values(Vec<ConfiguredTargetAndData>),
+}
+
+/// Runs one `DependencyProducer` for `label` to its end (its transition, its
+/// `PrerequisitesProducer`, its materializer targets): the producers Java enqueues for the
+/// labels a materializer chooses and for the dependencies of a materializer target.
+///
+/// PORT: Java runs them concurrently with the other producers of the step, so their Skyframe
+/// lookups join the step's rounds; here each runs on its own, its lookups in requests of their
+/// own, after the dependencies planned before it.
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:126 DependencyProducer.<init>
+fn produce_one_dependency(
+    env: &mut Environment<'_>,
+    parameters: &mut PrerequisiteParameters<'_>,
+    kind: &DependencyKind,
+    label: &Label,
+    propagating_aspects: &[Aspect],
+    originating_materializer_target: Option<&Label>,
+    errors: &mut ErrorState,
+) -> Result<OneDependency, blaze_skyframe::Interrupted> {
+    match plan_dependency(env, parameters, kind, label, errors)? {
+        PlannedDependency::Missing => Ok(OneDependency::Missing),
+        PlannedDependency::Error => Ok(OneDependency::Error),
+        PlannedDependency::Skipped => Ok(OneDependency::Values(Vec::new())),
+        PlannedDependency::Prerequisites {
+            configuration,
+            execution_platform_label,
+            lookup_rounds: _,
+        } => Ok(
+            match compute_prerequisites(
+                env,
+                parameters,
+                kind,
+                label,
+                configuration,
+                execution_platform_label,
+                propagating_aspects,
+                originating_materializer_target,
+                errors,
+            )? {
+                None => OneDependency::Missing,
+                Some(None) => OneDependency::Error,
+                Some(Some(values)) => OneDependency::Values(values),
+            },
+        ),
+    }
 }
 
 /// Computes the aspects' propagation attribute names and toolchain types (Java
@@ -576,7 +849,7 @@ enum PlannedDependency {
 // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:143 DependencyProducer.step
 // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:125 DependencyProducer.<init>
 // PORT: skipped, the state machine's result sink is the return value of the synchronous port (the dependency's PrerequisiteMap entry or the DependencyError the caller collects): DependencyProducer.ResultSink.acceptDependencyValues, DependencyProducer.ResultSink.acceptMaterializerTarget, DependencyProducer.ResultSink.acceptDependencyError
-// PORT: skipped, materializer rules (dormant dependencies) are not ported (see the module documentation): DependencyProducer.MaterializerRuleDependencySink.acceptTransition, DependencyProducer.MaterializerRuleDependencySink.acceptDependencyValues, DependencyProducer.MaterializerRuleDependencySink.acceptMaterializerTarget, DependencyProducer.MaterializerRuleDependencySink.acceptDependencyError
+// PORT: skipped, the nested producers of a materializer target run to their end in `produce_one_dependency` and their values are appended in order: DependencyProducer.MaterializerRuleDependencySink.acceptTransition, DependencyProducer.MaterializerRuleDependencySink.acceptDependencyValues, DependencyProducer.MaterializerRuleDependencySink.acceptMaterializerTarget, DependencyProducer.MaterializerRuleDependencySink.acceptDependencyError
 fn plan_dependency(
     env: &mut Environment<'_>,
     parameters: &mut PrerequisiteParameters<'_>,
@@ -892,6 +1165,7 @@ fn compute_prerequisites(
     configuration: AttributeConfiguration,
     execution_platform_label: Option<Label>,
     propagating_aspects: &[Aspect],
+    originating_materializer_target: Option<&Label>,
     errors: &mut ErrorState,
 ) -> Produced<Option<Vec<ConfiguredTargetAndData>>> {
     let base_target_prerequisites_supplier =
@@ -969,17 +1243,121 @@ fn compute_prerequisites(
             return Ok(Some(Some(prerequisite_values)));
         }
     }
+    let attribute = kind.get_attribute();
+
+    // There will be one ConfiguredTargetAndData in prerequisiteValues for each configuration
+    // this label is being evaluated under.
+    // PORT: Java reserves `prerequisiteValues.length` slots per materialized dependency and
+    // copies each producer's values into its slots; here the values are appended in the same
+    // order.
+    let configuration_count = prerequisite_values.len();
+    let mut materialized: Vec<ConfiguredTargetAndData> = Vec::new();
+    let mut any_materializer = false;
+    let mut complete = true;
     for dep in &prerequisite_values {
         // Skip non-materializer rules.
-        if let Some(rule) = dep.get_target().as_rule() {
-            if rule.get_rule_class_object().is_materializer_rule() {
-                blaze_util::unported!(
-                    "DependencyProducer.evaluateMaterializerTargets",
-                    "materializer target {}",
-                    dep.get_target_label()
-                );
+        // Footnote: Iff the first dependency is a materializer rule, then they all should be,
+        // since this loop is iterating over the same target under different configurations.
+        let is_materializer_rule = dep
+            .get_target()
+            .as_rule()
+            .is_some_and(|r| r.get_rule_class_object().is_materializer_rule());
+        if !is_materializer_rule {
+            materialized.push(dep.clone());
+            continue;
+        }
+        any_materializer = true;
+
+        if let Some(originating) = originating_materializer_target {
+            errors.accept_dependency_error(DependencyError::Materializer(
+                materializer_rule_exception(
+                    &attribute
+                        .expect("NullPointerException: attribute of a materializer dependency")
+                        .get_public_name(),
+                    parameters.label(),
+                    &format!(
+                        "Materializer target {originating} depends on another materializer \
+                         target {}, which is not supported.",
+                        dep.get_target_label()
+                    ),
+                ),
+            ));
+            return Ok(Some(None));
+        }
+
+        // Check that this materializer is in a label_list attribute. Since materializers can
+        // return a variable number of targets, they cannot go into single-label-typed
+        // attributes.
+        if let Some(attribute) = attribute {
+            if attribute.get_type() != blaze_packages::types::Type::LabelList {
+                errors.accept_dependency_error(DependencyError::Materializer(
+                    materializer_rule_exception(
+                        &attribute.get_public_name(),
+                        parameters.label(),
+                        &format!(
+                            "Target {} is a materializer target but attribute '{}' is a {}, not \
+                             a label list",
+                            dep.get_target_label(),
+                            attribute.get_name(),
+                            attribute.get_type()
+                        ),
+                    ),
+                ));
+                return Ok(Some(None));
             }
         }
+
+        errors.accept_materializer_target(kind, dep.clone());
+
+        // StarlarkRuleConfiguredTargetUtil checks that this provider exists.
+        let info = dep
+            .get_configured_target()
+            .get(&blaze_packages::starlark_defs::builtin_providers::MATERIALIZED_DEPS_INFO.key())
+            .expect("NullPointerException: MaterializedDepsInfo of a materializer target");
+        let deps: Vec<Label> = MaterializedDepsInfo::of(info.value())
+            .expect("MaterializedDepsInfo")
+            .get_deps()
+            .iter()
+            .map(|d| d.label().clone())
+            .collect();
+
+        for label in &deps {
+            // In the case that the dep is a ConfiguredTarget, things are somewhat circuitous
+            // because this very ConfiguredTarget object is already the ConfiguredTarget that is
+            // needed. What is actually needed though is the corresponding
+            // ConfiguredTargetAndData object. So just use the label to ask DependencyProducer to
+            // get the ConfiguredTargetAndData like everything else.
+            match produce_one_dependency(
+                env,
+                parameters,
+                kind,
+                label,
+                propagating_aspects,
+                Some(&dep.get_target_label()),
+                errors,
+            )? {
+                OneDependency::Missing => return Ok(None),
+                OneDependency::Error => complete = false,
+                OneDependency::Values(values) => {
+                    blaze_util::check_state!(
+                        values.len() == configuration_count,
+                        "{} values for {} configurations",
+                        values.len(),
+                        configuration_count
+                    );
+                    materialized.extend(values);
+                }
+            }
+        }
+    }
+
+    if !complete {
+        return Ok(Some(None));
+    }
+    // Note that if a materializer returns no deps, then this will clear the array, which is
+    // important because the materializer target itself needs to be cleared out.
+    if any_materializer {
+        return Ok(Some(Some(materialized)));
     }
     Ok(Some(Some(prerequisite_values)))
 }

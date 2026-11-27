@@ -560,6 +560,7 @@ pub fn pretty_print_bytes(bytes: i64) -> String {
     }
 }
 
+// PORT: skipped, the private constructor of a static-only class: InfoItemUtils.<init>
 /// `InfoItemUtils.getMemoryUsage`: the heap figures of the server.
 ///
 /// PORT: Blaze has no JVM; the figures are those of ruling D15 (`crate::process_memory`).

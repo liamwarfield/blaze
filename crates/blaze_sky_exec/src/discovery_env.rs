@@ -14,7 +14,7 @@ use std::sync::Arc;
 
 use blaze_actions::Artifact;
 use blaze_collect::NestedSet;
-use blaze_exec::actions::TreeArtifactValue;
+use blaze_exec::actions::{ExecException, TreeArtifactValue};
 use blaze_exec::exec::action_execution_context::DiscoveryEnvironment;
 use blaze_skyframe::{Environment, SkyKey};
 
@@ -70,41 +70,56 @@ impl DiscoveryEnvironment for SkyframeDiscoveryEnvironment<'_, '_> {
     fn get_tree_artifact_values(
         &mut self,
         trees: &[Artifact],
-    ) -> Option<Vec<Arc<TreeArtifactValue>>> {
+    ) -> Result<Option<Vec<Arc<TreeArtifactValue>>>, ExecException> {
         let keys: Vec<SkyKey> = trees.iter().map(artifact_key).collect();
-        let result = self.env.get_values_and_exceptions(&keys).ok()?;
+        // Java: InterruptedException out of getValuesAndExceptions (review round 3, IS-3).
+        let result = self
+            .env
+            .get_values_and_exceptions(&keys)
+            .map_err(|_| ExecException::Interrupted)?;
         if self.env.values_missing() {
-            return None;
+            return Ok(None);
         }
         let mut values = Vec::with_capacity(keys.len());
         for (tree, key) in trees.iter().zip(&keys) {
-            let value = result.get(key)?;
+            let Some(value) = result.get(key) else {
+                return Ok(None);
+            };
             match value.downcast_ref::<ArtifactValue>() {
                 Some(ArtifactValue::Tree(tree_value)) => values.push(tree_value.clone()),
                 _ => panic!("IllegalStateException: SkyValue of {tree} is not TreeArtifactValue"),
             }
         }
-        Some(values)
+        Ok(Some(values))
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:2074 CppCompileAction.computeTransitivelyUsedModules
-    fn get_discovered_modules(&mut self, modules: &[Artifact]) -> Option<Vec<NestedSet<Artifact>>> {
+    fn get_discovered_modules(
+        &mut self,
+        modules: &[Artifact],
+    ) -> Result<Option<Vec<NestedSet<Artifact>>>, ExecException> {
         let keys: Vec<SkyKey> = modules
             .iter()
             .map(|m| SkyKey::new(ActionExecutionKey(m.get_generating_action_key().clone())))
             .collect();
-        let result = self.env.get_values_and_exceptions(&keys).ok()?;
+        // Java: InterruptedException out of getValuesAndExceptions (review round 3, IS-3).
+        let result = self
+            .env
+            .get_values_and_exceptions(&keys)
+            .map_err(|_| ExecException::Interrupted)?;
         if self.env.values_missing() {
-            return None;
+            return Ok(None);
         }
         let mut discovered = Vec::with_capacity(keys.len());
         for (module, key) in modules.iter().zip(&keys) {
-            let value = result.get(key)?;
+            let Some(value) = result.get(key) else {
+                return Ok(None);
+            };
             let value = value
                 .downcast_ref::<ActionExecutionValue>()
                 .unwrap_or_else(|| panic!("NullPointerException: {module}"));
             discovered.push(value.get_discovered_modules());
         }
-        Some(discovered)
+        Ok(Some(discovered))
     }
 }

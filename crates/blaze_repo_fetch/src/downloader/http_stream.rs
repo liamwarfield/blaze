@@ -78,7 +78,9 @@ impl HttpStreamFactory {
         reconnector: Reconnector,
         type_: Option<&str>,
     ) -> Result<HttpStream, IoException> {
-        let mut stream: Box<dyn InputStream> = connection.get_input_stream()?;
+        let mut stream: Box<dyn InputStream> = Box::new(
+            super::streams::InterruptibleInputStream::new(connection.get_input_stream()?),
+        );
         let connection_url = connection.get_url().clone();
         let result = (|| -> Result<Box<dyn InputStream>, (IoException, Box<dyn InputStream>)> {
             // PORT: the Content-Length header is read before the RetryingInputStream is built

@@ -52,6 +52,7 @@ use symlink_tree_action::SymlinkTreeActionContext;
 /// Registers the [`ExecutableAction`](crate::actions::ExecutableAction) implementation of every
 /// `blaze_actions` action class this module executes (idempotent).
 pub fn register() {
+    use blaze_actions::actions::fail_action::FailAction;
     use blaze_actions::actions::runfiles_tree_action::RunfilesTreeAction;
     use blaze_actions::analysis::actions::binary_file_write_action::BinaryFileWriteAction;
     use blaze_actions::analysis::actions::build_info_file_write_action::BuildInfoFileWriteAction;
@@ -85,6 +86,7 @@ pub fn register() {
     register_executable_action::<RunfilesTreeAction>();
     register_executable_action::<SpawnAction>();
     register_executable_action::<BazelWorkspaceStatusAction>();
+    register_executable_action::<FailAction>();
 }
 
 /// The action contexts Bazel registers for these actions, keyed as

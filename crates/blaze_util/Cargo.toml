@@ -12,6 +12,8 @@ md-5.workspace = true
 hex.workspace = true
 # java.util.regex.Pattern on the regex crate (java_regex.rs).
 regex.workspace = true
+# Patterns with lookahead or lookbehind (java_regex.rs), backtracking like Java.
+fancy-regex = "0.16"
 # lib/profiler: the trace writer (gzip), its locks, process CPU time and interface flags.
 flate2.workspace = true
 parking_lot.workspace = true

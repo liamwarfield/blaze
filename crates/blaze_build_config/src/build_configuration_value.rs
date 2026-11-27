@@ -309,7 +309,7 @@ impl BuildConfigurationValue {
         ))
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:214 BuildConfigurationValue.getConfigurationFragments
+    // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:264 BuildConfigurationValue.getConfigurationFragments
     fn get_configuration_fragments(
         build_options: &BuildOptions,
         fragment_classes: &FragmentClassSet,
@@ -445,7 +445,7 @@ impl BuildConfigurationValue {
             .get_output_directory(repository_name)
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:331 BuildConfigurationValue.getBinDirectory
+    // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:413 BuildConfigurationValue.getBinDirectory
     pub fn get_bin_directory(&self, repository_name: &RepositoryName) -> ArtifactRoot {
         self.output_directories.get_bin_directory(repository_name)
     }
@@ -457,7 +457,7 @@ impl BuildConfigurationValue {
             .clone()
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:333 BuildConfigurationValue.getGenfilesDirectory
+    // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:442 BuildConfigurationValue.getGenfilesDirectory
     pub fn get_genfiles_directory(&self, repository_name: &RepositoryName) -> ArtifactRoot {
         self.output_directories
             .get_genfiles_directory(repository_name)
@@ -506,7 +506,7 @@ impl BuildConfigurationValue {
         &self.workspace_name
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:98 BuildConfigurationValue.getActionEnvironment
+    // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:530 BuildConfigurationValue.getActionEnvironment
     /// Returns the action environment: the fixed part plus the names inherited from the client.
     pub fn get_action_environment(&self) -> &ActionEnvironment {
         &self.action_env
@@ -586,6 +586,11 @@ impl BuildConfigurationValue {
         self.is_exec_configuration()
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:804 BuildConfigurationValue.allowMapDirectory
+    pub fn allow_map_directory(&self) -> bool {
+        self.options().allow_map_directory
+    }
+
     // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:809 BuildConfigurationValue.getCompilationMode
     pub fn get_compilation_mode(&self) -> CompilationMode {
         self.options().compilation_mode
@@ -606,7 +611,7 @@ impl BuildConfigurationValue {
         self.build_options.as_ref().clone()
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:159 BuildConfigurationValue.getOptions
+    // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:842 BuildConfigurationValue.getOptions
     pub fn get_options(&self) -> &Arc<BuildOptions> {
         &self.build_options
     }
@@ -641,7 +646,7 @@ impl BuildConfigurationValue {
         self.starlark_visible_fragments.keys()
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:102 BuildConfigurationValue.getReservedActionMnemonics
+    // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:1044 BuildConfigurationValue.getReservedActionMnemonics
     pub fn get_reserved_action_mnemonics(&self) -> &[String] {
         &self.reserved_action_mnemonics
     }

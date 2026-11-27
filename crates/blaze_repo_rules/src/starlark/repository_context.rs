@@ -8,9 +8,8 @@
 //! [`repository_fetch_context_string`], `allowWatchingPathsOutsideWorkspace = true`); here the
 //! caller (`RepositoryFetchFunction`) builds both parts of the [`ExternalContext`].
 //!
-//! PORT: `WorkspaceRuleEvent`s (the debug log of `--experimental_workspace_rules_log_file`) are
-//! not posted; Blaze has no subscriber for them. Java's `InvalidPathException` catches are not
-//! ported: Blaze's VFS never throws it (it comes from `java.nio` path conversion).
+//! Java's `InvalidPathException` catches are not ported: Blaze's VFS never throws it (it comes
+//! from `java.nio` path conversion).
 //!
 //! PORT: the `SyscallCache` constructor argument is not ported; `getWorkspaceFile` stats directly
 //! (Java `SyscallCache.NO_CACHE` behaviour).
@@ -49,10 +48,13 @@ use crate::repository::repo_definition::RepoDefinition;
 use crate::repository::repo_recorded_input::RepoRecordedInput;
 use crate::starlark::base_external_context::ShouldWatch;
 use crate::starlark::base_external_context::StarlarkBaseExternalContext;
+use crate::starlark::base_external_context::caller_location;
 use crate::starlark::base_external_context::check_in_output_directory_error;
+use crate::starlark::base_external_context::post_event;
 use crate::starlark::base_external_context::repository_function_exception;
 use crate::starlark::context::ExternalContext;
-use crate::starlark::context::RepositoryCtx;
+use crate::workspace_rule_event::WorkspaceRuleEvent;
+
 use crate::starlark::path::StarlarkPath;
 use crate::starlark::repo_metadata::RepoMetadata;
 use crate::starlark::repo_metadata::RepoMetadataValue;
@@ -302,7 +304,9 @@ pub fn repository_ctx_methods(builder: &mut MethodsBuilder) {
     /// the `name` when this repository rule was instantiated.
     // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkRepositoryContext.java:133 StarlarkRepositoryContext.getName
     #[starlark(attribute)]
-    fn name(this: &RepositoryCtx) -> starlark::Result<String> {
+    fn name<'v>(this: Value<'v>) -> starlark::Result<String> {
+        let this = crate::starlark::context::repository_ctx_of(this)
+            .expect("the receiver is a repository_ctx");
         Ok(this.repo_definition.name.clone())
     }
 
@@ -311,7 +315,9 @@ pub fn repository_ctx_methods(builder: &mut MethodsBuilder) {
     /// `name` instead to get the canonical name of the external repository.
     // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkRepositoryContext.java:145 StarlarkRepositoryContext.getOriginalName
     #[starlark(attribute)]
-    fn original_name(this: &RepositoryCtx) -> starlark::Result<String> {
+    fn original_name<'v>(this: Value<'v>) -> starlark::Result<String> {
+        let this = crate::starlark::context::repository_ctx_of(this)
+            .expect("the receiver is a repository_ctx");
         // The original name isn't set for repositories backing Bazel modules, in which case the
         // original name doesn't matter as the restricted set of rules that can back
         // Bazel modules do not use the name.
@@ -325,7 +331,9 @@ pub fn repository_ctx_methods(builder: &mut MethodsBuilder) {
     /// The path to the root workspace of the bazel invocation.
     // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkRepositoryContext.java:158 StarlarkRepositoryContext.getWorkspaceRoot
     #[starlark(attribute)]
-    fn workspace_root(this: &RepositoryCtx) -> starlark::Result<StarlarkPath> {
+    fn workspace_root<'v>(this: Value<'v>) -> starlark::Result<StarlarkPath> {
+        let this = crate::starlark::context::repository_ctx_of(this)
+            .expect("the receiver is a repository_ctx");
         Ok(StarlarkPath::new(this.workspace_root.clone()))
     }
 
@@ -333,7 +341,9 @@ pub fn repository_ctx_methods(builder: &mut MethodsBuilder) {
     /// not, a default value is used).
     // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkRepositoryContext.java:170 StarlarkRepositoryContext.getAttr
     #[starlark(attribute)]
-    fn attr(this: &RepositoryCtx) -> starlark::Result<RepoAttrs> {
+    fn attr<'v>(this: Value<'v>) -> starlark::Result<RepoAttrs> {
+        let this = crate::starlark::context::repository_ctx_of(this)
+            .expect("the receiver is a repository_ctx");
         Ok(RepoAttrs(this.repo_definition.clone()))
     }
 
@@ -350,10 +360,16 @@ pub fn repository_ctx_methods(builder: &mut MethodsBuilder) {
     ) -> starlark::Result<NoneType> {
         check_string_label_or_path("symlink", "target", target)?;
         check_string_label_or_path("symlink", "link_name", link_name)?;
+        let location = caller_location(eval);
         let mut ctx = ExternalContext::from_eval(eval)?;
         let target_path = ctx.get_path(target)?;
         let link_path = ctx.get_path(link_name)?;
-        // PORT: WorkspaceRuleEvent.newSymlinkEvent not posted (see module doc).
+        post_event(WorkspaceRuleEvent::new_symlink_event(
+            &target_path.to_string(),
+            &link_path.to_string(),
+            Some(ctx.base.identifying_string_for_logging.as_str()),
+            Some(&location),
+        ));
         ctx.base
             .check_in_output_directory("write", &link_path)
             .map_err(check_in_output_directory_error)?;
@@ -435,6 +451,7 @@ pub fn repository_ctx_methods(builder: &mut MethodsBuilder) {
             .and_then(|v| v.unpack_str())
             .unwrap_or("auto");
 
+        let location = caller_location(eval);
         let mut ctx = ExternalContext::from_eval(eval)?;
         let p = ctx.get_path(path)?;
         let t = ctx.get_path(template)?;
@@ -444,7 +461,14 @@ pub fn repository_ctx_methods(builder: &mut MethodsBuilder) {
             }
             None => IndexMap::new(),
         };
-        // PORT: WorkspaceRuleEvent.newTemplateEvent not posted (see module doc).
+        post_event(WorkspaceRuleEvent::new_template_event(
+            &p.to_string(),
+            &t.to_string(),
+            substitution_map.iter().map(|(k, v)| (k.clone(), v.clone())),
+            executable,
+            Some(ctx.base.identifying_string_for_logging.as_str()),
+            Some(&location),
+        ));
         if t.path.is_directory() {
             return Err(eval_error(format!(
                 "attempting to use a directory as template: {}",
@@ -508,9 +532,14 @@ pub fn repository_ctx_methods(builder: &mut MethodsBuilder) {
             is_string_or_path(path),
             "string or path",
         )?;
+        let location = caller_location(eval);
         let mut ctx = ExternalContext::from_eval(eval)?;
         let starlark_path = external_path(&mut ctx, "delete()", path)?;
-        // PORT: WorkspaceRuleEvent.newDeleteEvent not posted (see module doc).
+        post_event(WorkspaceRuleEvent::new_delete_event(
+            &starlark_path.to_string(),
+            Some(ctx.base.identifying_string_for_logging.as_str()),
+            Some(&location),
+        ));
         let path = &starlark_path.path;
         let deleted = (|| -> std::io::Result<bool> {
             path.delete_trees_below()?;
@@ -532,10 +561,16 @@ pub fn repository_ctx_methods(builder: &mut MethodsBuilder) {
     ) -> starlark::Result<NoneType> {
         check_string_label_or_path("rename", "src", src)?;
         check_string_label_or_path("rename", "dst", dst)?;
+        let location = caller_location(eval);
         let mut ctx = ExternalContext::from_eval(eval)?;
         let src_path = ctx.get_path(src)?;
         let dst_path = ctx.get_path(dst)?;
-        // PORT: WorkspaceRuleEvent.newRenameEvent not posted (see module doc).
+        post_event(WorkspaceRuleEvent::new_rename_event(
+            &src_path.to_string(),
+            &dst_path.to_string(),
+            Some(ctx.base.identifying_string_for_logging.as_str()),
+            Some(&location),
+        ));
         ctx.base
             .check_in_output_directory("write", &src_path)
             .map_err(check_in_output_directory_error)?;
@@ -603,13 +638,19 @@ pub fn repository_ctx_methods(builder: &mut MethodsBuilder) {
         let directory = directory.unwrap_or_else(|| eval.heap().alloc_str("").to_value());
         let watch_patch = watch_patch.and_then(|v| v.unpack_str()).unwrap_or("auto");
 
+        let location = caller_location(eval);
         let mut ctx = ExternalContext::from_eval(eval)?;
         let starlark_path = ctx.get_path(patch_file)?;
         let directory_path = ctx.get_path(directory)?;
         ctx.base
             .check_in_output_directory("write", &directory_path)
             .map_err(check_in_output_directory_error)?;
-        // PORT: WorkspaceRuleEvent.newPatchEvent not posted (see module doc).
+        post_event(WorkspaceRuleEvent::new_patch_event(
+            &starlark_path.to_string(),
+            strip,
+            Some(ctx.base.identifying_string_for_logging.as_str()),
+            Some(&location),
+        ));
         if starlark_path.path.is_directory() {
             return Err(eval_error(format!(
                 "attempting to use a directory as patch file: {}",

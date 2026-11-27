@@ -201,25 +201,28 @@ fn instrumented_files_info_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
         builtin_restriction::fail_if_called_outside_default_allowlist(eval)?;
-        Ok(depset_value(&artifacts_to_depset(
-            &this_instrumented_files_info(this).coverage_support_files,
-        )))
+        Ok(depset_value(
+            eval.heap(),
+            &artifacts_to_depset(&this_instrumented_files_info(this).coverage_support_files),
+        ))
     }
 }
 
 // Java: com/google/devtools/build/lib/starlarkbuildapi/test/InstrumentedFilesInfoApi.java:31 InstrumentedFilesInfoApi
 #[starlark_value(type = "InstrumentedFilesInfo")]
 impl<'v> StarlarkValue<'v> for InstrumentedFilesInfo {
-    fn get_attr(&self, attribute: &str, _heap: Heap<'v>) -> Option<Value<'v>> {
+    fn get_attr(&self, attribute: &str, heap: Heap<'v>) -> Option<Value<'v>> {
         match attribute {
             // Java: com/google/devtools/build/lib/analysis/test/InstrumentedFilesInfo.java:78 InstrumentedFilesInfo.getInstrumentedFilesForStarlark
-            "instrumented_files" => {
-                Some(depset_value(&artifacts_to_depset(&self.instrumented_files)))
-            }
+            "instrumented_files" => Some(depset_value(
+                heap,
+                &artifacts_to_depset(&self.instrumented_files),
+            )),
             // Java: com/google/devtools/build/lib/analysis/test/InstrumentedFilesInfo.java:88 InstrumentedFilesInfo.getInstrumentationMetadataFilesForStarlark
-            "metadata_files" => Some(depset_value(&artifacts_to_depset(
-                &self.instrumentation_metadata_files,
-            ))),
+            "metadata_files" => Some(depset_value(
+                heap,
+                &artifacts_to_depset(&self.instrumentation_metadata_files),
+            )),
             _ => None,
         }
     }
@@ -238,6 +241,21 @@ impl<'v> StarlarkValue<'v> for InstrumentedFilesInfo {
         let mut v: Vec<String> = FIELDS.iter().map(|s| s.to_string()).collect();
         v.sort();
         v
+    }
+
+    // Java: com/google/devtools/build/lib/packages/NativeInfo.java:97 NativeInfo.equals
+    fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
+        crate::info::native_info_equals(self, &INSTRUMENTED_FILES_INFO.key(), other)
+    }
+
+    // Java: com/google/devtools/build/lib/packages/NativeInfo.java:115 NativeInfo.hashCode
+    fn write_hash(&self, hasher: &mut starlark_map::StarlarkHasher) -> starlark::Result<()> {
+        crate::info::native_info_write_hash(self, &INSTRUMENTED_FILES_INFO.key(), hasher)
+    }
+
+    // Java: com/google/devtools/build/lib/packages/NativeInfo.java:125 NativeInfo.repr
+    fn collect_repr(&self, collector: &mut String) {
+        crate::info::native_info_collect_repr(self, collector)
     }
 
     fn provide(&'v self, demand: &mut Demand<'_, 'v>) {
@@ -690,23 +708,99 @@ fn coverage_common_methods(builder: &mut MethodsBuilder) {
     fn instrumented_files_info<'v>(
         this: Value<'v>,
         ctx: Value<'v>,
-        #[starlark(require = named, default = UnpackListOrTuple::default())]
-        source_attributes: UnpackListOrTuple<Value<'v>>,
-        #[starlark(require = named, default = UnpackListOrTuple::default())] dependency_attributes: UnpackListOrTuple<Value<'v>>,
+        #[starlark(require = named)] source_attributes: Option<Value<'v>>,
+        #[starlark(require = named)] dependency_attributes: Option<Value<'v>>,
         #[starlark(require = named)] coverage_support_files: Option<Value<'v>>,
         #[starlark(require = named)] coverage_environment: Option<Value<'v>>,
-        #[starlark(require = named, default = NoneOr::None)] extensions: NoneOr<Value<'v>>,
-        #[starlark(require = named, default = UnpackListOrTuple::default())]
-        metadata_files: UnpackListOrTuple<Value<'v>>,
-        #[starlark(require = named, default = NoneOr::None)] reported_to_actual_sources: NoneOr<
-            Value<'v>,
-        >,
-        #[starlark(require = named, default = NoneOr::None)] baseline_coverage_files: NoneOr<
-            Value<'v>,
-        >,
+        #[starlark(require = named)] extensions: Option<Value<'v>>,
+        #[starlark(require = named)] metadata_files: Option<Value<'v>>,
+        #[starlark(require = named)] reported_to_actual_sources: Option<Value<'v>>,
+        #[starlark(require = named)] baseline_coverage_files: Option<Value<'v>>,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
         let _ = this;
+        // The interpreter checks each argument against its parameter's types when it binds the
+        // call (`BuiltinFunction.checkParamValue`): `ctx` (positional, its type from the
+        // method's signature) first, then the named arguments; defaults are not checked.
+        // PORT: the named arguments are checked in declaration order (Java: the order the call
+        // passes them).
+        // Java: net/starlark/java/eval/BuiltinFunction.java:391 BuiltinFunction.ArgumentProcessor.checkParamValue
+        let starlark_rule_context =
+            crate::starlark::starlark_rule_context::starlark_rule_context_from_value(ctx)
+                .ok_or_else(|| param_type_error("ctx", ctx, "ctx"))?;
+        let is_sequence = |v: Value| {
+            UnpackListOrTuple::<Value>::unpack_value(v)
+                .ok()
+                .flatten()
+                .is_some()
+        };
+        let check = |name: &str,
+                     v: Option<Value<'v>>,
+                     ok: &dyn Fn(Value<'v>) -> bool,
+                     want: &str| {
+            match v {
+                Some(v) if !ok(v) => Err(param_type_error(name, v, want)),
+                _ => Ok(()),
+            }
+        };
+        check(
+            "source_attributes",
+            source_attributes,
+            &is_sequence,
+            "sequence",
+        )?;
+        check(
+            "dependency_attributes",
+            dependency_attributes,
+            &is_sequence,
+            "sequence",
+        )?;
+        check(
+            "coverage_support_files",
+            coverage_support_files,
+            &|v| is_sequence(v) || Depset::from_value(v).is_some(),
+            "sequence or depset",
+        )?;
+        check(
+            "coverage_environment",
+            coverage_environment,
+            &|v| starlark::values::dict::DictRef::from_value(v).is_some(),
+            "dict",
+        )?;
+        check(
+            "extensions",
+            extensions,
+            &|v| is_sequence(v) || v.is_none(),
+            "sequence or NoneType",
+        )?;
+        check("metadata_files", metadata_files, &is_sequence, "sequence")?;
+        check(
+            "reported_to_actual_sources",
+            reported_to_actual_sources,
+            &|v| Depset::from_value(v).is_some() || v.is_none(),
+            "depset or NoneType",
+        )?;
+        check(
+            "baseline_coverage_files",
+            baseline_coverage_files,
+            &|v| is_sequence(v) || v.is_none(),
+            "sequence or NoneType",
+        )?;
+        let none_or = |v: Option<Value<'v>>| match v {
+            Some(v) if !v.is_none() => NoneOr::Other(v),
+            _ => NoneOr::None,
+        };
+        let items = |v: Option<Value<'v>>| -> Vec<Value<'v>> {
+            v.and_then(|v| UnpackListOrTuple::<Value>::unpack_value(v).ok().flatten())
+                .map(|l| l.items)
+                .unwrap_or_default()
+        };
+        let extensions = none_or(extensions);
+        let reported_to_actual_sources = none_or(reported_to_actual_sources);
+        let baseline_coverage_files = none_or(baseline_coverage_files);
+        let source_attributes = items(source_attributes);
+        let dependency_attributes = items(dependency_attributes);
+        let metadata_files = items(metadata_files);
         let extensions_list: Option<Vec<String>> = match extensions {
             NoneOr::None => None,
             NoneOr::Other(v) => Some(sequence_cast_strings(v, "extensions")?),
@@ -750,7 +844,11 @@ fn coverage_common_methods(builder: &mut MethodsBuilder) {
                         }
                     }
                 } else {
-                    panic!("IllegalStateException");
+                    // The parameter's types (checked above) are sequence and depset.
+                    unreachable!(
+                        "coverage_support_files of type {}",
+                        support_files.get_type()
+                    );
                 }
             }
         }
@@ -759,19 +857,11 @@ fn coverage_common_methods(builder: &mut MethodsBuilder) {
             builtin_restriction::fail_if_called_outside_default_allowlist(eval)?;
         }
         let source_attributes =
-            sequence_cast_strings_items(&source_attributes.items, "source_attributes")?;
+            sequence_cast_strings_items(&source_attributes, "source_attributes")?;
         let dependency_attributes =
-            sequence_cast_strings_items(&dependency_attributes.items, "dependency_attributes")?;
-        let metadata = sequence_cast_artifact_items(&metadata_files.items, "metadata_files")?;
-        // Java: the `ctx` parameter is a StarlarkRuleContext; `getRuleContext()`.
-        let starlark_rule_context =
-            crate::starlark::starlark_rule_context::starlark_rule_context_from_value(ctx)
-                .ok_or_else(|| {
-                    errorf(format!(
-                        "in call to instrumented_files_info(), parameter 'ctx' got value of type '{}', want 'ctx'",
-                        ctx.get_type()
-                    ))
-                })?;
+            sequence_cast_strings_items(&dependency_attributes, "dependency_attributes")?;
+        let metadata = sequence_cast_artifact_items(&metadata_files, "metadata_files")?;
+        // Java: `ctx.getRuleContext()` (the type was checked above).
         let handle = starlark_rule_context.get_rule_context();
         let rule_context = handle.borrow();
         let eval_ref: &Evaluator = eval;
@@ -797,6 +887,15 @@ fn coverage_common_methods(builder: &mut MethodsBuilder) {
 }
 
 /// Java `Sequence.cast(x, String.class, what)` over already-unpacked items.
+/// `BuiltinFunction`'s error for an argument that is none of its parameter's types.
+// Java: net/starlark/java/eval/BuiltinFunction.java:516 BuiltinFunction.checkParamValue
+fn param_type_error(name: &str, value: Value, want: &str) -> starlark::Error {
+    errorf(format!(
+        "in call to instrumented_files_info(), parameter '{name}' got value of type '{}', want '{want}'",
+        value.get_type()
+    ))
+}
+
 fn sequence_cast_strings_items(items: &[Value], what: &str) -> starlark::Result<Vec<String>> {
     items
         .iter()

@@ -25,6 +25,11 @@ const BUFFER_SIZE: usize = 32 * 1024;
 /// `getDecompressorStream` of each subclass.
 pub(crate) const BUFFER_SIZE_PUB: usize = BUFFER_SIZE;
 
+// Java: com/google/devtools/build/lib/bazel/repository/decompressor/CompressedFunction.java:38 CompressedFunction.getDecompressorStream
+// Java: com/google/devtools/build/lib/bazel/repository/decompressor/Bz2Function.java:28 Bz2Function.getDecompressorStream
+// Java: com/google/devtools/build/lib/bazel/repository/decompressor/XzFunction.java:40 XzFunction.getDecompressorStream
+// Java: com/google/devtools/build/lib/bazel/repository/decompressor/ZstFunction.java:33 ZstFunction.getDecompressorStream
+// PORT: skipped, the decompressors are the variants of `Decompressor` (singletons with private constructors in Java): TarFunction.<init>, TarGzFunction.<init>, TarXzFunction.<init>, TarZstFunction.<init>, TarBz2Function.<init>
 pub(crate) fn decompressor_stream(
     which: Decompressor,
     compressed: BufReader<Box<dyn Read + Send>>,

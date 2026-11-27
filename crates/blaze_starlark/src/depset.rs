@@ -84,6 +84,63 @@ pub enum DepsetChildren<V: starlark::values::ValueLifetimeless> {
     Shared(V),
 }
 
+/// The `NestedSet`s a depset node stands for, one per element type (Java: a `Depset` wraps one
+/// `NestedSet` object, and `getSet` returns it).
+///
+/// PORT: Java's depset holds its set from construction; Blaze builds the set the first time the
+/// depset is converted ([`DepsetGen::to_nested_set_cached`]) and keeps it in the node, so that
+/// every later conversion, on any thread and in any later command, gives the same `NestedSet`
+/// node (`ActionGraphDump`'s `KnownNestedSets` numbers sets by node identity). Freezing moves the
+/// cache to the frozen copy, as Java's `Depset` is the same object before and after its
+/// `Mutability` is frozen. The cache holds no Starlark value (nothing for the collector to
+/// trace).
+#[derive(Default)]
+pub struct NestedSetCache(
+    std::sync::Mutex<
+        Vec<(
+            std::any::TypeId,
+            std::sync::Arc<dyn std::any::Any + Send + Sync>,
+        )>,
+    >,
+);
+
+impl fmt::Debug for NestedSetCache {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("NestedSetCache")
+    }
+}
+
+impl NestedSetCache {
+    fn get<E: Send + Sync + 'static>(&self) -> Option<NestedSet<E>> {
+        let type_id = std::any::TypeId::of::<E>();
+        self.0
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(t, _)| *t == type_id)
+            .map(|(_, set)| {
+                set.downcast_ref::<NestedSet<E>>()
+                    .expect("keyed by element type")
+                    .clone()
+            })
+    }
+
+    /// Records `set` unless a set of its element type is there already (a concurrent
+    /// conversion won); returns the recorded one.
+    fn put<E: Send + Sync + 'static>(&self, set: NestedSet<E>) -> NestedSet<E> {
+        let type_id = std::any::TypeId::of::<E>();
+        let mut sets = self.0.lock().unwrap();
+        if let Some((_, existing)) = sets.iter().find(|(t, _)| *t == type_id) {
+            return existing
+                .downcast_ref::<NestedSet<E>>()
+                .expect("keyed by element type")
+                .clone();
+        }
+        sets.push((type_id, std::sync::Arc::new(set.clone())));
+        set
+    }
+}
+
 /// The depset value; [`Depset`] when unfrozen, [`FrozenDepset`] when frozen.
 #[derive(Debug, Trace, ProvidesStaticType, NoSerialize, Allocative)]
 #[repr(C)]
@@ -98,6 +155,10 @@ pub struct DepsetGen<V: starlark::values::ValueLifetimeless> {
     /// Java `NestedSet.getApproxDepth`.
     depth: i32,
     children: DepsetChildren<V>,
+    /// See [`NestedSetCache`].
+    #[allocative(skip)]
+    #[trace(unsafe_ignore)]
+    sets: NestedSetCache,
 }
 
 starlark_complex_value!(pub Depset);
@@ -122,7 +183,23 @@ impl FrozenDepset {
             elem_type,
             depth,
             children,
+            sets: NestedSetCache::default(),
         }
+    }
+
+    /// [`FrozenDepset::new_frozen`] for a depset that wraps `set` (Java `Depset.of`: the
+    /// depset's `getSet` gives `set` back).
+    // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:161 Depset.of
+    pub fn new_frozen_wrapping<E: Send + Sync + 'static>(
+        order: Order,
+        elem_type: Option<&'static str>,
+        depth: i32,
+        children: DepsetChildren<FrozenValue>,
+        set: NestedSet<E>,
+    ) -> FrozenDepset {
+        let depset = Self::new_frozen(order, elem_type, depth, children);
+        depset.sets.put(set);
+        depset
     }
 }
 
@@ -149,6 +226,8 @@ impl<'v> Freeze for Depset<'v> {
             elem_type: self.elem_type,
             depth: self.depth,
             children,
+            // The frozen copy is the same Java object: it keeps the sets.
+            sets: self.sets,
         })
     }
 }
@@ -308,24 +387,20 @@ impl<'v, V: ValueLike<'v>> DepsetGen<V> {
         Ok(s)
     }
 
-    /// [`DepsetGen::to_nested_set`] with a memo the caller keeps across calls, so that one
-    /// depset node always converts to the same `NestedSet` node (Java: a `Depset` wraps one
-    /// `NestedSet` object and `getSet` returns it; sub-depsets share their `Object[]`). A node
-    /// whose children are another depset's array ([`DepsetChildren::Shared`]) is rebuilt around
-    /// that depset's set, as the Java constructor dereferences a lone nested array.
-    /// `self_is_frozen`: whether the value holding `self` is frozen (its address is then stable
-    /// for the life of its frozen heap).
+    /// [`DepsetGen::to_nested_set`] that keeps the result in the depset node
+    /// ([`NestedSetCache`]), so that one depset node always converts to the same `NestedSet` node
+    /// (Java: a `Depset` wraps one `NestedSet` object and `getSet` returns it; sub-depsets share
+    /// their `Object[]`). A node whose children are another depset's array
+    /// ([`DepsetChildren::Shared`]) is rebuilt around that depset's set, as the Java constructor
+    /// dereferences a lone nested array.
     // W4-analysis: needed by blaze_analysis::rule::depsets (Depset.getSet identity reaches
     // aquery through ActionGraphDump's KnownNestedSets).
     // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:207 Depset.getSet
-    pub fn to_nested_set_with_memo<E: Clone + Eq + std::hash::Hash>(
+    pub fn to_nested_set_cached<E: Clone + Eq + std::hash::Hash + Send + Sync + 'static>(
         &self,
-        self_is_frozen: bool,
         f: &mut dyn FnMut(Value<'v>) -> starlark::Result<E>,
-        memo: &mut dyn DepsetNodeMemo<E>,
     ) -> starlark::Result<NestedSet<E>> {
-        let key = self as *const Self as usize;
-        if let Some(s) = memo.get(key, self_is_frozen) {
+        if let Some(s) = self.sets.get::<E>() {
             return Ok(s);
         }
         let mut b = NestedSetBuilder::new_builder(self.order);
@@ -335,12 +410,9 @@ impl<'v, V: ValueLike<'v>> DepsetGen<V> {
                 b.add(f(v.to_value())?);
             }
             DepsetChildren::Shared(owner) => {
-                let owner = owner.to_value();
-                let owner_set = Depset::from_value(owner).unwrap().to_nested_set_with_memo(
-                    owner.unpack_frozen().is_some(),
-                    f,
-                    memo,
-                )?;
+                let owner_set = Depset::from_value(owner.to_value())
+                    .unwrap()
+                    .to_nested_set_cached(f)?;
                 b.add_transitive(&owner_set);
             }
             DepsetChildren::Array(_) => {
@@ -350,9 +422,9 @@ impl<'v, V: ValueLike<'v>> DepsetGen<V> {
                 for c in array {
                     parts.push(match c {
                         ChildRef::Leaf(e) => NestedSetBuilder::create(self.order, [f(e)?]),
-                        ChildRef::Array(d) => Depset::from_value(d)
-                            .unwrap()
-                            .to_nested_set_with_memo(d.unpack_frozen().is_some(), f, memo)?,
+                        ChildRef::Array(d) => {
+                            Depset::from_value(d).unwrap().to_nested_set_cached(f)?
+                        }
                     });
                 }
                 if self.order == Order::LINK_ORDER {
@@ -363,18 +435,8 @@ impl<'v, V: ValueLike<'v>> DepsetGen<V> {
                 }
             }
         }
-        Ok(memo.put(key, self_is_frozen, b.build()))
+        Ok(self.sets.put(b.build()))
     }
-}
-
-/// The memo of [`DepsetGen::to_nested_set_with_memo`]: depset node address to its `NestedSet`.
-// W4-analysis: see to_nested_set_with_memo.
-pub trait DepsetNodeMemo<E> {
-    /// The set already made for the depset node at address `node`, if any. `frozen`: the node's
-    /// value is frozen (an unfrozen address is only meaningful while its heap lives).
-    fn get(&mut self, node: usize, frozen: bool) -> Option<NestedSet<E>>;
-    /// Records `set` for `node` and returns the set to use for it (the recorded one).
-    fn put(&mut self, node: usize, frozen: bool, set: NestedSet<E>) -> NestedSet<E>;
 }
 
 // Java: com/google/devtools/build/lib/collect/nestedset/Depset.java:318 Depset.repr
@@ -475,6 +537,7 @@ static EMPTY_DEPSETS: LazyLock<Vec<OwnedFrozenValue>> = LazyLock::new(|| {
                 elem_type: None,
                 depth: 0,
                 children: DepsetChildren::Empty,
+                sets: NestedSetCache::default(),
             })
         })
         .collect();
@@ -693,6 +756,7 @@ impl<'v> Depset<'v> {
             elem_type,
             depth: approx_depth,
             children,
+            sets: NestedSetCache::default(),
         }))
     }
 }

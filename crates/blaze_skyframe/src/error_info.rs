@@ -23,6 +23,8 @@ pub struct ErrorInfo {
 
 impl ErrorInfo {
     /// Create an ErrorInfo from a `ReifiedSkyFunctionException`.
+    // Java: com/google/devtools/build/skyframe/ErrorInfoManager.java:22 ErrorInfoManager.fromException
+    // Java: com/google/devtools/build/skyframe/ErrorInfoManager.java:45 ErrorInfoManager.UseChildErrorInfoIfNecessary.fromException
     // Java: com/google/devtools/build/skyframe/ErrorInfo.java:31 ErrorInfo.fromException
     pub fn from_exception(
         sky_function_exception: &SkyFunctionException,

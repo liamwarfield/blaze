@@ -137,15 +137,23 @@ impl PidFileWatcher {
         }
 
         if self.shutting_down.load(Ordering::SeqCst) {
-            // PORT: skipped, logging ("PID file deleted or overwritten but shutdown is already
-            // in progress").
+            blaze_util::server_logger::warning(
+                "com.google.devtools.build.lib.server.PidFileWatcher",
+                "runPidFileChecks",
+                "PID file deleted or overwritten but shutdown is already in progress",
+                None,
+            );
             return false;
         }
 
         // Someone overwrote the PID file. Maybe it's another server, so shut down as quickly
         // as possible without even running the shutdown hooks (that would delete it)
-        // PORT: skipped, logging ("PID file deleted or overwritten, exiting as quickly as
-        // possible").
+        blaze_util::server_logger::severe(
+            "com.google.devtools.build.lib.server.PidFileWatcher",
+            "runPidFileChecks",
+            "PID file deleted or overwritten, exiting as quickly as possible",
+            None,
+        );
         (self.on_pid_file_change)();
         panic!("IllegalStateException: Should have crashed.");
     }
@@ -158,8 +166,13 @@ fn pid_file_valid(pid_file: &Path, expected_pid: i32) -> bool {
     let read = pid_file
         .get_input_stream()
         .and_then(|mut input| input.read_to_end(&mut bytes));
-    if read.is_err() {
-        // PORT: skipped, logging ("Cannot read PID file: %s").
+    if let Err(e) = read {
+        // PORT: e.getMessage() is the I/O error's text.
+        blaze_util::server_logger::info(
+            "com.google.devtools.build.lib.server.PidFileWatcher",
+            "pidFileValid",
+            &format!("Cannot read PID file: {e}"),
+        );
         return false;
     }
     let pid_file_contents = latin1_decode(&bytes);
@@ -167,8 +180,17 @@ fn pid_file_valid(pid_file: &Path, expected_pid: i32) -> bool {
     // Integer.parseInt: an optional sign and ASCII digits (the only decimal digits in Latin-1).
     match pid_file_contents.parse::<i32>() {
         Ok(pid) => pid == expected_pid,
-        // PORT: skipped, logging ("Pid was invalid: %s").
-        Err(_) => false,
+        Err(_) => {
+            blaze_util::server_logger::warning(
+                "com.google.devtools.build.lib.server.PidFileWatcher",
+                "pidFileValid",
+                &format!("Pid was invalid: {pid_file_contents}"),
+                Some(&format!(
+                    "java.lang.NumberFormatException: For input string: \"{pid_file_contents}\""
+                )),
+            );
+            false
+        }
     }
 }
 

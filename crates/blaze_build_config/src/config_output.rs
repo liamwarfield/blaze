@@ -212,7 +212,7 @@ impl ConfigurationForOutput {
     }
 }
 
-// Java: com/google/devtools/build/lib/runtime/commands/ConfigCommandOutputFormatter.java:45 TextOutputFormatter.writeConfigurationIDs
+// Java: com/google/devtools/build/lib/runtime/commands/ConfigCommandOutputFormatter.java:63 TextOutputFormatter.writeConfigurationIDs
 pub fn text_write_configuration_ids<'a>(
     configurations: impl IntoIterator<Item = &'a ConfigurationForOutput>,
 ) -> String {
@@ -230,7 +230,7 @@ pub fn text_write_configuration_ids<'a>(
     out
 }
 
-// Java: com/google/devtools/build/lib/runtime/commands/ConfigCommandOutputFormatter.java:48 TextOutputFormatter.writeConfiguration
+// Java: com/google/devtools/build/lib/runtime/commands/ConfigCommandOutputFormatter.java:81 TextOutputFormatter.writeConfiguration
 pub fn text_write_configuration(configuration: &ConfigurationForOutput) -> String {
     let mut out = String::new();
     let _ = writeln!(
@@ -284,7 +284,7 @@ pub fn gson_string(s: &str) -> String {
     out
 }
 
-// Java: com/google/devtools/build/lib/runtime/commands/ConfigCommandOutputFormatter.java:48 JsonOutputFormatter.writeConfiguration
+// Java: com/google/devtools/build/lib/runtime/commands/ConfigCommandOutputFormatter.java:147 JsonOutputFormatter.writeConfiguration
 /// `new Gson().toJson(configuration)`: fields in declaration order, compact.
 pub fn json_write_configuration(c: &ConfigurationForOutput) -> String {
     let mut out = String::new();

@@ -326,7 +326,7 @@ impl StarlarkOptionValue {
                 "Label({})",
                 blaze_starlark::printer::quote(&l.get_canonical_form())
             ),
-            // Java: net/starlark/java/eval/Printer.java:216 Printer.repr (a non-Starlark value
+            // Java: net/starlark/java/eval/Printer.java:160 Printer.repr (a non-Starlark value
             // prints its `toString()`).
             StarlarkOptionValue::FeatureFlag(v) => v.to_string(),
             StarlarkOptionValue::StarlarkObject { repr, .. } => repr.clone(),
@@ -347,7 +347,7 @@ impl StarlarkOptionValue {
                             format!("({})", elems.join(", "))
                         }
                     }
-                    // Java: net/starlark/java/eval/Printer.java:216 Printer.repr (other
+                    // Java: net/starlark/java/eval/Printer.java:160 Printer.repr (other
                     // non-Starlark values print their `toString()`).
                     JavaCollectionClass::Set => self.java_to_string(),
                     // Java: net/starlark/java/eval/StarlarkSet.java:216 StarlarkSet.repr
@@ -726,7 +726,7 @@ impl BuildOptions {
         &self.scopes
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/BuildOptions.java:112 BuildOptions.builder
+    // Java: com/google/devtools/build/lib/analysis/config/BuildOptions.java:373 BuildOptions.builder
     /// Creates a builder object for BuildOptions.
     pub fn builder() -> BuildOptionsBuilder {
         BuildOptionsBuilder::default()
@@ -870,8 +870,8 @@ impl fmt::Debug for BuildOptions {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let fragments: Vec<String> = self
             .fragment_options_map
-            .values()
-            .map(|o| o.java_to_string())
+            .iter()
+            .map(|(class, o)| o.java_to_string_with_class_name(class.get_name()))
             .collect();
         let starlark: Vec<String> = self
             .starlark_options_map

@@ -684,6 +684,8 @@ pub fn prepare_repository_functions_with(
 
     // Java: moduleFileFunction / repoSpecFunction / yankedVersionsFunction
     // .setDownloadManager(downloadManager): the registries download through the same manager.
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/RepoSpecFunction.java:77 RepoSpecFunction.setDownloadManager
+    // Java: com/google/devtools/build/lib/bazel/bzlmod/YankedVersionsFunction.java:65 YankedVersionsFunction.setDownloadManager
     let fetcher = Arc::new(DownloadManagerRegistryFetcher::new(download_manager));
     let bzlmod_config = BzlmodConfig::from_repository_options(
         repo_options,

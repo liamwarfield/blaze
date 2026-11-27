@@ -64,7 +64,7 @@ pub fn new_action_graph_query_environment(
     aquery_options: &AqueryOptions,
     label_printer: LabelPrinter,
 ) -> ActionGraphQueryEnvironment {
-    PostAnalysisQueryEnvironment::new(
+    new_action_graph_query_environment_with_settings(
         keep_going,
         event_handler,
         extra_functions,
@@ -74,6 +74,36 @@ pub fn new_action_graph_query_environment(
         pkg_path,
         walkable_graph,
         aquery_options.to_settings(),
+        label_printer,
+    )
+}
+
+/// Creates the environment with explicit settings (Java `new ActionGraphQueryEnvironment(...,
+/// settings, labelPrinter)`, which the query test helper calls).
+// Java: com/google/devtools/build/lib/query2/aquery/ActionGraphQueryEnvironment.java:81 ActionGraphQueryEnvironment.<init>
+#[allow(clippy::too_many_arguments)]
+pub fn new_action_graph_query_environment_with_settings(
+    keep_going: bool,
+    event_handler: Arc<dyn ExtendedEventHandler>,
+    extra_functions: Vec<Arc<dyn QueryFunction<KeyedConfiguredTargetValue>>>,
+    top_level_configurations: TopLevelConfigurations,
+    transitive_configurations: IndexMap<String, Arc<BuildConfigurationValue>>,
+    main_repo_target_parser: TargetPatternParser,
+    pkg_path: PathPackageLocator,
+    walkable_graph: Arc<dyn WalkableGraph>,
+    settings: std::collections::HashSet<blaze_query_engine::Setting>,
+    label_printer: LabelPrinter,
+) -> ActionGraphQueryEnvironment {
+    PostAnalysisQueryEnvironment::new(
+        keep_going,
+        event_handler,
+        extra_functions,
+        top_level_configurations,
+        transitive_configurations,
+        main_repo_target_parser,
+        pkg_path,
+        walkable_graph,
+        settings,
         label_printer,
     )
 }

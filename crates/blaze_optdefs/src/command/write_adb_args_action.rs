@@ -128,6 +128,8 @@ option_enum! {
 }
 
 // Java: com/google/devtools/build/lib/rules/android/WriteAdbArgsAction.java:116 WriteAdbArgsAction.StartTypeConverter
+// Java: com/google/devtools/build/lib/rules/android/WriteAdbArgsAction.java:117 WriteAdbArgsAction.StartTypeConverter.<init>
+// PORT: skipped, the private constructor of a holder class (never instantiated): WriteAdbArgsAction.<init>
 enum_converter!(pub StartTypeConverter, StartType, "start type");
 
 /// Options whose default cannot be re-parsed in a test (none).

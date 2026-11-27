@@ -145,96 +145,10 @@ fn to_json(event: &dyn BuildEvent) -> serde_json::Value {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Integration tests of the Java class (whole builds)
+// Integration tests of the Java class (whole builds): ported onto the in-process runtime in
+// crates/blaze_runtime/tests/metrics_collector_build_test.rs (BuildIntegrationTestCase is
+// blaze_buildtool_testing, which depends on this crate through blaze_runtime).
 // ---------------------------------------------------------------------------------------------
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase (a whole build through the runtime)"]
-fn test_actions_created() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase (a whole build through the runtime)"]
-fn test_actions_created_is_zero_on_second_build() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase (a whole build through the runtime)"]
-fn test_actions_executed() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase (a whole build through the runtime)"]
-fn test_actions_executed_is_zero_on_second_build() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase (a whole build through the runtime)"]
-fn test_actions_created_for_individual_mnemonics() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase (a whole build through the runtime)"]
-fn test_aspect_actions_created_not_over_counted_for_alias() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase (a whole build through the runtime)"]
-fn build_graph_and_artifact_metrics() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase (a whole build through the runtime)"]
-fn tree_artifact_and_top_level_metrics() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase (a whole build through the runtime)"]
-fn test_target_counts() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase (a whole build through the runtime)"]
-fn test_targets_counts_are_zero_on_second_build() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase (a whole build through the runtime)"]
-fn aspect_loaded_metric() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase (a whole build through the runtime)"]
-fn test_packages_loaded() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase (a whole build through the runtime)"]
-fn test_packages_loaded_is_zero_on_second_build() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase (a whole build through the runtime)"]
-fn test_analysis_time_in_ms() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase (a whole build through the runtime)"]
-fn test_execution_time_in_ms() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase (a whole build through the runtime) and the Profiler"]
-fn test_actions_execution_start_time_in_ms() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase and a JVM heap (MemoryProfiler, MemoryPressureModule)"]
-fn test_used_heap_size_post_build() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase and a JVM heap (MemoryProfiler, MemoryPressureModule)"]
-fn test_used_heap_size_post_build_collection_off_by_default() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase (a whole build through the runtime) and the Profiler"]
-fn test_wall_time_post_build() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase (several builds and analyses through the runtime)"]
-fn cumulative_metrics() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase (a whole build through the runtime)"]
-fn test_action_data() {}
-
-#[test]
-#[ignore = "needs BuildIntegrationTestCase with --experimental_merged_skyframe_analysis_execution"]
-fn skymeld_null_incremental_build_build_graph_metrics_not_collected() {}
 
 // ---------------------------------------------------------------------------------------------
 // Unit tests of the Java class

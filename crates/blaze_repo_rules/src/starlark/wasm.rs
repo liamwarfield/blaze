@@ -29,6 +29,8 @@ use starlark::values::{
 };
 use starlark_map::StarlarkHasher;
 
+use blaze_util::profiler::{Profiler, ProfilerTask};
+
 use super::base_external_context::eval_error;
 use super::path::StarlarkPath;
 
@@ -146,7 +148,9 @@ fn wasm_exec_result_methods(builder: &mut MethodsBuilder) {
 struct WasmModuleData {
     path: StarlarkPath,
     engine: wasmi::Engine,
-    wasm_module: wasmi::Module,
+    /// The module as loaded. Each execution compiles it with its memory 0 given the limits of
+    /// that execution (Java: `Instance.builder(wasmModule).withMemoryLimits(memLimits)`).
+    module_content: Vec<u8>,
     alloc_fn_name: String,
     /// `Printer.repr(origPath)`, for `repr`.
     orig_path_repr: String,
@@ -268,10 +272,29 @@ impl<'v> StarlarkWasmModuleView<'v> {
         &self,
         exec_fn_name: &str,
         input: &[u8],
-        timeout: Duration,
+        timeout_millis: i64,
         mem_limit_bytes: i64,
-    ) -> starlark::Result<StarlarkWasmExecutionResult> {
-        execute(&self.data, exec_fn_name, input, timeout, mem_limit_bytes)
+    ) -> Result<StarlarkWasmExecutionResult, ExecuteError> {
+        execute(
+            &self.data,
+            exec_fn_name,
+            input,
+            timeout_millis,
+            mem_limit_bytes,
+        )
+    }
+}
+
+/// How [`StarlarkWasmModuleView::execute`] fails: Java's `EvalException` or
+/// `InterruptedException`.
+pub enum ExecuteError {
+    Eval(starlark::Error),
+    Interrupted,
+}
+
+impl From<starlark::Error> for ExecuteError {
+    fn from(e: starlark::Error) -> Self {
+        ExecuteError::Eval(e)
     }
 }
 
@@ -284,24 +307,23 @@ pub fn new_wasm_module<'v>(
     module_content: &[u8],
     alloc_fn_name: &str,
 ) -> starlark::Result<Value<'v>> {
-    // PORT: skipped, profiling (WASM_LOAD "load", "parse").
+    let prof = Profiler::instance();
+    let _c1 = prof.profile_with(ProfilerTask::WASM_LOAD, || format!("load {path}"));
     let mut config = wasmi::Config::default();
     config.consume_fuel(true);
     let engine = wasmi::Engine::new(&config);
-    // `instance.memory()` of Chicory is the module's memory 0, exported or not; wasmi reaches a
-    // memory by its export name, so the compiled module exports memory 0 as well, under a name
-    // no module can have (see `with_memory_export`).
-    let compiled_content = with_memory_export(module_content);
-    let wasm_module = match wasmi::Module::new(&engine, &compiled_content[..]) {
-        Ok(m) => m,
-        // Java: throw new EvalException(e) (the ChicoryException's message).
-        Err(e) => return Err(eval_error(e)),
-    };
-    let memory_section = memory_section(module_content);
-    // The checks of the module's own exports read the module as given.
-    let original_module = match wasmi::Module::new(&engine, module_content) {
-        Ok(m) => m,
-        Err(e) => return Err(eval_error(e)),
+    let (memory_section, original_module) = {
+        let _c2 = prof.profile(ProfilerTask::WASM_LOAD, "parse");
+        // Java: throw new EvalException(e) (the ChicoryException's message). Chicory reads the
+        // header itself; wasmi's own messages for the rest of the module are wasmi's.
+        check_header(module_content).map_err(eval_error)?;
+        let memory_section = memory_section(module_content);
+        // The checks of the module's own exports read the module as given.
+        let original_module = match wasmi::Module::new(&engine, module_content) {
+            Ok(m) => m,
+            Err(e) => return Err(eval_error(e)),
+        };
+        (memory_section, original_module)
     };
     validate_module(&original_module, alloc_fn_name)?;
     let has_initialize_fn = has_initialize_fn(&original_module);
@@ -310,13 +332,51 @@ pub fn new_wasm_module<'v>(
         data: Arc::new(WasmModuleData {
             path,
             engine,
-            wasm_module,
+            module_content: module_content.to_vec(),
             alloc_fn_name: alloc_fn_name.to_owned(),
             orig_path_repr: orig_path.to_repr(),
             has_initialize_fn,
             memory_section,
         }),
     }))
+}
+
+/// The magic and version checks of Chicory's parser, with its messages: a `MalformedException`
+/// thrown while parsing is rethrown with the prefix "section size mismatch, unexpected end of
+/// section or function, ".
+// Java (Chicory): com/dylibso/chicory/wasm/Parser.java Parser.parse
+// Java (Chicory): com/dylibso/chicory/wasm/Encoding.java Encoding.readBytes
+fn check_header(content: &[u8]) -> Result<(), String> {
+    const MAGIC_BYTES: [u8; 4] = [0x00, 0x61, 0x73, 0x6d];
+    const VERSION_BYTES: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
+    let malformed =
+        |m: String| format!("section size mismatch, unexpected end of section or function, {m}");
+    // Arrays.toString(byte[]): signed bytes.
+    let bytes = |b: &[u8]| {
+        let v: Vec<String> = b.iter().map(|x| (*x as i8).to_string()).collect();
+        format!("[{}]", v.join(", "))
+    };
+    let Some(magic) = content.get(..4) else {
+        return Err(malformed("length out of bounds".to_owned()));
+    };
+    if magic != MAGIC_BYTES {
+        return Err(malformed(format!(
+            "magic header not detected, found: {} expected: {}",
+            bytes(magic),
+            bytes(&MAGIC_BYTES)
+        )));
+    }
+    let Some(version) = content.get(4..8) else {
+        return Err(malformed("length out of bounds".to_owned()));
+    };
+    if version != VERSION_BYTES {
+        return Err(malformed(format!(
+            "unknown binary version, found: {} expected: {}",
+            bytes(version),
+            bytes(&VERSION_BYTES)
+        )));
+    }
+    Ok(())
 }
 
 // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkWasmModule.java:81 StarlarkWasmModule.hasInitializeFn
@@ -404,16 +464,27 @@ fn execute(
     data: &WasmModuleData,
     exec_fn_name: &str,
     input: &[u8],
-    timeout: Duration,
+    timeout_millis: i64,
     mem_limit_bytes: i64,
-) -> starlark::Result<StarlarkWasmExecutionResult> {
-    // PORT: skipped, profiling (WASM_EXEC "execute <fn>").
+) -> Result<StarlarkWasmExecutionResult, ExecuteError> {
+    let _c = Profiler::instance().profile_with(ProfilerTask::WASM_EXEC, || {
+        format!("execute {exec_fn_name}")
+    });
     let mem_limits = get_mem_limits(data, mem_limit_bytes)?;
     // Perform initialization and execution so it can be stopped in case of timeout.
-    let deadline = Instant::now() + timeout;
+    // `executor.invokeAny(tasks, timeout.toMillis(), MILLISECONDS)` with a timeout of zero or
+    // less waits for nothing and throws TimeoutException.
+    if timeout_millis <= 0 {
+        return Ok(StarlarkWasmExecutionResult::new_err(format!(
+            "Error executing {exec_fn_name}: timed out"
+        )));
+    }
+    let deadline = Instant::now() + Duration::from_millis(timeout_millis as u64);
     let err_message = match run(data, exec_fn_name, input, mem_limits, deadline) {
         Ok(result) => return Ok(result),
         Err(RunOutcome::TimedOut) => format!("Error executing {exec_fn_name}: timed out"),
+        // invokeAny throws InterruptedException.
+        Err(RunOutcome::Interrupted) => return Err(ExecuteError::Interrupted),
         Err(RunOutcome::Failed(RunError(message))) => {
             format!("Error executing {exec_fn_name}: {message}")
         }
@@ -423,6 +494,9 @@ fn execute(
 
 enum RunOutcome {
     TimedOut,
+    /// The command was interrupted while the call ran (Java: `invokeAny` throws
+    /// `InterruptedException`).
+    Interrupted,
     Failed(RunError),
 }
 
@@ -438,10 +512,9 @@ impl From<wasmi::Error> for RunOutcome {
     }
 }
 
-/// The store data: the memory limiter (Java's `withMemoryLimits`).
-struct StoreData {
-    limits: wasmi::StoreLimits,
-}
+/// The store data (none: the memory limits are in the compiled module, see
+/// [`with_memory_limits`]).
+type StoreData = ();
 
 // Java: com/google/devtools/build/lib/bazel/repository/starlark/StarlarkWasmModule.java:144 StarlarkWasmModule.run
 fn run(
@@ -451,22 +524,22 @@ fn run(
     mem_limits: MemoryLimits,
     deadline: Instant,
 ) -> Result<StarlarkWasmExecutionResult, RunOutcome> {
-    // PORT: Chicory builds the memory with `MemoryLimits(initialPages, maximumPages)`; wasmi
-    // keeps the module's own limits and fails a growth beyond the limiter's maximum. The
-    // initial pages are the module's (`mem_limits.initial_pages` only matters when Chicory
-    // raises a zero-page memory to one page).
-    let _ = mem_limits.initial_pages;
-    let limits = wasmi::StoreLimitsBuilder::new()
-        .memory_size((mem_limits.maximum_pages * PAGE_SIZE) as usize)
-        .build();
-    let mut store = wasmi::Store::new(&data.engine, StoreData { limits });
-    store.limiter(|d| &mut d.limits);
+    // Chicory builds memory 0 with `MemoryLimits(initialPages, maximumPages)` in place of the
+    // module's own limits; the module is compiled with those limits. `instance.memory()` of
+    // Chicory is the module's memory 0, exported or not; wasmi reaches a memory by its export
+    // name, so the compiled module exports memory 0 as well, under a name no module can have
+    // (see `with_memory_export`).
+    let compiled_content =
+        with_memory_limits(&with_memory_export(&data.module_content), mem_limits);
+    let wasm_module =
+        wasmi::Module::new(&data.engine, &compiled_content[..]).map_err(RunError::from)?;
+    let mut store = wasmi::Store::new(&data.engine, ());
     store.set_fuel(FUEL_SLICE)?;
     // Disable calling `_start()`, which is the entry point for WASI-style command modules
     // (Chicory's `withStart(false)`; wasmi never calls it).
     let linker = wasmi::Linker::<StoreData>::new(&data.engine);
     let instance = linker
-        .instantiate_and_start(&mut store, &data.wasm_module)
+        .instantiate_and_start(&mut store, &wasm_module)
         .map_err(RunError::from)?;
     // If `_initialize()` is present then call it to perform early setup.
     //
@@ -475,27 +548,19 @@ fn run(
     // instead used the start function as the equivalent of a native binary's entry point, and
     // expect (or emit) a function named `_initialize` to be used for early initialization.
     if data.has_initialize_fn {
-        let initialize = instance
-            .get_func(&store, "_initialize")
-            .ok_or_else(|| RunError("export _initialize is not a function".to_owned()))?;
-        call(&mut store, &initialize, &[], &mut [], deadline)?;
+        let _c = Profiler::instance().profile(ProfilerTask::WASM_EXEC, "initialize");
+        let initialize = export(&instance, &store, "_initialize")?;
+        apply(&mut store, &initialize, &[], deadline)?;
     }
 
-    // instance.memory(): the module's memory 0.
-    let memory = instance
-        .get_memory(&store, MEMORY_0_EXPORT)
-        .ok_or_else(|| RunError("WebAssembly module has no memory".to_owned()))?;
-    // Chicory's `instance.export(name)` throws `ChicoryException("Unknown export with name " +
-    // name)` for a missing export, so the null checks after it (and their "doesn't export"
-    // messages) are not reached.
-    // Java (Chicory): com/dylibso/chicory/runtime/Instance.java Instance.export
-    let alloc_fn = instance
-        .get_func(&store, &data.alloc_fn_name)
-        .ok_or_else(|| RunError(format!("Unknown export with name {}", data.alloc_fn_name)))?;
+    // instance.memory(): the module's memory 0 (null without one).
+    let memory = instance.get_memory(&store, MEMORY_0_EXPORT);
+    // Chicory's `instance.export(name)` throws for a missing export or one that is not a
+    // function, so the null checks after it (and their "doesn't export" messages) are not
+    // reached.
+    let alloc_fn = export(&instance, &store, &data.alloc_fn_name)?;
     // TODO: #26092 - Validate execFn has the expected signature?
-    let exec_fn = instance
-        .get_func(&store, exec_fn_name)
-        .ok_or_else(|| RunError(format!("Unknown export with name {exec_fn_name}")))?;
+    let exec_fn = export(&instance, &store, exec_fn_name)?;
 
     let input_len =
         i32::try_from(input.len()).map_err(|_| RunError("integer overflow".to_owned()))?;
@@ -507,9 +572,22 @@ fn run(
         1,
         deadline,
     )?;
-    memory
-        .write(&mut store, input_ptr as u32 as usize, input)
-        .map_err(|e| RunError(e.to_string()))?;
+    // memory.write(inputPtr, input) on a null memory: the NullPointerException's (helpful)
+    // message.
+    let Some(memory) = memory else {
+        return Err(RunError(
+            "Cannot invoke \"com.dylibso.chicory.runtime.Memory.write(int, byte[])\" because \
+             \"memory\" is null"
+                .to_owned(),
+        )
+        .into());
+    };
+    {
+        let _c = Profiler::instance().profile(ProfilerTask::WASM_EXEC, "copy input");
+        memory
+            .write(&mut store, input_ptr as u32 as usize, input)
+            .map_err(|e| RunError(e.to_string()))?;
+    }
 
     // struct { output_ptr_ptr: **u8, output_len_ptr: *u32 }
     let params_ptr = alloc(&mut store, &data.alloc_fn_name, &alloc_fn, 8, 4, deadline)?;
@@ -518,29 +596,33 @@ fn run(
     write_i32(&mut store, &memory, output_ptr_ptr, 0)?;
     write_i32(&mut store, &memory, output_len_ptr, 0)?;
 
-    let mut exec_result = [wasmi::Val::I32(0)];
-    call(
-        &mut store,
-        &exec_fn,
-        &[
-            wasmi::Val::I32(input_ptr),
-            wasmi::Val::I32(input_len),
-            wasmi::Val::I32(output_ptr_ptr),
-            wasmi::Val::I32(output_len_ptr),
-        ],
-        &mut exec_result,
-        deadline,
-    )?;
+    let exec_result = {
+        let _c = Profiler::instance().profile(ProfilerTask::WASM_EXEC, "execute");
+        apply(
+            &mut store,
+            &exec_fn,
+            &[
+                input_ptr as i64,
+                input_len as i64,
+                output_ptr_ptr as i64,
+                output_len_ptr as i64,
+            ],
+            deadline,
+        )?
+    };
 
     // TODO: #26092 - Not 100% sure this check is necessary, but the ambiguity between
     // signed/unsigned in Java vs WebAssembly makes me nervous.
     //
-    // Chicory returns the i32 result as a long holding the signed value.
-    let mut return_code: i64 = match exec_result[0] {
-        wasmi::Val::I32(v) => v as i64,
-        wasmi::Val::I64(v) => v,
-        _ => return Err(RunError("unexpected result type".to_owned()).into()),
+    // Might be unnecessary if the function signature is verified before execution?
+    // `execResult[0]` of a function without results (Chicory returns null).
+    let Some(&first) = exec_result.as_ref().and_then(|r| r.first()) else {
+        return Err(RunError(
+            "Cannot load from long array because \"execResult\" is null".to_owned(),
+        )
+        .into());
     };
+    let mut return_code: i64 = first;
     if !(0..=0xFFFF_FFFF).contains(&return_code) {
         return_code = 0xFFFF_FFFF;
     }
@@ -549,6 +631,7 @@ fn run(
 
     let mut output = String::new();
     if output_len > 0 {
+        let _c = Profiler::instance().profile(ProfilerTask::WASM_EXEC, "copy output");
         let mut output_bytes = vec![0u8; output_len as usize];
         memory
             .read(&store, output_ptr as u32 as usize, &mut output_bytes)
@@ -559,7 +642,89 @@ fn run(
     Ok(StarlarkWasmExecutionResult::new_ok(return_code, output))
 }
 
-/// `ExportFunction.apply`, with the timeout checked whenever the call runs out of fuel.
+/// `instance.export(name)`: the exported function, or Chicory's error for a missing export
+/// or one of another kind.
+// Java (Chicory): com/dylibso/chicory/runtime/Instance.java Instance.Exports.function
+// Java (Chicory): com/dylibso/chicory/runtime/Instance.java Instance.Exports.getExport
+fn export(
+    instance: &wasmi::Instance,
+    store: &wasmi::Store<StoreData>,
+    name: &str,
+) -> Result<wasmi::Func, RunError> {
+    match instance.get_export(store, name) {
+        None => Err(RunError(format!("Unknown export with name {name}"))),
+        Some(wasmi::Extern::Func(f)) => Ok(f),
+        Some(other) => {
+            // Chicory's ExternalType names.
+            let kind = match other {
+                wasmi::Extern::Global(_) => "GLOBAL",
+                wasmi::Extern::Table(_) => "TABLE",
+                wasmi::Extern::Memory(_) => "MEMORY",
+                wasmi::Extern::Func(_) => unreachable!(),
+            };
+            Err(RunError(format!(
+                "The export {name} is of type {kind} and cannot be converted to FUNCTION"
+            )))
+        }
+    }
+}
+
+/// `ExportFunction.apply(args)`: Chicory does not check the function's signature. The frame's
+/// locals are `Arrays.copyOf(args, ...)` (missing arguments are zero, extra ones are dropped)
+/// and the results are the values the function returns, `null` when it returns none.
+// Java (Chicory): com/dylibso/chicory/runtime/InterpreterMachine.java InterpreterMachine.call
+// Java (Chicory): com/dylibso/chicory/runtime/StackFrame.java StackFrame.<init>
+fn apply(
+    store: &mut wasmi::Store<StoreData>,
+    func: &wasmi::Func,
+    args: &[i64],
+    deadline: Instant,
+) -> Result<Option<Vec<i64>>, RunOutcome> {
+    let ty = func.ty(&*store);
+    let params: Vec<wasmi::Val> = ty
+        .params()
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            let arg = args.get(i).copied().unwrap_or(0);
+            match t {
+                // An i32 local holds the low 32 bits of the long.
+                wasmi::ValType::I32 => wasmi::Val::I32(arg as i32),
+                wasmi::ValType::I64 => wasmi::Val::I64(arg),
+                other => blaze_util::unported!(
+                    "InterpreterMachine.call",
+                    "a parameter of type {other:?} given as a long"
+                ),
+            }
+        })
+        .collect();
+    let mut results: Vec<wasmi::Val> = ty
+        .results()
+        .iter()
+        .map(|t| wasmi::Val::default(*t))
+        .collect();
+    call(store, func, &params, &mut results, deadline)?;
+    if results.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(
+        results
+            .iter()
+            .map(|v| match v {
+                // The i32 result as a long holding the signed value.
+                wasmi::Val::I32(v) => *v as i64,
+                wasmi::Val::I64(v) => *v,
+                other => blaze_util::unported!(
+                    "InterpreterMachine.call",
+                    "a result of type {:?} as a long",
+                    other.ty()
+                ),
+            })
+            .collect(),
+    ))
+}
+
+/// A call of `func`, with the timeout checked whenever the call runs out of fuel.
 fn call(
     store: &mut wasmi::Store<StoreData>,
     func: &wasmi::Func,
@@ -572,6 +737,12 @@ fn call(
         match call {
             wasmi::ResumableCall::Finished => return Ok(()),
             wasmi::ResumableCall::OutOfFuel(out_of_fuel) => {
+                // PORT: Java runs the call on a thread of its own and waits for it in
+                // `invokeAny`, which an interrupt of the command thread ends; the call here
+                // runs on the command's thread and looks at the interrupt with the deadline.
+                if blaze_shell::thread_interrupt::interrupted() {
+                    return Err(RunOutcome::Interrupted);
+                }
                 if Instant::now() >= deadline {
                     return Err(RunOutcome::TimedOut);
                 }
@@ -596,19 +767,13 @@ fn alloc(
     align: i32,
     deadline: Instant,
 ) -> Result<i32, RunOutcome> {
-    let mut alloc_result = [wasmi::Val::I32(0)];
-    call(
-        store,
-        alloc_fn,
-        &[wasmi::Val::I32(size), wasmi::Val::I32(align)],
-        &mut alloc_result,
-        deadline,
-    )?;
-    // Chicory: the i32 result as a long holding the signed value.
-    let ptr: i64 = match alloc_result[0] {
-        wasmi::Val::I32(v) => v as i64,
-        wasmi::Val::I64(v) => v,
-        _ => return Err(RunError("unexpected result type".to_owned()).into()),
+    let alloc_result = apply(store, alloc_fn, &[size as i64, align as i64], deadline)?;
+    // `allocResult[0]` of a function without results (Chicory returns null).
+    let Some(&ptr) = alloc_result.as_ref().and_then(|r| r.first()) else {
+        return Err(RunError(
+            "Cannot load from long array because \"allocResult\" is null".to_owned(),
+        )
+        .into());
     };
     if ptr == 0 {
         return Err(RunError(format!(
@@ -752,6 +917,62 @@ fn with_memory_export(wasm: &[u8]) -> std::borrow::Cow<'_, [u8]> {
     std::borrow::Cow::Owned(out)
 }
 
+/// The module with the limits of its memory 0 replaced by `limits` (the module unchanged when
+/// it has no memory or does not parse as sections).
+///
+/// PORT: an adapter for wasmi; Chicory builds the memory from `MemoryLimits` directly
+/// (`Instance.Builder.withMemoryLimits`).
+fn with_memory_limits(wasm: &[u8], limits: MemoryLimits) -> Vec<u8> {
+    let mut out = wasm[..8.min(wasm.len())].to_vec();
+    let mut pos = 8;
+    while pos < wasm.len() {
+        let start = pos;
+        let id = wasm[pos];
+        pos += 1;
+        let Some(size) = read_leb_u64(wasm, &mut pos) else {
+            return wasm.to_vec();
+        };
+        let content = pos;
+        let Some(end) = pos.checked_add(size as usize).filter(|e| *e <= wasm.len()) else {
+            return wasm.to_vec();
+        };
+        pos = end;
+        if id != 5 {
+            out.extend_from_slice(&wasm[start..end]);
+            continue;
+        }
+        let mut p = content;
+        let Some(count) = read_leb_u64(wasm, &mut p) else {
+            return wasm.to_vec();
+        };
+        if count == 0 {
+            out.extend_from_slice(&wasm[start..end]);
+            continue;
+        }
+        // limits: flags (bit 0: a maximum follows), the minimum, the maximum.
+        let Some(&flags) = wasm.get(p) else {
+            return wasm.to_vec();
+        };
+        p += 1;
+        if read_leb_u64(wasm, &mut p).is_none() {
+            return wasm.to_vec();
+        }
+        if flags & 1 != 0 && read_leb_u64(wasm, &mut p).is_none() {
+            return wasm.to_vec();
+        }
+        let mut body = Vec::new();
+        write_leb_u64(&mut body, count);
+        body.push(flags | 1);
+        write_leb_u64(&mut body, limits.initial_pages as u64);
+        write_leb_u64(&mut body, limits.maximum_pages as u64);
+        body.extend_from_slice(&wasm[p..end]);
+        out.push(5);
+        write_leb_u64(&mut out, body.len() as u64);
+        out.extend_from_slice(&body);
+    }
+    out
+}
+
 /// Appends an export section with the one export `entry`.
 fn push_export_section(out: &mut Vec<u8>, entry: &[u8]) {
     let mut body = Vec::new();
@@ -805,6 +1026,71 @@ mod tests {
         assert_eq!(get_mem_limit_pages(PAGE_SIZE + 1), 2);
         assert_eq!(get_mem_limit_pages(64 * 1024 * 1024), 1024);
         assert_eq!(get_mem_limit_pages(i64::MAX), MAX_PAGES);
+    }
+
+    // Expectations: the oracle's messages (review probe `bad`, and `badver` of the response
+    // probe, docs/reviews/2026-11-27-small-ports-response.md).
+    #[test]
+    fn header_errors_have_chicorys_text() {
+        assert_eq!(
+            check_header(b"not wasm"),
+            Err(
+                "section size mismatch, unexpected end of section or function, magic header not \
+                 detected, found: [110, 111, 116, 32] expected: [0, 97, 115, 109]"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            check_header(&[0x00, 0x61, 0x73, 0x6d, 0x02, 0x00, 0x00, 0x00]),
+            Err(
+                "section size mismatch, unexpected end of section or function, unknown binary \
+                 version, found: [2, 0, 0, 0] expected: [1, 0, 0, 0]"
+                    .to_owned()
+            )
+        );
+        assert_eq!(
+            check_header(&[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn memory_limits_replace_the_modules_own() {
+        // (module (memory 1 2)) gets (memory 1 1024); (module (memory 3)) gets (memory 1 1).
+        let max2 = [
+            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x05, 0x04, 0x01, 0x01, 0x01, 0x02,
+        ];
+        let out = with_memory_limits(
+            &max2,
+            MemoryLimits {
+                initial_pages: 1,
+                maximum_pages: 1024,
+            },
+        );
+        assert_eq!(
+            out,
+            [
+                0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x05, 0x05, 0x01, 0x01, 0x01, 0x80,
+                0x08
+            ]
+        );
+        let mem3 = [
+            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x05, 0x03, 0x01, 0x00, 0x03,
+        ];
+        let out = with_memory_limits(
+            &mem3,
+            MemoryLimits {
+                initial_pages: 1,
+                maximum_pages: 1,
+            },
+        );
+        assert_eq!(memory_section(&out), Some((1, 1)));
+        assert_eq!(
+            out,
+            [
+                0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x05, 0x04, 0x01, 0x01, 0x01, 0x01
+            ]
+        );
     }
 
     #[test]

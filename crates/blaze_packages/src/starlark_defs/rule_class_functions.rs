@@ -122,11 +122,11 @@ pub const ALLOWLIST_RULE_EXTENSION_API_EXPERIMENTAL: &[(&str, &str)] = &[
 // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:255 StarlarkRuleClassFunctions.COMMON_ATTRIBUTES_NAME
 const COMMON_ATTRIBUTES_NAME: &str = "common";
 
-// Java: com/google/devtools/build/lib/packages/FunctionSplitTransitionAllowlist.java:21 FunctionSplitTransitionAllowlist
+// Java: com/google/devtools/build/lib/packages/FunctionSplitTransitionAllowlist.java:20 FunctionSplitTransitionAllowlist
 const FUNCTION_TRANSITION_NAME: &str = "function_transition";
 const FUNCTION_TRANSITION_ATTRIBUTE_NAME: &str = "$allowlist_function_transition";
 const FUNCTION_TRANSITION_LABEL_STR: &str = "//tools/allowlists/function_transition_allowlist";
-// Java: com/google/devtools/build/lib/analysis/DormantDependency.java:38 DormantDependency
+// Java: com/google/devtools/build/lib/analysis/DormantDependency.java:37 DormantDependency
 const DORMANT_DEPENDENCY_NAME: &str = "dormant_dependency";
 const DORMANT_DEPENDENCY_ALLOWLIST_ATTRIBUTE_NAME: &str = "$allowlist_dormant_dependency";
 const DORMANT_DEPENDENCY_ALLOWLIST_LABEL_STR: &str =
@@ -646,7 +646,7 @@ pub fn check_attribute_name(name: &str) -> starlark::Result<()> {
     Ok(())
 }
 
-// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:1286 StarlarkRuleClassFunctions.attrObjectToAttributesList
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:1287 StarlarkRuleClassFunctions.attrObjectToAttributesList
 pub fn attr_object_to_attributes_list<'v>(
     attrs: Value<'v>,
 ) -> starlark::Result<Vec<(String, DescriptorRef<'v>)>> {
@@ -1031,7 +1031,7 @@ fn validate_rule_propagated_aspects(rule_class: &RuleClass) -> starlark::Result<
 /// functions) and the package's `LabelConverter` is a thread-local (for
 /// `native.package_relative_label()` and `select()` in an initializer). Dropping it is Java's
 /// `finally` block: it runs on every exit path, including errors and panics.
-// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:1789 StarlarkRuleFunction.call
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:1767 StarlarkRuleFunction.call
 struct InitializerThreadState<'a> {
     thread: &'a ThreadContext,
     target_definition_context: Option<Box<dyn std::any::Any>>,
@@ -1059,7 +1059,7 @@ impl<'a> InitializerThreadState<'a> {
 }
 
 impl Drop for InitializerThreadState<'_> {
-    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:1880 StarlarkRuleFunction.call
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:1767 StarlarkRuleFunction.call
     fn drop(&mut self) {
         self.thread.set_thread_local::<Arc<LabelConverter>>(None);
         self.thread
@@ -2129,7 +2129,7 @@ fn create_rule<'v>(
     let mut transition_factory = converted.factory;
     pending.extend(converted.pending);
     // Check if the rule definition needs to be updated.
-    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:1094 StarlarkRuleClassFunctions.createRule
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:717 StarlarkRuleClassFunctions.createRule
     // (transitionFactory.visit: a StarlarkExposedRuleTransitionFactory adds to the rule).
     // PORT: of the StarlarkExposedRuleTransitionFactory classes only
     // ConfigFeatureFlagTransitionFactory is exposed (the native Android platforms transition is

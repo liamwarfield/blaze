@@ -557,36 +557,33 @@ impl OutputFormatterCallback<CqueryNode> for ProtoOutputFormatterCallback<'_> {
 #[cfg(test)]
 mod tests {
     // Java: src/test/java/com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallbackTest.java
-    const NEEDS: &str = "needs the ConfiguredTargetQueryHelper analysis harness";
 
     #[test]
-    #[ignore = "needs the ConfiguredTargetQueryHelper analysis harness"]
-    fn test_select_in_attribute() {
-        let _ = NEEDS;
-    }
+    #[ignore = "native MockRule (MockRule.define) through useRuleClassProvider; Blaze rule class providers have no native test rules"]
+    fn test_select_in_attribute() {}
 
     #[test]
-    #[ignore = "needs the ConfiguredTargetQueryHelper analysis harness"]
+    #[ignore = "native MockRule (MockRule.define) through useRuleClassProvider; Blaze rule class providers have no native test rules"]
     fn test_configurations() {}
 
     #[test]
-    #[ignore = "needs the ConfiguredTargetQueryHelper analysis harness"]
+    #[ignore = "not ported yet: the body decodes the AnalysisProtosV2 output of the callback; the harness is blaze_query_testing (ConfiguredTargetQueryHelper port)"]
     fn test_configuration_cpu() {}
 
     #[test]
-    #[ignore = "needs the ConfiguredTargetQueryHelper analysis harness"]
+    #[ignore = "not ported yet: the body decodes the AnalysisProtosV2 output of the callback; the harness is blaze_query_testing (ConfiguredTargetQueryHelper port)"]
     fn test_alias() {}
 
     #[test]
-    #[ignore = "needs the ConfiguredTargetQueryHelper analysis harness"]
+    #[ignore = "not ported yet: the body decodes the AnalysisProtosV2 output of the callback; the harness is blaze_query_testing (ConfiguredTargetQueryHelper port)"]
     fn test_alias_with_select() {}
 
     #[test]
-    #[ignore = "needs the ConfiguredTargetQueryHelper analysis harness"]
+    #[ignore = "native MockRule (MockRule.define) through useRuleClassProvider; Blaze rule class providers have no native test rules"]
     fn test_all_output_formats_equivalent_to_proto_output() {}
 
     #[test]
-    #[ignore = "needs the ConfiguredTargetQueryHelper analysis harness"]
+    #[ignore = "native MockRule (MockRule.define) through useRuleClassProvider; Blaze rule class providers have no native test rules"]
     fn test_all_output_formats_equivalent_to_proto_output_no_include_configurations() {}
 
     #[test]
@@ -600,6 +597,6 @@ mod tests {
 
     // Java: src/test/java/com/google/devtools/build/lib/query2/cquery/ProtoOutputFormatterCallbackTest.java:425 ProtoOutputFormatterCallbackTest.configuredRuleInputsFromAspects
     #[test]
-    #[ignore = "needs the BuildViewTestCase harness (blaze_sky_top::testing)"]
+    #[ignore = "not ported yet: the body decodes the AnalysisProtosV2 output of the callback; the harness is blaze_query_testing (ConfiguredTargetQueryHelper port)"]
     fn configured_rule_inputs_from_aspects() {}
 }

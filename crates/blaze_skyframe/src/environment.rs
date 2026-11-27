@@ -65,6 +65,23 @@ pub(crate) struct EnvState {
 
 /// What a function sees while computing.
 // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:72 SkyFunctionEnvironment
+// PORT: skipped, partial reevaluation is not ported (lib.rs): SkyFunction.LookupEnvironment.getLookupHandleForPreviouslyRequestedDeps, SkyFunctionEnvironment.getLookupHandleForPreviouslyRequestedDeps, SkyFunctionEnvironment.wasNewlyRequestedDepNullForPartialReevaluation
+// PORT: skipped, max transitive source versions are not ported (lib.rs); no Bazel function reads them: SkyFunction.getMaxTransitiveSourceVersionToInjectForNonHermeticFunction, SkyFunction.Environment.injectVersionForNonHermeticFunction, SkyFunction.Environment.getMaxTransitiveSourceVersionSoFar, SkyFunctionEnvironment.injectVersionForNonHermeticFunction, SkyFunctionEnvironment.maybeUpdateMaxTransitiveSourceVersion, SkyFunctionEnvironment.getMaxTransitiveSourceVersionSoFar
+// PORT: skipped, functions run on the evaluator's threads and block in get_value (no executor to hand out): SkyFunction.Environment.getParallelEvaluationExecutor, SkyFunctionEnvironment.getParallelEvaluationExecutor
+// PORT: skipped, the parallel evaluator's restart bookkeeping (deps of earlier runs, batch prefetch, null markers, done-building checks); the blocking evaluator requests each dep once during the only run (evaluator.rs): SkyFunctionEnvironment.checkActive, SkyFunctionEnvironment.setValue, SkyFunctionEnvironment.maybeGetValueFromErrorOrDeps, SkyFunctionEnvironment.getPreviouslyRequestedDepValue, SkyFunctionEnvironment.endDepGroup, SkyFunctionEnvironment.getValueOrNullMarker
+// PORT: skipped, (as above): SkyFunctionEnvironment.shouldKeepGoingWhenEvaluatingDep, SkyFunctionEnvironment.queryDep, SkyFunctionEnvironment.getDepErrorKey, SkyFunctionEnvironment.doneBuilding, SkyFunctionEnvironment.getNewlyRequestedDeps, SkyFunctionEnvironment.addTemporaryDirectDepsTo
+// PORT: skipped, (as above; transience and child errors are folded in evaluator.rs when the node completes): SkyFunctionEnvironment.isAnyDirectDepErrorTransitivelyTransient, SkyFunctionEnvironment.isAnyNewlyRequestedDepErrorTransitivelyTransient, SkyFunctionEnvironment.getChildErrorInfos, SkyFunctionEnvironment.ensurePreviouslyRequestedDepsFetched, SkyFunctionEnvironment.toString
+// PORT: skipped, (as above): SkyFunctionEnvironment.UndonePreviouslyRequestedDeps.getDepKeys, SkyFunctionEnvironment.SkipsBatchPrefetch.<init>, SkyFunctionEnvironment.SkipsBatchPrefetch.batchPrefetch, SkyFunctionEnvironment.SkipsBatchPrefetch.getPreviouslyRequestedDepValue, SkyFunctionEnvironment.SkipsBatchPrefetch.lookupRequestedDep, SkyFunctionEnvironment.SkipsBatchPrefetch.processDepEntry, SkyFunctionEnvironment.SkipsBatchPrefetch.ensurePreviouslyRequestedDepsFetched, SkyFunctionEnvironment.SkipsBatchPrefetch.wasNewlyRequestedDepNullForPartialReevaluation
+// PORT: skipped, used only by BzlLoadFunction's inlining, never enabled at the pin (bzl_load.rs): RecordingSkyFunctionEnvironment.<init>, RecordingSkyFunctionEnvironment.recordDep, RecordingSkyFunctionEnvironment.recordDeps, RecordingSkyFunctionEnvironment.noteException, RecordingSkyFunctionEnvironment.getDelegate, RecordingSkyFunctionEnvironment.getValue, RecordingSkyFunctionEnvironment.getValueOrThrow
+// PORT: skipped, (as above): RecordingSkyFunctionEnvironment.valuesMissing, RecordingSkyFunctionEnvironment.getValuesAndExceptions, RecordingSkyFunctionEnvironment.getListener, RecordingSkyFunctionEnvironment.inErrorBubbling, RecordingSkyFunctionEnvironment.getTemporaryDirectDeps, RecordingSkyFunctionEnvironment.injectVersionForNonHermeticFunction, RecordingSkyFunctionEnvironment.registerDependencies
+// PORT: skipped, (as above): RecordingSkyFunctionEnvironment.dependOnFuture, RecordingSkyFunctionEnvironment.getLookupHandleForPreviouslyRequestedDeps, RecordingSkyFunctionEnvironment.getState, RecordingSkyFunctionEnvironment.getMaxTransitiveSourceVersionSoFar
+// PORT: skipped, GlobsFunction wraps its environment so that concurrent state machines can share it; here the GLOBS state machines run on the function's thread and use the environment directly (blaze_sky_loading globs.rs): ConcurrentSkyFunctionEnvironment.<init>, ConcurrentSkyFunctionEnvironment.getValue, ConcurrentSkyFunctionEnvironment.getValueOrThrow, ConcurrentSkyFunctionEnvironment.getValuesAndExceptions, ConcurrentSkyFunctionEnvironment.getLookupHandleForPreviouslyRequestedDeps, ConcurrentSkyFunctionEnvironment.getOrThrow, ConcurrentSkyFunctionEnvironment.queryDep
+// PORT: skipped, repository rules and module extensions run on the function's thread and block in get_value instead of on a worker thread with a restartable environment (blaze_repo_rules env_handle.rs): WorkerSkyFunctionEnvironment.<init>, WorkerSkyFunctionEnvironment.valuesMissing, WorkerSkyFunctionEnvironment.getValuesAndExceptions, WorkerSkyFunctionEnvironment.getOrThrow, WorkerSkyFunctionEnvironment.queryDep, WorkerSkyFunctionEnvironment.getValue, WorkerSkyFunctionEnvironment.getValueOrThrow
+// PORT: skipped, (as above): WorkerSkyFunctionEnvironment.getListener, WorkerSkyFunctionEnvironment.post, WorkerSkyFunctionEnvironment.registerDependencies, WorkerSkyFunctionEnvironment.inErrorBubbling, WorkerSkyFunctionEnvironment.dependOnFuture, WorkerSkyFunctionEnvironment.getLookupHandleForPreviouslyRequestedDeps, WorkerSkyFunctionEnvironment.getState, WorkerSkyFunctionEnvironment.getMaxTransitiveSourceVersionSoFar
+// PORT: skipped, (as above): WorkerSkyKeyComputeState.WorkerCallable.call, WorkerSkyKeyComputeState.startOrContinueWork, WorkerSkyKeyComputeState.getOrStartWorker, WorkerSkyKeyComputeState.signalForFreshEnv, WorkerSkyKeyComputeState.close
+// PORT: skipped, the parallel evaluator's view of a function's deps for its graph; getTemporaryDirectDeps returns the GroupedDeps: DepsReport.<init>, DepsReport.hasInformation, DepsReport.size, DepsReport.isEmpty, DepsReport.iterator, DepsReport.throwUnsupported, DepsReport.contains, DepsReport.toArray, DepsReport.add, DepsReport.remove
+// PORT: skipped, (as above): DepsReport.containsAll, DepsReport.addAll, DepsReport.removeAll, DepsReport.retainAll, DepsReport.clear, DepsReport.toString, DepsReport.Builder.<init>, DepsReport.Builder.add, DepsReport.Builder.build, DepsReport.Builder.toString
+// PORT: skipped, queryDep is not ported (lib.rs): SkyframeLookupResult.QueryDepCallback.acceptValue, SkyframeLookupResult.QueryDepCallback.tryHandleException
 pub struct Environment<'a> {
     run: &'a Run<'a>,
     key: &'a SkyKey,
@@ -283,6 +300,7 @@ impl<'a> Environment<'a> {
     /// to throw a better error. Only then (and with keep_going) does a dependency's exception
     /// reach the function through `get_value_or_throw`; requests compute nothing new.
     // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:1036 SkyFunctionEnvironment.inErrorBubbling
+    // Java: com/google/devtools/build/skyframe/SkyFunction.java:417 SkyFunction.Environment.inErrorBubbling
     pub fn in_error_bubbling(&self) -> bool {
         self.bubble_error_info.is_some()
     }
@@ -329,6 +347,7 @@ impl<'a> Environment<'a> {
     /// PORT: Java's restarts add the deps of earlier runs. There are no restarts here, so in
     /// normal evaluation the deps this (only) run has requested so far follow.
     // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:811 SkyFunctionEnvironment.getTemporaryDirectDeps
+    // Java: com/google/devtools/build/skyframe/SkyFunction.java:366 SkyFunction.Environment.getTemporaryDirectDeps
     pub fn get_temporary_direct_deps(&self) -> &GroupedDeps {
         if self.bubble_error_info.is_some() {
             return &self.previously_requested_deps;
@@ -339,6 +358,7 @@ impl<'a> Environment<'a> {
     /// PORT: not ported. Java registers deps without requesting their values (used by
     /// `SkyframeLookupResult`-free producers and `StateMachine` drivers).
     // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:1041 SkyFunctionEnvironment.registerDependencies
+    // Java: com/google/devtools/build/skyframe/SkyFunction.java:392 SkyFunction.Environment.registerDependencies
     pub fn register_dependencies(&mut self, _keys: &[SkyKey]) {
         blaze_util::unported!("SkyFunctionEnvironment.registerDependencies")
     }
@@ -346,6 +366,8 @@ impl<'a> Environment<'a> {
     /// PORT: not ported. `SkyKeyComputeState` keeps work between restarts of one function; the
     /// blocking engine never restarts a function during normal evaluation.
     // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:1110 SkyFunctionEnvironment.getState
+    // Java: com/google/devtools/build/skyframe/SkyFunction.java:613 SkyFunction.Environment.getState
+    // PORT: skipped, compute states exist only with getState (above): SkyFunction.Environment.SkyKeyComputeState.close, SkyFunction.Environment.ClassToInstanceMapSkyKeyComputeState.getInstance
     pub fn get_state<T>(&mut self, _state_supplier: impl FnOnce() -> T) -> &mut T {
         blaze_util::unported!("SkyFunctionEnvironment.getState")
     }
@@ -353,12 +375,15 @@ impl<'a> Environment<'a> {
     /// PORT: not ported. Java lets a function depend on an external `ListenableFuture` and be
     /// restarted when it completes; a blocking function waits for the future itself.
     // Java: com/google/devtools/build/skyframe/SkyFunction.java:433 SkyFunction.Environment.dependOnFuture
+    // Java: com/google/devtools/build/skyframe/AbstractSkyFunctionEnvironment.java:105 AbstractSkyFunctionEnvironment.dependOnFuture
     pub fn depend_on_future(&mut self) {
         blaze_util::unported!("SkyFunctionEnvironment.dependOnFuture")
     }
 
     /// Java: Environment.getValue. `Ok(None)` means the dependency is unavailable (error, cycle,
     /// abort); the function should then return `Ok(None)`.
+    // Java: com/google/devtools/build/skyframe/AbstractSkyFunctionEnvironment.java:31 AbstractSkyFunctionEnvironment.getValue
+    // Java: com/google/devtools/build/skyframe/SkyFunction.java:193 SkyFunction.LookupEnvironment.getValue
     pub fn get_value<K: Key>(&mut self, key: K) -> Result<Option<Arc<K::Value>>, Interrupted> {
         Ok(self
             .get_value_dyn(&SkyKey::new(key))?
@@ -388,6 +413,16 @@ impl<'a> Environment<'a> {
     /// PORT: Java matches subclasses of `E` (`SkyFunctionException.throwIfInstanceOf`); the
     /// downcast here matches the one concrete type `E`. To catch several exception types, or what
     /// is a class hierarchy in Java, use [`Environment::get_value_or_throw_with`].
+    // PORT: Java's overloads for one to four exception classes are one generic method here.
+    // Java: com/google/devtools/build/skyframe/AbstractSkyFunctionEnvironment.java:37 AbstractSkyFunctionEnvironment.getValueOrThrow
+    // Java: com/google/devtools/build/skyframe/AbstractSkyFunctionEnvironment.java:45 AbstractSkyFunctionEnvironment.getValueOrThrow
+    // Java: com/google/devtools/build/skyframe/AbstractSkyFunctionEnvironment.java:55 AbstractSkyFunctionEnvironment.getValueOrThrow
+    // Java: com/google/devtools/build/skyframe/AbstractSkyFunctionEnvironment.java:70 AbstractSkyFunctionEnvironment.getValueOrThrow
+    // Java: com/google/devtools/build/skyframe/SkyFunction.java:216 SkyFunction.LookupEnvironment.getValueOrThrow
+    // Java: com/google/devtools/build/skyframe/SkyFunction.java:221 SkyFunction.LookupEnvironment.getValueOrThrow
+    // Java: com/google/devtools/build/skyframe/SkyFunction.java:227 SkyFunction.LookupEnvironment.getValueOrThrow
+    // Java: com/google/devtools/build/skyframe/SkyFunction.java:236 SkyFunction.LookupEnvironment.getValueOrThrow
+    // Java: com/google/devtools/build/skyframe/SkyFunctionException.java:105 SkyFunctionException.throwIfInstanceOf
     pub fn get_value_or_throw<K: Key, E>(
         &mut self,
         key: K,
@@ -441,6 +476,7 @@ impl<'a> Environment<'a> {
     /// Requests a batch of deps, computing unstarted ones in parallel. Read the results with
     /// [`SkyframeLookupResult::get`] / [`SkyframeLookupResult::get_or_throw`].
     // Java: com/google/devtools/build/skyframe/SkyFunctionEnvironment.java:560 SkyFunctionEnvironment.getValuesAndExceptions
+    // Java: com/google/devtools/build/skyframe/SkyFunction.java:298 SkyFunction.LookupEnvironment.getValuesAndExceptions
     pub fn get_values_and_exceptions(
         &mut self,
         dep_keys: &[SkyKey],

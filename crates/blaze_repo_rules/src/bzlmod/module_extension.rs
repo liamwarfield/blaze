@@ -17,6 +17,7 @@ use super::tag_class::TagClass;
 /// A module extension object, which can be used to perform arbitrary logic in order to create
 /// repos.
 // Java: com/google/devtools/build/lib/bazel/bzlmod/ModuleExtension.java:30 ModuleExtension
+// PORT: skipped, the AutoValue builder is a struct literal at its callers: ModuleExtension.builder, ModuleExtension.Builder.setDoc, ModuleExtension.Builder.setDefiningBzlFileLabel, ModuleExtension.Builder.setLocation, ModuleExtension.Builder.setImplementation, ModuleExtension.Builder.setTagClasses, ModuleExtension.Builder.setEnvVariables, ModuleExtension.Builder.setOsDependent, ModuleExtension.Builder.setArchDependent, ModuleExtension.Builder.setFactsVersion
 pub struct ModuleExtension {
     /// PORT: keep-alive (the frozen heap of the defining .bzl).
     pub implementation: OwnedFrozenValue,

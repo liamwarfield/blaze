@@ -212,6 +212,7 @@ pub enum RepositoryDirectoryValue {
 /// `REPOSITORY_DIRECTORY:@@name`.
 // Java: com/google/devtools/build/lib/rules/repository/RepositoryDirectoryValue.java:74 RepositoryDirectoryValue.Key
 #[derive(Clone, PartialEq, Eq, Hash)]
+// PORT: skipped, a struct key (Key::FUNCTION; no interning): RepositoryDirectoryValue.Key.create, RepositoryDirectoryValue.Key.intern, RepositoryDirectoryValue.Key.functionName, RepositoryDirectoryValue.Key.getSkyKeyInterner
 pub struct RepositoryDirectoryKey(pub RepositoryName);
 
 impl RepositoryDirectoryKey {
@@ -314,6 +315,7 @@ impl RepositoryMappingFunction {
         }
     }
 
+    // PORT: skipped, errors are `SkyFunctionException::persistent/transient` around the cause: RepositoryMappingFunction.RepositoryMappingFunctionException.<init>
     // Java: com/google/devtools/build/lib/skyframe/RepositoryMappingFunction.java:49 RepositoryMappingFunction.compute
     pub fn compute(
         &self,

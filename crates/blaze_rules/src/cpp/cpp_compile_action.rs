@@ -99,7 +99,7 @@ fn cc_error(e: blaze_cc_features::actions::CommandLineExpansionException) -> Map
 
 /// The command line of `CompileCommandLine.getFilteredFeatureConfigurationCommandLine`: exactly
 /// the same command line as the `CppCompileAction` (tool path and compiler options).
-// Java: com/google/devtools/build/lib/rules/cpp/CompileCommandLine.java:106 CompileCommandLine.getFilteredFeatureConfigurationCommandLine
+// Java: com/google/devtools/build/lib/rules/cpp/CompileCommandLine.java:107 CompileCommandLine.getFilteredFeatureConfigurationCommandLine
 struct FilteredFeatureConfigurationCommandLine {
     compile_command_line: CompileCommandLine,
     overwritten_variables: CcToolchainVariablesRef,
@@ -112,7 +112,7 @@ impl std::fmt::Debug for FilteredFeatureConfigurationCommandLine {
 }
 
 impl blaze_actions::actions::command_line::CommandLine for FilteredFeatureConfigurationCommandLine {
-    // Java: com/google/devtools/build/lib/rules/cpp/CompileCommandLine.java:110 CompileCommandLine.getFilteredFeatureConfigurationCommandLine.arguments
+    // Java: com/google/devtools/build/lib/rules/cpp/CompileCommandLine.java:111 CompileCommandLine.getFilteredFeatureConfigurationCommandLine.arguments
     fn arguments(&self) -> Result<Vec<String>, CommandLineError> {
         self.compile_command_line
             .get_filtered_feature_configuration_command_line(Some(&*self.overwritten_variables))
@@ -1128,21 +1128,23 @@ struct CppDiscoveredModules {
 }
 
 /// The discovered modules of each used module's compile (`ActionExecutionValue
-/// .getDiscoveredModules()` of its generating action), in `used_modules`' order; `None` when a
-/// Skyframe restart is needed.
+/// .getDiscoveredModules()` of its generating action), in `used_modules`' order; `Ok(None)` when
+/// a Skyframe restart is needed, `Err(ExecException::Interrupted)` when the read was interrupted.
 // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:2074 CppCompileAction.computeTransitivelyUsedModules
 fn compute_transitively_used_modules(
     action_execution_context: &dyn ActionExecutionContext,
     used_modules: &[Artifact],
-) -> Option<Vec<(Artifact, NestedSet<Artifact>)>> {
+) -> Result<Option<Vec<(Artifact, NestedSet<Artifact>)>>, blaze_exec::actions::ExecException> {
     // Because SkyframeLookupResult.get call does not specify any exceptions where
     // SkyframeLookupResult is returned by env.getValuesAndExceptions, it is impossible for input
     // discovery to recover from exceptions thrown by spurious module deps.
-    let mut values = None;
+    let mut values = Ok(None);
     action_execution_context.with_environment_for_discovering_inputs(&mut |env| {
         values = env.get_discovered_modules(used_modules);
     });
-    let values = values?;
+    let Some(values) = values? else {
+        return Ok(None);
+    };
     let mut transitively_used_modules = Vec::with_capacity(used_modules.len());
     for (module, discovered) in used_modules.iter().zip(values) {
         check_state!(
@@ -1152,7 +1154,7 @@ fn compute_transitively_used_modules(
         );
         transitively_used_modules.push((module.clone(), discovered));
     }
-    Some(transitively_used_modules)
+    Ok(Some(transitively_used_modules))
 }
 
 /// `DiscoveredModulesPruner.DEFAULT.computeTopLevelModules`: the used modules that aren't also
@@ -1485,7 +1487,7 @@ impl DiscoveringAction for CppDiscoveringAction<'_> {
         }
     }
 
-    // Java: com/google/devtools/build/lib/rules/cpp/HeaderDiscovery.java:161 HeaderDiscovery.discoverInputsFromDependencies
+    // Java: com/google/devtools/build/lib/rules/cpp/HeaderDiscovery.java:68 HeaderDiscovery.discoverInputsFromDependencies
     fn get_execution_os(&self) -> cc::OS {
         // Java: ConstraintConstants.getOsFromConstraintsOrHost(action.getExecutionPlatform()).
         match get_os_from_constraints_or_host(self.action.execution_platform.as_deref()) {
@@ -1573,7 +1575,7 @@ impl CppCompileAction {
 
     /// The `ActionExecutionException` thrown for a `CommandLineExpansionException` while building
     /// the compile command line.
-    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:676 CppCompileAction.discoverInputs
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:663 CppCompileAction.discoverInputs
     fn command_generation_failure(&self, cause_message: &str) -> ActionExecutionException {
         let message = format!(
             "failed to generate compile command for rule '{}: {}",
@@ -1726,6 +1728,16 @@ impl CppCompileAction {
         }
     }
 
+    /// Java's `InterruptedException` out of a Skyframe read of input discovery
+    /// (`getValuesAndExceptions`), as the interrupted `ActionExecutionException` that
+    /// `discoverInputs` reports it with (review round 3, IS-3).
+    fn discovery_interrupted(
+        &self,
+        e: blaze_exec::actions::ExecException,
+    ) -> ActionExecutionException {
+        ActionExecutionException::from_exec_exception(&e, None, self)
+    }
+
     /// Finds used modules based on results of include scanning; `None` without header modules.
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:604 CppCompileAction.findUsedModules
     fn find_used_modules(&self, used_headers: &NestedSet<Artifact>) -> Option<Vec<Artifact>> {
@@ -1745,15 +1757,19 @@ impl CppCompileAction {
     }
 
     /// Computes the minimal set of modules required for the compilation, based on all used
-    /// modules that the include scanner found. `None` when a Skyframe restart is needed.
+    /// modules that the include scanner found. `Ok(None)` when a Skyframe restart is needed,
+    /// `Err(ExecException::Interrupted)` when a read was interrupted.
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:622 CppCompileAction.findMinimalSetOfRequiredModules
     fn find_minimal_set_of_required_modules(
         &self,
         action_execution_context: &dyn ActionExecutionContext,
         used_modules: &[Artifact],
-    ) -> Option<CppDiscoveredModules> {
-        let transitively_used_modules =
-            compute_transitively_used_modules(action_execution_context, used_modules)?;
+    ) -> Result<Option<CppDiscoveredModules>, blaze_exec::actions::ExecException> {
+        let Some(transitively_used_modules) =
+            compute_transitively_used_modules(action_execution_context, used_modules)?
+        else {
+            return Ok(None);
+        };
 
         // actionExecutionContext.getDiscoveredModulesPruner(): DiscoveredModulesPruner.DEFAULT
         // (Bazel's executor never sets another one).
@@ -1773,10 +1789,10 @@ impl CppCompileAction {
 
         let top_level_modules = top_level_modules_builder.build();
         discovered_modules_builder.add_transitive(&top_level_modules);
-        Some(CppDiscoveredModules {
+        Ok(Some(CppDiscoveredModules {
             transitively_used: discovered_modules_builder.build(),
             top_level: top_level_modules,
-        })
+        }))
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:769 CppCompileAction.getValidUndeclaredHeaderPredicate
@@ -1857,6 +1873,7 @@ impl CppCompileAction {
                 self.use_pic,
                 self.use_header_modules,
             )
+            .map_err(|e| self.discovery_interrupted(e))?
         else {
             return Ok(None);
         };
@@ -1906,8 +1923,9 @@ impl CppCompileAction {
         let Some(used_modules) = self.find_used_modules(&used_headers) else {
             return Ok(Some(used_headers));
         };
-        let Some(required_modules) =
-            self.find_minimal_set_of_required_modules(action_execution_context, &used_modules)
+        let Some(required_modules) = self
+            .find_minimal_set_of_required_modules(action_execution_context, &used_modules)
+            .map_err(|e| self.discovery_interrupted(e))?
         else {
             return Ok(None);
         };
@@ -2081,7 +2099,7 @@ impl CppCompileAction {
                 .map_or_else(|| "null".to_owned(), |s| s.to_string()),
             self.to_string_java()
         );
-        // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1248 CppCompileAction.updateActionInputs
+        // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1245 CppCompileAction.updateActionInputs
         let _c = Profiler::instance().profile_with(ProfilerTask::ACTION_UPDATE, || self.describe());
         let mut inputs_builder = NestedSetBuilder::<Artifact>::stable_order();
         inputs_builder.add_transitive(&self.mandatory_inputs);
@@ -2238,7 +2256,7 @@ impl CppCompileAction {
         let arguments = self
             .get_arguments_with(path_mapper)
             .map_err(|e| self.command_generation_failure(&e.message))?;
-        // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1776 CppCompileAction.createSpawn
+        // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1715 CppCompileAction.createSpawn
         let environment = self
             .get_effective_environment(client_env, spawn_path_mapper.as_actions_path_mapper())
             .map_err(|e| self.command_generation_failure(&e.message))?;
@@ -2476,6 +2494,7 @@ impl ExecutableAction for CppCompileAction {
                     self.use_pic,
                     self.use_header_modules,
                 )
+                .map_err(|e| self.discovery_interrupted(e))?
             else {
                 return Ok(None);
             };
@@ -2514,8 +2533,9 @@ impl ExecutableAction for CppCompileAction {
             return Ok(self.additional_inputs.lock().clone());
         };
 
-        let Some(required_modules) =
-            self.find_minimal_set_of_required_modules(action_execution_context, &used_modules)
+        let Some(required_modules) = self
+            .find_minimal_set_of_required_modules(action_execution_context, &used_modules)
+            .map_err(|e| self.discovery_interrupted(e))?
         else {
             return Ok(None);
         };
@@ -3004,7 +3024,7 @@ impl CppCompileActionBuilder {
     }
 
     /// Builds the Action as configured and performs some validations on the action.
-    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:239 CppCompileActionBuilder.buildAndVerify
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:256 CppCompileActionBuilder.buildAndVerify
     pub fn build_and_verify(&mut self) -> Result<CppCompileAction, BuildAndVerifyError> {
         let feature_configuration = self.feature_configuration().clone();
         let use_header_modules = self.use_header_modules();
@@ -3122,7 +3142,7 @@ impl CppCompileActionBuilder {
         Ok(action)
     }
 
-    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:327 CppCompileActionBuilder.getBuiltinIncludeFiles
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileActionBuilder.java:351 CppCompileActionBuilder.getBuiltinIncludeFiles
     fn get_builtin_include_files(&self) -> Result<Vec<Artifact>, BuildAndVerifyError> {
         let builtin_include_files = eval_err(&self.cc_toolchain.builtin_include_files)?;
         if self.build_info_header_artifacts.is_empty() {

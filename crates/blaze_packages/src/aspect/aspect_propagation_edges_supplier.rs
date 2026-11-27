@@ -243,7 +243,7 @@ impl FunctionSupplier<Label> {
 /// result to `extract`. Shared by [`FunctionSupplier`] and
 /// [`super::AspectPropagationPredicate`].
 // Java: com/google/devtools/build/lib/packages/AspectPropagationEdgesSupplier.java:125 AspectPropagationEdgesSupplier.FunctionSupplier.runFunction
-pub(super) fn run_transient_call<R>(
+pub fn run_transient_call<R>(
     function: StarlarkCallable,
     semantics: &Arc<StarlarkSemantics>,
     context: StarlarkAspectPropagationContext<'_>,
@@ -251,6 +251,7 @@ pub(super) fn run_transient_call<R>(
     extract: impl for<'v> FnOnce(Value<'v>) -> Result<R, EvalError>,
 ) -> Result<R, EvalError> {
     let events = Arc::new(CollectingEvents::default());
+    // Java: com/google/devtools/build/lib/packages/AspectPropagationPredicate.java:65 AspectPropagationPredicate.AspectPropagationThreadContext.<init>
     // PORT: Java stores an AspectPropagationEdgesThreadContext / AspectPropagationThreadContext
     // (no fields) in the thread; no builtin reads it, so the phase is `Other`.
     let ctx = ThreadContext::new(Phase::Other, semantics.clone(), events.clone());
@@ -279,7 +280,7 @@ pub(super) fn run_transient_call<R>(
 }
 
 /// Java `new EvalException(message)` thrown outside the Starlark call (no stack).
-pub(super) fn eval_exception_message(message: &str) -> EvalError {
+pub fn eval_exception_message(message: &str) -> EvalError {
     EvalError {
         kind: EvalErrorKind::Eval,
         message: message.to_owned(),

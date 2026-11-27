@@ -23,6 +23,7 @@ const GUID: &str = "0f302651-602c-404b-881c-58913193cfe7";
 ///
 /// PORT: Java's enum lives in `lib/vfs`; blaze_vfs does not port it (it only matters on Windows
 /// there), but its `name()` is part of this action's key, so it is ported here.
+// PORT: skipped, serialization for remote analysis caching (not ported, ruling 2026-11-19 (1)): SymlinkTargetType.Codec.<init>
 // Java: com/google/devtools/build/lib/vfs/SymlinkTargetType.java:26 SymlinkTargetType
 #[allow(non_camel_case_types, clippy::upper_case_acronyms)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

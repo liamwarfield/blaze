@@ -601,15 +601,18 @@ impl FileStateValue {
 impl fmt::Display for FileStateValue {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            // Java overrides toString for these two with MoreObjects.toStringHelper.
-            // PORT: Java prints the digest array's identity hash ("[B@1b2c3d"); Blaze prints the
-            // prettyPrint form of the digest instead.
-            FileStateValue::RegularFileWithDigest { size, .. } => write!(
-                f,
-                "RegularFileStateValueWithDigest{{digest={}, size={}}}",
-                self.pretty_print(),
-                size
-            ),
+            // Java overrides toString for these two with MoreObjects.toStringHelper, which prints
+            // an array value's elements (`Arrays.deepToString`; signed bytes).
+            // Java: com/google/devtools/build/lib/actions/FileStateValue.java:358 RegularFileStateValueWithDigest.toString
+            FileStateValue::RegularFileWithDigest { size, digest } => {
+                let bytes: Vec<String> = digest.iter().map(|b| (*b as i8).to_string()).collect();
+                write!(
+                    f,
+                    "RegularFileStateValueWithDigest{{digest=[{}], size={}}}",
+                    bytes.join(", "),
+                    size
+                )
+            }
             FileStateValue::RegularFileWithContentsProxy {
                 size,
                 contents_proxy,

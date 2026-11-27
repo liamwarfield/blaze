@@ -9,7 +9,6 @@ use crate::environment::{BubbleErrorInfo, EnvState, Environment, PendingDep};
 use crate::evaluation_result::EvaluationResult;
 use crate::event_filter::EventFilter;
 use crate::graph_inconsistency_receiver::{GraphInconsistencyReceiver, Inconsistency};
-#[cfg(test)]
 use crate::graph_listener::Context;
 use crate::in_memory_graph::InMemoryGraphImpl;
 pub(crate) use crate::in_memory_graph::{DoneEntry, DoneKind, Node};
@@ -174,6 +173,32 @@ impl ExtendedEventHandler for NoopEventHandler {
 /// Settings for one evaluation.
 // Java: com/google/devtools/build/skyframe/EvaluationContext.java:30 EvaluationContext
 #[derive(Clone)]
+// PORT: the getters and the builder are the public fields and struct-literal construction.
+// Java: com/google/devtools/build/skyframe/EvaluationContext.java:63 EvaluationContext.getParallelism
+// Java: com/google/devtools/build/skyframe/EvaluationContext.java:71 EvaluationContext.getKeepGoing
+// Java: com/google/devtools/build/skyframe/EvaluationContext.java:75 EvaluationContext.getEventHandler
+// Java: com/google/devtools/build/skyframe/EvaluationContext.java:87 EvaluationContext.storeExactCycles
+// Java: com/google/devtools/build/skyframe/EvaluationContext.java:127 EvaluationContext.detectCycles
+// Java: com/google/devtools/build/skyframe/EvaluationContext.java:131 EvaluationContext.builder
+// Java: com/google/devtools/build/skyframe/EvaluationContext.java:135 EvaluationContext.newBuilder
+// Java: com/google/devtools/build/skyframe/EvaluationContext.java:153 EvaluationContext.Builder.<init>
+// Java: com/google/devtools/build/skyframe/EvaluationContext.java:155 EvaluationContext.Builder.copyFrom
+// Java: com/google/devtools/build/skyframe/EvaluationContext.java:171 EvaluationContext.Builder.setParallelism
+// Java: com/google/devtools/build/skyframe/EvaluationContext.java:183 EvaluationContext.Builder.setKeepGoing
+// Java: com/google/devtools/build/skyframe/EvaluationContext.java:189 EvaluationContext.Builder.setEventHandler
+// Java: com/google/devtools/build/skyframe/EvaluationContext.java:215 EvaluationContext.Builder.setStoreExactCycles
+// Java: com/google/devtools/build/skyframe/EvaluationContext.java:221 EvaluationContext.Builder.setDetectCycles
+// Java: com/google/devtools/build/skyframe/EvaluationContext.java:227 EvaluationContext.Builder.build
+// PORT: skipped, the evaluator runs functions on its own threads (no executor is passed in): EvaluationContext.getExecutor, EvaluationContext.Builder.setExecutor
+// PORT: skipped, flags only the parallel evaluator's state dropping and Skymeld scheduling read (not observable in output): EvaluationContext.isExecutionPhase, EvaluationContext.mergingSkyframeAnalysisExecutionPhases, EvaluationContext.Builder.setExecutionPhase, EvaluationContext.Builder.setMergingSkyframeAnalysisExecutionPhases
+// PORT: skipped, SkyKeyComputeState (getState) is not ported, so there is no temporary state to drop: EvaluationContext.UnnecessaryTemporaryStateDropper.drop, EvaluationContext.UnnecessaryTemporaryStateDropperReceiver.onEvaluationStarted, EvaluationContext.UnnecessaryTemporaryStateDropperReceiver.onEvaluationFinished, EvaluationContext.getUnnecessaryTemporaryStateDropperReceiver, EvaluationContext.Builder.setUnnecessaryTemporaryStateDropperReceiver
+// PORT: skipped, the parallel evaluator's visitor and its scheduler (the blocking evaluator computes deps on the requesting thread or a new one; evaluator.rs): NodeEntryVisitor.PartialReevaluationRunnableMaker.make, NodeEntryVisitor.<init>, NodeEntryVisitor.waitForCompletion, NodeEntryVisitor.registerExternalDeps, NodeEntryVisitor.shouldPreventNewEvaluations, NodeEntryVisitor.noteCrash, NodeEntryVisitor.getCrashes
+// PORT: skipped, (as above): NodeEntryVisitor.getExceptionLatchForTestingOnly, NodeEntryVisitor.enqueuePartialReevaluation, NodeEntryVisitor.getMailbox, ParallelEvaluatorErrorClassifier.instance, ParallelEvaluatorErrorClassifier.<init>, ParallelEvaluatorErrorClassifier.classifyException
+// PORT: skipped, (as above): ParallelEvaluatorContext.RunnableMaker.make, ParallelEvaluatorContext.getGraph, ParallelEvaluatorContext.getMinimalVersion, ParallelEvaluatorContext.keepGoing, ParallelEvaluatorContext.getVisitor, ParallelEvaluatorContext.getProgressReceiver, ParallelEvaluatorContext.getEmittedEventState
+// PORT: skipped, (as above): ParallelEvaluatorContext.getReplayingNestedSetEventVisitor, ParallelEvaluatorContext.getReporter, ParallelEvaluatorContext.getSkyFunctions, ParallelEvaluatorContext.getStoredEventFilter, ParallelEvaluatorContext.getErrorInfoManager, ParallelEvaluatorContext.getExecutor, ParallelEvaluatorContext.stateCache, ParallelEvaluatorContext.NestedSetEventReceiver.<init>
+// PORT: skipped, (as above; an error or an interrupt ends the evaluation through Result values, not a scheduler exception): SchedulerException.ofInterruption, SchedulerException.getFailedValue, SchedulerException.getErrorInfo, SchedulerException.getRdepsToBubbleUpTo
+// PORT: skipped, (as above; deps are declared as they are requested): GraphTraversingHelper.declareDependenciesAndCheckIfValuesMissing, GraphTraversingHelper.<init>
+// PORT: skipped, the one caller, QueryTransitivePackagePreloader (detectCycles(false)), runs with SimpleCycleDetector here; its errors and output matched the oracle (server-4 cycle cases q_target, q_suite): ShortCircuitingCycleDetector.<init>, ShortCircuitingCycleDetector.checkForCycles, ShortCircuitingCycleDetector.MarkCycle.<init>, ShortCircuitingCycleDetector.MarkCycle.run
 pub struct EvaluationContext {
     pub keep_going: bool,
     pub parallelism: usize,
@@ -2059,11 +2084,25 @@ impl<'e> Run<'e> {
                 );
 
             for child_to_restart in &children_to_restart {
+                // getBatch(key, Reason.REWINDING, childrenToRestart): for rewinding the in-memory
+                // graph creates the children it lacks (createIfAbsentBatch), e.g. the key of an
+                // action template, which no function requests but the rewind graph names as the
+                // generating action of its tree artifact. Marking a new entry dirty is a no-op.
+                // Java: com/google/devtools/build/skyframe/InMemoryGraphImpl.java:155 InMemoryGraphImpl.getBatch
                 let child_entry = check_not_null!(
-                    self.ev.graph.get_if_present(child_to_restart),
+                    Some(self.ev.graph.create_if_absent(child_to_restart)),
                     "Missing child for rewinding: {:?} (parent={:?})",
                     child_to_restart,
                     key
+                );
+                // Java's NotifyingNodeEntry.markDirty tells the graph listeners before and after.
+                // Java: src/test/java/com/google/devtools/build/skyframe/NotifyingHelper.java:300 NotifyingHelper.NotifyingNodeEntry.markDirty
+                notify_graph_listener!(
+                    self.ev.graph,
+                    child_to_restart,
+                    MarkDirty,
+                    Before,
+                    Context::DirtyType(DirtyType::Rewind)
                 );
                 let marked = {
                     let mut state = child_entry.lock();
@@ -2071,6 +2110,16 @@ impl<'e> Run<'e> {
                     state.refresh_snapshot();
                     marked
                 };
+                notify_graph_listener!(
+                    self.ev.graph,
+                    child_to_restart,
+                    MarkDirty,
+                    After,
+                    Context::MarkDirtyAfter(crate::graph_listener::MarkDirtyAfterContext {
+                        dirty_type: DirtyType::Rewind,
+                        actually_dirtied: marked.is_some(),
+                    })
+                );
                 if marked.is_some() {
                     self.progress().dirtied(child_to_restart, DirtyType::Rewind);
                 }
@@ -3108,6 +3157,8 @@ impl<'e> Run<'e> {
         // Construct the definitive error info, if there is one.
         let error_info = match error_info {
             Some(e) => Some(e),
+            // Java: com/google/devtools/build/skyframe/ErrorInfoManager.java:31 ErrorInfoManager.getErrorInfoToUse
+            // Java: com/google/devtools/build/skyframe/ErrorInfoManager.java:42 ErrorInfoManager.UseChildErrorInfoIfNecessary.<init>
             // Java: com/google/devtools/build/skyframe/ErrorInfoManager.java:55 UseChildErrorInfoIfNecessary.getErrorInfoToUse
             None if child_error_infos.is_empty() => None,
             None => {

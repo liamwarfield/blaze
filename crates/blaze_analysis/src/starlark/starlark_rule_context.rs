@@ -2176,9 +2176,10 @@ fn ctx_methods(builder: &mut MethodsBuilder) {
             .build();
         let heap = eval.heap();
         Ok(heap.alloc(starlark::values::tuple::AllocTuple([
-            crate::rule::depsets::depset_value(&crate::rule::depsets::artifacts_to_depset(
-                helper.get_resolved_tools(),
-            )),
+            crate::rule::depsets::depset_value(
+                heap,
+                &crate::rule::depsets::artifacts_to_depset(helper.get_resolved_tools()),
+            ),
             heap.alloc(AllocList::EMPTY),
         ])))
     }
