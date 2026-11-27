@@ -91,6 +91,25 @@
 > merged analysis and execution together with a kept graph): in a server's later commands an
 > external repository is not planted in the execroot and the test listener misses a target
 > whose build-driver node is cached (`bazel_java_test` and its toolchain variants).
+>
+> **Commit `8ecc520` (checkpoint 46), both modes** (2026-11-26 23:12 to 2026-11-27 01:10, suite
+> mode, 237 of 237 targets each; binary sha256 `238f2559…`, debug build from a clean checkout;
+> builders paused on Cargo, but one implementer's randomized test, started before the run, kept
+> running beside it). **Server mode** (label `blaze-8ecc520-daemon`, 4,049 s): **190 of 211
+> targets and 2,779 of 2,878 functions**; 48 lost, 51 unmeasured. Against `38cd662`: 41 gained,
+> 12 lost, 49 unmeasured. New defect: **7 targets timed out** (none in any earlier server-mode
+> run) because a command hangs in the server, most often during analysis
+> (`bazel_execute_testlog`, `bazel_with_jdk_test`, `disk_cache_test`, `execroot_test`,
+> `external_integration_test`, `bazel_worker_multiplexer_test`, `integration:run_test`); the
+> unmeasured functions are behind those. **One process per command** (label `blaze-8ecc520`,
+> 3,005 s): **169 of 211 targets and 2,715 of 2,878 functions**; against `b216603`: 2 gained, 9
+> lost, 7 unmeasured (a suite stop in `build_without_the_bytes_test`). The 9 lost are one
+> `unported!` of the port of merged analysis and execution, work in progress at this
+> checkpoint (`SkyframeBuildView.analyzeAndExecuteTargets`, conflict checking without
+> incrementality tracking: `discard_graph_edges_test`, one function of
+> `discard_analysis_cache_test`). Both defects are assigned. Failures by family:
+> `~/.cache/blaze/work/root-runs/8ecc520-failures/by-family.tsv` (163 rows) and
+> `8ecc520-daemon-failures/by-family.tsv` (99 rows).
 
 
 First full run of Bazel's own shell and Python integration tests (237 targets) against Blaze,

@@ -1,6 +1,6 @@
 # Status
 
-Updated 2026-11-26, 22:20 (root). Running. Numbers cite their evidence; history is in
+Updated 2026-11-27, 01:25 (root). Running. Numbers cite their evidence; history is in
 `git log` and `docs/decisions.md`. Quota rule (user, 2026-11-26): pause when 20% of the weekly
 all-model quota remains; the user watches it and sends the pause.
 
@@ -10,13 +10,16 @@ all-model quota remains; the user watches it and sends the pause.
    (`scripts/reap-idle-servers` every three minutes, `scripts/clean-target` below 90 GB).
 2. Each implementer continues in its own thread with a message ("continue where you stopped;
    first check your files"); the threads are listed under "Running".
-3. A checkpoint: tree compiles, protected paths staged out, clean-checkout check, exact binary
-   from a worktree, `scripts/incremental/reuse-check` on it; then the reviews owed.
+3. A checkpoint: `~/.cache/blaze/work/root-runs/checkpoint.sh "<subject>"` (tree compiles,
+   protected paths staged out, clean-checkout check, exact binary from a worktree,
+   `scripts/incremental/reuse-check`; it pushes only when the clean-checkout check passes).
+   Then the reviews owed.
 
 ## State
 
-- **Checkpoint 35 is `5f68157`** (code commit `db8c652`); it builds from a clean checkout.
-  Commits after it are documents and the audited comparison tools.
+- **Checkpoint 46 is `8ecc520`**; it builds from a clean checkout (binary
+  `~/.cache/blaze/work/root-runs/blaze-8ecc520`). Checkpoint 45 (`e205a17`) does not build and
+  was pushed by root's error; 46 repairs it.
 - **Accepted baseline is still `ef66f55`.** Nothing after it has been through acceptance.
 - **Outer measure** (Bazel's own integration suite; the oracle passes 211 targets and 2,878
   functions; `docs/upstream-tests.md`):
@@ -30,34 +33,37 @@ all-model quota remains; the user watches it and sends the pause.
   | `a673e29` | `blaze-a673e29` | 163 | 2,679 |
   | `38cd662`, server mode (opt-in) | `blaze-38cd662-daemon` | 190 | 2,803 |
   | `b216603` | `blaze-b216603` | 168 | 2,729 |
-  | `b216603`, server mode (opt-in) | `blaze-b216603-daemon` | 190 | 2,774 (22 lost against `38cd662`, assigned) |
+  | `b216603`, server mode (opt-in) | `blaze-b216603-daemon` | 190 | 2,774 |
+  | `8ecc520` | `blaze-8ecc520` | 169 | 2,715 (9 lost against `b216603`: one `unported!` of the Skymeld port; assigned) |
+  | `8ecc520`, server mode (opt-in) | `blaze-8ecc520-daemon` | 190 | 2,779 (7 targets timed out on a hang in the server, 51 functions unmeasured; assigned) |
 
-  Failures of the last run by family: `~/.cache/blaze/work/root-runs/38cd662-daemon-failures/by-family.tsv (server mode) and a673e29-failures/ (one process)`.
-- **Referee guard** at checkpoint 38 (label `guard-374c631`, the commit's own binary): rows 39,
-  gained 2, regressed 0.
-- **Coverage map at `e8b79c0`** (`docs/coverage/README.md`): about 106k ± 15k lines of needed
-  Java not ported, 13k of them out of scope. To be regenerated at the next checkpoint.
+  Failures of the last runs by family: `~/.cache/blaze/work/root-runs/8ecc520-failures/by-family.tsv`
+  (one process) and `8ecc520-daemon-failures/by-family.tsv` (server mode).
+- **Referee guard** at checkpoint 40 (label `guard-a673e29`): one process 13,852 matching,
+  regressed 0; daemon 13,858 of 13,860, regressed 0. Not rerun at `8ecc520` yet.
+- **Coverage map after checkpoint 39** (`docs/coverage/README.md`): about 86k ± 15k lines of
+  needed Java not ported or not marked, 13k of them out of scope. To be regenerated.
 
 ## Running (Opus implementers, one thread each)
 
 | Thread | Doing now | Then |
 | --- | --- | --- |
-| Incremental builds (I3) | round-2 review findings: repeated `--invocation_id`, two `--watchfs` paths | remote sequences against the oracle, then lifting the fail-safe; heap handles (D7); the randomized test |
-| Execution, now Skymeld | per-build effects of the build driver in a server's later commands (the server-mode regression of checkpoint 43) | merged analysis and execution as Java has it |
-| Remote | HTTP cache upload (review H1), two suite regressions | chunking, lease extension, the remote cluster of the map |
-| Query | `ctx.var` key tracking inside the cast helpers (review P63-1) | C++ rules cluster |
-| Metrics, analysis | BES follow-ups | analysis-core cluster, feature flags, `map_directory` |
-| Rewinding, configuration | review S2 items; include scanning for tree artifacts and header modules | configuration cluster |
-| Server, packages | two interpreter patches (provider tracebacks, lambda repr) | packages-and-loading cluster |
-| Sweep | in-process multi-command test fixture | `dump` over a kept graph, small clusters |
+| Incremental builds (I3) | randomized test (25 seeds, unit `i3-fuzz`); round-2 findings reported fixed | final report, then review round 3; remote sequences against the oracle; lifting the fail-safe |
+| Execution, Skymeld | the server hang of `8ecc520` (stacks, cause, fix) | conflict checking without incrementality tracking (`discard_graph_edges_test`); rest of Skymeld |
+| Remote | pruning its work directories; interrupt timing, connection pool, lease extension | the remote cluster of the map |
+| Query | `LtoBackendActionTemplate`, query test harnesses, query shell tests | C++ rules cluster |
+| Metrics, analysis | Starlark debugger (with review item Q4-1), dormant dependencies, `map_directory` | metrics-collector tests on the fixture; analysis-core cluster |
+| Rewinding, configuration | review round 3 items (IS-2 test, IS-3); two test hooks; 37 RewindingTest cases | clusters `concurrency`, `vfs-and-hashing`, `base-libraries` |
+| Server, packages | patch 0068 findings (P1-1, P1-2, P1-3) | cycle reporters, packages-and-loading cluster, skyframe-engine cluster |
+| Sweep | `mobile-install`; the 14 missing edges of `dump --skyframe=summary` | remaining `unported!` table |
 
 ## Next, in this order
 
-1. Re-reviews owed: incremental builds round 3, remote round 9, query round 4 (each when its
-   implementer reports); first reviews of include scanning's remainder, SkyQuery passed with
-   S2 items, Skymeld when it lands.
-2. A suite run in both modes on the first checkpoint after the Skymeld regression is fixed.
-   Server mode at `38cd662` is the best measured: 2,803 of 2,878.
+1. The hang in server mode and the Skymeld `unported!`; then a checkpoint and a suite run in
+   both modes. Best measured so far: server mode at `38cd662`, 2,803 of 2,878.
+2. Re-reviews owed: remote round 9 (running), rewinding round 4 (IS-2, IS-3), patches round 2
+   (0068), incremental builds round 3 (when its implementer reports); first reviews of Skymeld,
+   `mobile-install`, hash functions as they land.
 3. The server as the default: after the incremental review passes, plus referee finding C1.
 4. The next extractor change of the referee (A5-A8, C1, C2), with one renormalisation, and a
    harness batch (functions left unmeasured after an output overflow rerun one by one).
@@ -73,7 +79,7 @@ all-model quota remains; the user watches it and sends the pause.
 - Whether to delete the remote lead's old run directories (133 GB in `oracle-out/ur-remote`; about 160 GB under
   `~/.cache/blaze/oracle-out/ur-remote` and `~/.cache/blaze/work/remote`; keep-list in the
   lead's report). (The leftover remote-worker processes ended with the reboot.) Disk was at
-  116 GB free on 2026-11-25 before a target cleanup (150 GB after).
+  100 GB free on 2026-11-27, 01:10, after a target cleanup (81 GB before).
 - Whether the vendored starlark-rust crates' own unit tests may be run (the command was
   refused by the permission check; AGENTS.md forbids bare Cargo and a separate target
   directory).
@@ -92,7 +98,7 @@ all-model quota remains; the user watches it and sends the pause.
 | Bzlmod, repositories, downloader, client | 4 | PASS |
 | Analysis, configuration, cquery/aquery | 3 | PASS |
 | Execution, sandbox, build driver | 4 (at ef66f55) | PASS |
-| Remote cache and execution, HTTP cache, downloader, repo contents cache | 8 (at dad60f0) | STOP: H1 (HTTP upload reads the response late) |
+| Remote cache and execution, HTTP cache, downloader, repo contents cache | 8 (at dad60f0) | STOP: H1 (HTTP upload reads the response late); round 9 running at 8ecc520 |
 | Comparison tools; referee batches 3 and 3b | 2026-11-26 | PASS |
 | Byte strings | 2 (at 780fceb) | PASS |
 | Incremental evaluator I1; key equality I2 | at 5f68157 | PASS |
@@ -105,8 +111,10 @@ all-model quota remains; the user watches it and sends the pause.
 | Reporting, build events, metrics; extra actions | at 38cd662 | PASS |
 | Build Event Service client | 2 (at dad60f0) | PASS |
 | Coverage | 2 (at e476a59) | PASS |
-| Query formatters, genquery, SkyQuery | 3 (at b216603) | STOP: P63-1 (two more whole-dict readers) |
-| Action rewinding, include scanning, `testing.analysis_test` | 2 (at b216603) | STOP on AT-1 only (fixed by root at c434f6c, re-check owed) |
+| Query formatters, genquery, SkyQuery | 4 (at 8ecc520) | PASS |
+| Action rewinding, include scanning, `testing.analysis_test` | 3 (at 8ecc520) | STOP: IS-2 (order of used header modules; one line changed by root, re-check owed) |
+| Interpreter patches 0066-0068 | 1 (at 8ecc520) | STOP: P1-1, P1-2 (patch 0068: `dict == view`, `json.encode` of a view) |
+| Multi-command test fixture, ConfigCommandTest, DumpCommandTest, `dump` over a kept graph | 1 (at 8ecc520) | PASS |
 
 Open items the reviewers left as non-blocking are listed at the end of each report.
 
