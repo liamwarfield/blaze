@@ -623,3 +623,11 @@ Each entry: date, decision, why, who decided.
   command (`guard-a673e29`): 13,852 matching, 58 allowed, rows 39, gained 2, regressed 0;
   daemon mode (`guardd-a673e29`): 13,858 matching of 13,860 judged, 56 allowed, gained 2,
   regressed 0. Root.
+- 2026-11-26. Round 2 of the I3 review: STOP at 38cd662 on three stale paths found by reading:
+  S1-A (the per-command sync is keyed on the command id, which `--invocation_id` lets a user
+  repeat: the second command skips the file check; present since ce81d5a, missed in round 1),
+  S1-B (`--watchfs` loses a watch after a directory rename), S1-C (`--watchfs` on a new graph
+  skips Java's first check). The remote fail-safe was found complete except through S1-A; the
+  cycle fix is right. The server stays opt-in. Also at 38cd662: extra actions PASS (round 2);
+  the query fixes hold, one new S1 in patch 0063 (a `ctx.var` passed whole to a native records
+  no key). Root.
