@@ -5,9 +5,8 @@
 //! keys' `hashCode` (of `Label`, `PathFragment`, configuration checksums, ... and the map's
 //! sizing history); that order is not reproduced. Every dump that lists nodes lists them sorted
 //! by canonical name, and the function counts of `dumpCount` that are tied are sorted by
-//! function name (Java: Guava `HashMultiset`, insertion order, i.e. the graph's order). A key's
-//! canonical name is its `Debug` text (Java `SkyKey.getCanonicalName()`,
-//! `functionName() + ":" + argument()`).
+//! function name (Java: Guava `HashMultiset`, insertion order, i.e. the graph's order). For a
+//! key's canonical name see [`canonical_name`].
 
 use std::collections::BTreeMap;
 use std::collections::HashSet;
@@ -28,8 +27,20 @@ struct DumpNode {
     reverse_deps: Vec<SkyKey>,
 }
 
+/// `SkyKey.getCanonicalName()`: `functionName() + ":" + argument()`.
+///
+/// PORT: a key's `Debug` is Java's `toString()`. For an `AbstractSkyKey` that is already
+/// `functionName + ":" + arg`; a key that is its own argument (`argument()` is `this`:
+/// `GlobsValue.Key`, `TargetPatternKey`, ...) prints only itself, and gets the function name
+/// prepended.
 fn canonical_name(key: &SkyKey) -> String {
-    format!("{key:?}")
+    let debug = format!("{key:?}");
+    let prefix = format!("{}:", key.function_name().0);
+    if debug.starts_with(&prefix) {
+        debug
+    } else {
+        format!("{prefix}{debug}")
+    }
 }
 
 /// `getInMemoryGraph().getAllNodeEntries()`, sorted by canonical name (see the module

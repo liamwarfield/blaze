@@ -123,6 +123,10 @@ pub(crate) fn create_inputs(
 }
 
 impl Action for ExtraAction {
+    fn java_class_name(&self) -> Option<&'static str> {
+        Some("com.google.devtools.build.lib.analysis.extra.ExtraAction")
+    }
+
     fn abstract_action(&self) -> &AbstractAction {
         self.spawn_action.abstract_action()
     }

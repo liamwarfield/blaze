@@ -42,8 +42,16 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Fixture {
+        Fixture::with_file_system(|unix| unix)
+    }
+
+    /// Java `setupRoot(fs)`: the test's root on `wrap(unix_file_system)` (Java's tests use a
+    /// `CustomInMemoryFs` subclass; here a `FaultInjectingFileSystem` over a temporary directory).
+    fn with_file_system(
+        wrap: impl FnOnce(blaze_vfs::FileSystemRef) -> blaze_vfs::FileSystemRef,
+    ) -> Fixture {
         let dir = tempfile::tempdir().unwrap();
-        let fs = UnixFileSystem::create(DigestHashFunction::Sha256);
+        let fs = wrap(UnixFileSystem::create(DigestHashFunction::Sha256));
         let root = fs.get_path(dir.path().to_str().unwrap());
         Fixture { _dir: dir, root }
     }
@@ -151,13 +159,66 @@ fn test_missing_non_mandatory_artifact() {
     assert!(matches!(value, ArtifactValue::Missing(_)));
 }
 
+// Java: src/test/java/com/google/devtools/build/lib/skyframe/ArtifactFunctionTest.java ArtifactFunctionTest.testUnreadableInputWithFsWithAvailableDigest
 #[test]
-#[ignore = "needs a custom in-memory file system returning a digest for an unreadable file"]
-fn test_unreadable_input_with_fs_with_available_digest() {}
+fn test_unreadable_input_with_fs_with_available_digest() {
+    let expected_digest: Vec<u8> = vec![1, 2, 3, 4];
+    let digest = expected_digest.clone();
+    let f = Fixture::with_file_system(move |unix| {
+        blaze_vfs::testing::FaultInjectingFileSystem::new(
+            unix,
+            blaze_vfs::testing::Hooks {
+                get_digest: Some(Box::new(move |path| {
+                    PathFragment::create(path)
+                        .get_base_name()
+                        .eq("unreadable")
+                        .then(|| Ok(digest.clone()))
+                })),
+                ..Default::default()
+            },
+        )
+    });
+    let input = f.create_source_artifact("unreadable");
+    let input_path = input.get_path();
+    std::fs::write(input_path.get_path_string(), "dummynotused").unwrap();
+    input_path.chmod(0).unwrap();
 
+    let value = f.evaluate_artifact_value(&input).unwrap();
+
+    let stat = input_path.stat().unwrap();
+    let ArtifactValue::File(value) = value else {
+        panic!("expected a file value, got {value:?}");
+    };
+    assert_eq!(value.get_size(), stat.get_size());
+    assert_eq!(value.get_digest(), Some(expected_digest.as_slice()));
+    input_path.chmod(0o644).unwrap();
+}
+
+// Java: src/test/java/com/google/devtools/build/lib/skyframe/ArtifactFunctionTest.java ArtifactFunctionTest.testIOException_endToEnd
 #[test]
-#[ignore = "needs a custom in-memory file system whose statIfFound throws"]
-fn test_io_exception_end_to_end() {}
+fn test_io_exception_end_to_end() {
+    let f = Fixture::with_file_system(|unix| {
+        blaze_vfs::testing::FaultInjectingFileSystem::new(
+            unix,
+            blaze_vfs::testing::Hooks {
+                stat: Some(Box::new(|path, _follow| {
+                    (PathFragment::create(path).get_base_name() == "bad")
+                        .then(|| Err(std::io::Error::other("beep")))
+                })),
+                ..Default::default()
+            },
+        )
+    });
+    let source_artifact = f.create_source_artifact("bad");
+    let e = f.evaluate_artifact_value(&source_artifact).unwrap_err();
+    assert_eq!(
+        e.to_string(),
+        format!(
+            "error reading file '{}': beep",
+            source_artifact.get_exec_path_string()
+        )
+    );
+}
 
 #[test]
 #[ignore = "needs a tree-artifact-producing action in ArtifactFunctionTestCase's action graph"]

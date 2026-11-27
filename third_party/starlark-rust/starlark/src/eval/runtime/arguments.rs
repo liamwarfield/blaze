@@ -194,6 +194,11 @@ pub(crate) trait ArgumentsImpl<'v, 'a>: Debug {
     fn names(&self) -> ArgNames<'a, 'v, Self::ArgSymbol>;
     fn args(&self) -> Option<Value<'v>>;
     fn kwargs(&self) -> Option<Value<'v>>;
+    /// BLAZE PATCH 0068: Java Eval.evalCall's `**` accepts any `Map`: a map that is not a dict // BLAZE PATCH 0068
+    /// is replaced by a dict of its entries. // BLAZE PATCH 0068
+    fn java_map_kwargs(&mut self, _heap: Heap<'v>) -> crate::Result<()> { // BLAZE PATCH 0068
+        Ok(()) // BLAZE PATCH 0068
+    } // BLAZE PATCH 0068
 }
 
 /// Arguments object is passed from the starlark interpreter to function implementation
@@ -253,6 +258,15 @@ impl<'v, 'a, S: ArgSymbol> ArgumentsImpl<'v, 'a> for ArgumentsFull<'v, 'a, S> {
     fn kwargs(&self) -> Option<Value<'v>> {
         self.kwargs
     }
+
+    fn java_map_kwargs(&mut self, heap: Heap<'v>) -> crate::Result<()> { // BLAZE PATCH 0068
+        if let Some(kwargs) = self.kwargs { // BLAZE PATCH 0068
+            if let Some(m) = crate::values::types::dict::globals::java_map_as_dict(kwargs, heap) { // BLAZE PATCH 0068
+                self.kwargs = Some(m?); // BLAZE PATCH 0068
+            } // BLAZE PATCH 0068
+        } // BLAZE PATCH 0068
+        Ok(()) // BLAZE PATCH 0068
+    } // BLAZE PATCH 0068
 }
 
 /// Positional-only arguments, smaller and faster than `ArgumentsFull`.

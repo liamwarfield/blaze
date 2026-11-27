@@ -107,7 +107,6 @@ impl ViewCreationFailedException {
 /// The various attributes will be used later on to construct the FailureDetail in
 /// `BuildView.createAnalysisFailureDetail`.
 ///
-/// PORT: `aspectKeysForConflictReporting` (Skymeld, aspects) is not ported.
 // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:116 SkyframeErrorProcessor.ErrorProcessingResult
 // (`newBuilder()` is `Default`, and the aggregating builder is the value itself.)
 // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:126 SkyframeErrorProcessor.ErrorProcessingResult.newBuilder
@@ -127,9 +126,16 @@ pub struct ErrorProcessingResult {
     /// errors were all analysis errors.
     // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:154 SkyframeErrorProcessor.ErrorProcessingResult.AggregatingBuilder.setExecutionDetailedExitCode
     execution_detailed_exit_code: Option<blaze_util::DetailedExitCode>,
+    /// `aspectKeysForConflictReporting`: the aspect keys of the intra-aspect action conflicts.
+    aspect_keys_for_conflict_reporting: Vec<blaze_actions::ActionLookupKeyRef>,
 }
 
 impl ErrorProcessingResult {
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:122 SkyframeErrorProcessor.ErrorProcessingResult.aspectKeysForConflictReporting
+    pub fn aspect_keys_for_conflict_reporting(&self) -> &[blaze_actions::ActionLookupKeyRef] {
+        &self.aspect_keys_for_conflict_reporting
+    }
+
     pub fn has_loading_error(&self) -> bool {
         self.has_loading_error
     }
@@ -162,6 +168,14 @@ impl ErrorProcessingResult {
                 self.execution_detailed_exit_code.take(),
                 individual_error_processing_result.execution_detailed_exit_code,
             );
+        if let Some(aspect_key) =
+            individual_error_processing_result.aspect_key_for_conflict_reporting
+            && !self
+                .aspect_keys_for_conflict_reporting
+                .contains(&aspect_key)
+        {
+            self.aspect_keys_for_conflict_reporting.push(aspect_key);
+        }
     }
 }
 
@@ -178,6 +192,7 @@ struct IndividualErrorProcessingResult {
     /// PORT: an `ImmutableSet` copy of a `HashSet<Label>` in Java, whose iteration order (the
     /// order of the `LoadingFailureEvent`s) is not reproduced; insertion order here.
     loading_root_causes: IndexSet<Label>,
+    aspect_key_for_conflict_reporting: Option<blaze_actions::ActionLookupKeyRef>,
 }
 
 impl IndividualErrorProcessingResult {
@@ -218,6 +233,13 @@ enum AnalysisException<'a> {
     /// `ExecGroupCollection.InvalidExecGroupException` (a `SaneAnalysisException`), carried by
     /// its message.
     InvalidExecGroup(&'a str),
+    /// `TopLevelConflictException` (Skymeld's `BuildDriverFunction`).
+    TopLevelConflict(&'a crate::top_level_conflict_exception::TopLevelConflictException),
+    /// `TargetCompatibilityCheckException` (a `SaneAnalysisException`; Skymeld's
+    /// `BuildDriverFunction`).
+    TargetCompatibilityCheck(
+        &'a blaze_analysis::constraints::top_level_constraint_semantics::TargetCompatibilityCheckException,
+    ),
     /// Any other class.
     Other,
 }
@@ -307,7 +329,48 @@ fn classify<'a>(exception: &'a (dyn std::error::Error + 'static)) -> AnalysisExc
     if let Some(e) = exception.downcast_ref::<BzlLoadFailedException>() {
         return AnalysisException::BzlLoadFailed(e);
     }
+    if let Some(e) =
+        exception.downcast_ref::<crate::top_level_conflict_exception::TopLevelConflictException>()
+    {
+        return AnalysisException::TopLevelConflict(e);
+    }
+    if let Some(e) = exception.downcast_ref::<
+        blaze_analysis::constraints::top_level_constraint_semantics::TargetCompatibilityCheckException,
+    >() {
+        return AnalysisException::TargetCompatibilityCheck(e);
+    }
     AnalysisException::Other
+}
+
+/// `exception instanceof AbstractSaneAnalysisException` for the classes [`classify`] recognises
+/// (`BuildDriverFunction`'s `env.getValueOrThrow(actionLookupKey,
+/// AbstractSaneAnalysisException.class)`).
+// Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:174 BuildDriverFunction.compute
+pub(crate) fn is_sane_analysis_exception(exception: &(dyn std::error::Error + 'static)) -> bool {
+    matches!(
+        classify(exception),
+        AnalysisException::ActionConflict(_)
+            | AnalysisException::ConfiguredValueCreation(_)
+            | AnalysisException::BzlLoadFailed(_)
+            | AnalysisException::AspectCreation(_)
+            | AnalysisException::TopLevelAspectsDetailsBuildFailed(_)
+            | AnalysisException::InvalidExecGroup(_)
+            | AnalysisException::TargetCompatibilityCheck(_)
+    )
+}
+
+/// The aspect key of an `ActionConflictException` (`ace.getAspectKey()`): the key
+/// `ActionConflictException.withAspectKeyInfo` attached.
+fn aspect_key_of_action_conflict(
+    exception: &(dyn std::error::Error + 'static),
+) -> Option<blaze_actions::ActionLookupKeyRef> {
+    match exception.downcast_ref::<TopLevelStarlarkAspectFunctionException>() {
+        Some(TopLevelStarlarkAspectFunctionException::ActionConflictWithAspectKeyInfo {
+            aspect_key,
+            ..
+        }) => Some(blaze_actions::ActionLookupKeyRef::new(aspect_key.clone())),
+        _ => None,
+    }
 }
 
 /// The `FailureDetail` of a blaze_packages `DetailedExitCode` (`getFailureDetail()`).
@@ -354,6 +417,42 @@ pub fn process_analysis_errors(
     )
 }
 
+/// What `processErrors` throws: `ViewCreationFailedException` when the root cause is
+/// analysis-related, `BuildFailedException` / `TestExecException` (the [`RethrownException`])
+/// when it is execution-related.
+#[derive(Clone, Debug)]
+pub enum ProcessErrorsException {
+    ViewCreationFailed(ViewCreationFailedException),
+    Rethrown(RethrownException),
+}
+
+impl From<ViewCreationFailedException> for ProcessErrorsException {
+    fn from(e: ViewCreationFailedException) -> Self {
+        ProcessErrorsException::ViewCreationFailed(e)
+    }
+}
+
+/// `processErrors(result, ..., includeExecutionPhase)` of an evaluation that may hold
+/// execution-phase keys (`BuildDriverKey`s, the exclusive tests' `TestCompletionKey`s, the
+/// coverage artifacts).
+///
+/// PORT: `includeExecutionPhase` only selects which logging-only validity check runs
+/// (`assertValidAnalysisOrExecutionException`, skipped); the processing is the same.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:302 SkyframeErrorProcessor.processErrors
+pub fn process_errors_with_execution(
+    result: &EvaluationResult,
+    cycles_reporter: &CyclesReporter,
+    event_handler: &Arc<dyn ExtendedEventHandler>,
+    keep_going: bool,
+) -> Result<ErrorProcessingResult, ProcessErrorsException> {
+    process_errors_impl(
+        result.error_map(),
+        cycles_reporter,
+        event_handler,
+        keep_going,
+    )
+}
+
 /// Process errors encountered during analysis/execution.
 ///
 /// This method has different goals depending on --(no)keep_going:
@@ -377,6 +476,26 @@ pub(crate) fn process_errors(
     event_handler: &Arc<dyn ExtendedEventHandler>,
     keep_going: bool,
 ) -> Result<ErrorProcessingResult, ViewCreationFailedException> {
+    // processAnalysisErrors: `catch (BuildFailedException | TestExecException unexpected)`.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:240 SkyframeErrorProcessor.processAnalysisErrors
+    process_errors_impl(error_map, cycles_reporter, event_handler, keep_going).map_err(
+        |e| match e {
+            ProcessErrorsException::ViewCreationFailed(e) => e,
+            ProcessErrorsException::Rethrown(unexpected) => {
+                panic!(
+                    "IllegalStateException: Unexpected execution phase exception: {unexpected:?}"
+                )
+            }
+        },
+    )
+}
+
+fn process_errors_impl(
+    error_map: &[(SkyKey, ErrorInfo)],
+    cycles_reporter: &CyclesReporter,
+    event_handler: &Arc<dyn ExtendedEventHandler>,
+    keep_going: bool,
+) -> Result<ErrorProcessingResult, ProcessErrorsException> {
     let mut aggregating_result_builder = ErrorProcessingResult::default();
     let mut no_keep_going_analysis_exception_aspect: Option<ViewCreationFailedException> = None;
 
@@ -390,9 +509,9 @@ pub(crate) fn process_errors(
             event_handler,
         );
 
-        let error_key = get_effective_error_key(error_entry_key);
-        // PORT: skipped, assertValidAnalysisException: it only logs the origin of an unexpected
-        // exception class (BugReport.logUnexpected).
+        let error_key = &get_effective_error_key(error_entry_key);
+        // PORT: skipped, assertValidAnalysisException / assertValidAnalysisOrExecutionException:
+        // they only log the origin of an unexpected exception class (BugReport.logUnexpected).
         let nullable_cause = error_info.get_exception();
         check_state!(
             nullable_cause.is_some() || !error_info.get_cycle_info().is_empty(),
@@ -419,10 +538,8 @@ pub(crate) fn process_errors(
             &individual_error_processing_result,
         );
 
-        // PORT: an analysis evaluation holds no execution-phase node, so no cause is an
-        // execution exception (ActionExecutionException, InputFileErrorException,
-        // TestExecException, ArtifactNestedSetEvalException, TopLevelOutputException).
-        let is_execution_exception = false;
+        let execution_exception = nullable_cause.and_then(ExecutionExceptionCause::of);
+        let is_execution_exception = execution_exception.is_some();
         if keep_going {
             let cause_message = nullable_cause.map(|cause| cause.to_string());
             aggregating_result_builder.aggregate_single_result(individual_error_processing_result);
@@ -437,16 +554,16 @@ pub(crate) fn process_errors(
                 Some(throw_or_return_aspect_analysis_exception(
                     nullable_cause,
                     error_key,
+                    execution_exception.as_ref(),
                     /* has_execution_cycle= */
-                    individual_error_processing_result
-                        .execution_detailed_exit_code
-                        .is_some(),
+                    individual_error_processing_result.execution_detailed_exit_code
+                        == Some(cycle_code()),
                 )?);
         }
     }
 
     if let Some(e) = no_keep_going_analysis_exception_aspect {
-        return Err(e);
+        return Err(e.into());
     }
 
     Ok(aggregating_result_builder)
@@ -516,19 +633,36 @@ fn maybe_post_failure_events_for_non_conflict_error(
 /// over an aspect one.
 ///
 /// PORT: `Err` is Java's throw, `Ok` the exception returned for a top-level aspect.
-// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:467 SkyframeErrorProcessor.throwOrReturnAspectAnalysisException
+/// `execution_exception` is the cause when `isExecutionException(cause)`.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:473 SkyframeErrorProcessor.throwOrReturnAspectAnalysisException
 fn throw_or_return_aspect_analysis_exception(
     cause: Option<&SkyError>,
     error_key: &SkyKey,
+    execution_exception: Option<&ExecutionExceptionCause<'_>>,
     has_execution_cycle: bool,
-) -> Result<ViewCreationFailedException, ViewCreationFailedException> {
+) -> Result<ViewCreationFailedException, ProcessErrorsException> {
+    // If the error is execution-related: straightaway rethrow. No further steps required.
+    if let Some(execution_exception) = execution_exception {
+        // cause is not null for execution exceptions.
+        return Err(ProcessErrorsException::Rethrown(rethrow(
+            execution_exception,
+        )));
+    }
     // If a --nokeep_going build found a cycle, that means there were no other errors thrown
     // during evaluation (otherwise, it wouldn't have bothered to find a cycle). So the best
     // we can do is throw a generic build failure exception, since we've already reported the
     // cycles above. Analysis cycles are handled below.
     if has_execution_cycle {
-        // processAnalysisErrors: `catch (BuildFailedException | TestExecException unexpected)`.
-        panic!("IllegalStateException: Unexpected execution phase exception: BuildFailedException");
+        // throw new BuildFailedException(null, CYCLE_CODE)
+        return Err(ProcessErrorsException::Rethrown(
+            RethrownException::build_failed(crate::build_tool::BuildToolError::BuildFailed {
+                message: String::new(),
+                failure_detail: cycle_code()
+                    .get_failure_detail()
+                    .cloned()
+                    .expect("CYCLE_CODE has a failure detail"),
+            }),
+        ));
     }
 
     if let Some(aspect_key) = error_key.downcast::<TopLevelAspectsKey>() {
@@ -543,11 +677,13 @@ fn throw_or_return_aspect_analysis_exception(
         .downcast::<ConfiguredTargetKey>()
         .unwrap_or_else(|| panic!("ClassCastException: {:?}", error_key))
         .get_label();
-    Err(create_view_creation_failed_exception(
-        cause,
-        format!(
-            "Analysis of target '{}' failed; build aborted",
-            top_level_label
+    Err(ProcessErrorsException::ViewCreationFailed(
+        create_view_creation_failed_exception(
+            cause,
+            format!(
+                "Analysis of target '{}' failed; build aborted",
+                top_level_label
+            ),
         ),
     ))
 }
@@ -572,16 +708,20 @@ fn process_individual_error(
     // other cases like action conflict or execution-related errors.
     // TODO(b/249690006): Can we simplify things by moving aspects events here?
     if function_name == ASPECT.0 || function_name == TOP_LEVEL_ASPECTS.0 {
-        // PORT: TopLevelConflictException (Skymeld's BuildDriverFunction) is not ported; an
-        // analysis evaluation holds no execution exception (see `process_errors`).
-        // `aspectKeyForConflictReporting` (`ace.getAspectKey()`) only feeds Skymeld's conflict
-        // reporting, which is not ported.
+        let mut aspect_key_for_conflict_reporting = None;
         let exception_class = match exception {
             Some(e) => classify(&**e),
             None => AnalysisException::Other,
         };
-        if let AnalysisException::ActionConflict(ace) = exception_class {
+        if let AnalysisException::TopLevelConflict(tlce) = exception_class {
+            action_conflicts = tlce.get_transitive_action_conflicts().clone();
+        } else if let AnalysisException::ActionConflict(ace) = exception_class {
             action_conflicts.put(ace.get_attempted_action(), ace.clone());
+            aspect_key_for_conflict_reporting =
+                exception.and_then(|e| aspect_key_of_action_conflict(&**e));
+        } else if let Some(execution_exception) = exception.and_then(ExecutionExceptionCause::of) {
+            execution_detailed_exit_code =
+                Some(execution_exception.get_execution_detailed_exit_code());
         } else if !error_info.get_cycle_info().is_empty()
             && is_execution_cycle(error_info.get_cycle_info())
         {
@@ -592,16 +732,23 @@ fn process_individual_error(
             execution_detailed_exit_code,
             analysis_root_causes: Vec::new(),
             loading_root_causes: IndexSet::new(),
+            aspect_key_for_conflict_reporting,
         };
     }
 
     // Only possible with actions generating build-info.txt and build-changelist.txt.
-    if function_name == "ACTION_EXECUTION" {
-        blaze_util::unported!(
-            "SkyframeErrorProcessor.processIndividualError",
-            "ActionLookupData {:?}",
-            error_key
-        );
+    if function_name == blaze_actions::actions::action_lookup::ACTION_EXECUTION {
+        let exception = exception
+            .unwrap_or_else(|| panic!("NullPointerException: the exception of {:?}", error_key));
+        return IndividualErrorProcessingResult {
+            action_conflicts: ActionConflicts::new(),
+            execution_detailed_exit_code: Some(get_execution_detailed_exit_code_from_cause(
+                exception,
+            )),
+            analysis_root_causes: Vec::new(),
+            loading_root_causes: IndexSet::new(),
+            aspect_key_for_conflict_reporting: None,
+        };
     }
 
     let ct_key = error_key
@@ -619,8 +766,12 @@ fn process_individual_error(
         Some(e) => classify(&**e),
         None => AnalysisException::Other,
     };
-    // PORT: TopLevelConflictException (Skymeld's BuildDriverFunction) is not ported.
+    let execution_exception = exception.and_then(ExecutionExceptionCause::of);
     match exception_class {
+        AnalysisException::TopLevelConflict(tlce) => {
+            action_conflicts = tlce.get_transitive_action_conflicts().clone();
+            analysis_root_causes = Vec::new();
+        }
         AnalysisException::ActionConflict(ace) => {
             action_conflicts.put(ace.get_attempted_action(), ace.clone());
             analysis_root_causes = Vec::new();
@@ -689,8 +840,20 @@ fn process_individual_error(
                 failure_detail: external_deps_failure_detail(external_deps_exception),
             }];
         }
-        // TargetCompatibilityCheckException (Skymeld's BuildDriverFunction), execution
-        // exceptions (not in an analysis evaluation) and unexpected causes.
+        AnalysisException::TargetCompatibilityCheck(_) => {
+            analysis_root_causes = Vec::new();
+        }
+        _ if execution_exception.is_some() => {
+            let execution_exception = execution_exception.expect("checked");
+            execution_detailed_exit_code =
+                Some(execution_exception.get_execution_detailed_exit_code());
+            // actionExecutionException.getRootCauses()
+            // PORT: the root causes of an execution error only feed the AnalysisFailureEvent of
+            // an analysis error (`maybePostFailureEventsForNonConflictError`), which an error
+            // with an execution exit code is not; they are not carried.
+            analysis_root_causes = Vec::new();
+        }
+        // Unexpected causes.
         // PORT: skipped, BugReport.logUnexpected("Unexpected cause encountered while
         // evaluating") (bug reports).
         AnalysisException::BzlLoadFailed(_)
@@ -707,7 +870,20 @@ fn process_individual_error(
         execution_detailed_exit_code,
         analysis_root_causes,
         loading_root_causes,
+        aspect_key_for_conflict_reporting: None,
     }
+}
+
+/// `DetailedException.getDetailedExitCode(cause)`, or the "unknown" execution code.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:621 SkyframeErrorProcessor.getExecutionDetailedExitCodeFromCause
+fn get_execution_detailed_exit_code_from_cause(cause: &SkyError) -> blaze_util::DetailedExitCode {
+    if let Some(execution_exception) = ExecutionExceptionCause::of(cause) {
+        return execution_exception.get_execution_detailed_exit_code();
+    }
+    if let Some(failure_detail) = detailed_exception_failure_detail(cause) {
+        return blaze_util::DetailedExitCode::of(failure_detail);
+    }
+    create_unknown_execution_detailed_exit_code(&cause.to_string())
 }
 
 // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:665 SkyframeErrorProcessor.logOrPrintWarningsKeepGoing
@@ -736,21 +912,26 @@ fn log_or_print_warnings_keep_going(
 }
 
 /// Peel away the wrapper layers to get to the ActionLookupKey of the top level target.
-///
-/// PORT: the wrappers (`BuildDriverKey`, `TestCompletionKey`, `TargetCompletionKey`,
-/// `AspectCompletionKey`) are execution-phase keys; an analysis evaluation has none.
 // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:698 SkyframeErrorProcessor.getEffectiveErrorKey
-fn get_effective_error_key(error_entry_key: &SkyKey) -> &SkyKey {
-    match error_entry_key.function_name().0 {
-        "BUILD_DRIVER" | "TEST_COMPLETION" | "TARGET_COMPLETION" | "ASPECT_COMPLETION" => {
-            blaze_util::unported!(
-                "SkyframeErrorProcessor.getEffectiveErrorKey",
-                "execution-phase key {:?}",
-                error_entry_key
-            )
-        }
-        _ => error_entry_key,
+fn get_effective_error_key(error_entry_key: &SkyKey) -> SkyKey {
+    use blaze_sky_exec::keys::{
+        AspectCompletionKey, BuildDriverKey, TargetCompletionKey, TestCompletionKey,
+    };
+    if let Some(key) = error_entry_key.downcast::<BuildDriverKey>() {
+        return crate::execution_seam::action_lookup_sky_key(&key.action_lookup_key);
     }
+    // For exclusive tests.
+    if let Some(key) = error_entry_key.downcast::<TestCompletionKey>() {
+        return crate::execution_seam::action_lookup_sky_key(&key.configured_target_key);
+    }
+    // For non-skymeld action executions.
+    if let Some(key) = error_entry_key.downcast::<TargetCompletionKey>() {
+        return crate::execution_seam::action_lookup_sky_key(&key.action_lookup_key);
+    }
+    if let Some(key) = error_entry_key.downcast::<AspectCompletionKey>() {
+        return crate::execution_seam::action_lookup_sky_key(&key.action_lookup_key);
+    }
+    error_entry_key.clone()
 }
 
 // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:717 SkyframeErrorProcessor.getLabel
@@ -892,7 +1073,9 @@ pub(crate) fn detailed_exception_failure_detail_of(
             "ExecGroupCollection.InvalidExecGroupException.getDetailedExitCode",
             "{message}"
         ),
-        AnalysisException::Other => None,
+        AnalysisException::TargetCompatibilityCheck(e) => Some(e.get_failure_detail().clone()),
+        // TopLevelConflictException is not a DetailedException.
+        AnalysisException::TopLevelConflict(_) | AnalysisException::Other => None,
     }
 }
 
@@ -1121,7 +1304,7 @@ pub fn create_unknown_execution_detailed_exit_code(
 }
 
 /// What [`rethrow`] throws.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum RethrownException {
     /// A `BuildFailedException` (`crate::build_tool::BuildToolError::BuildFailed`), with its `isCatastrophic()`.
     BuildFailed {

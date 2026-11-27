@@ -1095,6 +1095,7 @@ pub fn create_attribute_transition(
     })
 }
 
+// PORT: skipped, a cache only (the rule transition of a Starlark transition is built again for each target; it is a pure function of the target's attributes): StarlarkDefinedConfigTransition.createRuleTransition
 /// Java `TransitionFactory<RuleTransitionData>.create(data)` for the loading-phase factory of a
 /// rule class.
 // Java: com/google/devtools/build/lib/analysis/config/transitions/TransitionFactory.java:68 TransitionFactory.create

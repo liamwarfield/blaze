@@ -219,13 +219,11 @@ impl CcCompilationContext {
 
     /// Returns `None` when a required SkyValue is missing and a Skyframe restart is required.
     ///
-    /// PORT: the tree artifacts among the headers are expanded through Skyframe
-    /// (`IncludeScanningHeaderDataHelper.handleTreeArtifacts` with the environment for
-    /// discovering inputs), which the execution context does not give: a tree artifact header
-    /// is `unported!`.
+    /// `env` is `actionExecutionContext.getEnvironmentForDiscoveringInputs()`, as Java passes it.
     // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:300 CcCompilationContext.createIncludeScanningHeaderData
     pub fn create_include_scanning_header_data(
         &self,
+        env: &dyn blaze_exec::exec::action_execution_context::ActionExecutionContext,
         use_pic: bool,
         create_modular_headers: bool,
     ) -> Option<IncludeScanningHeaderDataBuilder> {
@@ -268,7 +266,7 @@ impl CcCompilationContext {
                 None,
             );
         }
-        if !handle_tree_artifacts(&mut path_to_legal_artifact, &tree_artifacts) {
+        if !handle_tree_artifacts(env, &mut path_to_legal_artifact, &tree_artifacts) {
             return None;
         }
         remove_artifacts_from_set(&mut modular_headers, &header_info.modular_public_headers);
@@ -279,6 +277,64 @@ impl CcCompilationContext {
             path_to_legal_artifact,
             modular_headers,
         ))
+    }
+
+    /// Returns a list of all headers from `includes` that are properly declared as well as all
+    /// the modules that they are in (in the order of the transitive header infos).
+    // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:355 CcCompilationContext.computeUsedModules
+    pub fn compute_used_modules(
+        &self,
+        use_pic: bool,
+        includes: &HashSet<Artifact>,
+        separate: bool,
+    ) -> Vec<Artifact> {
+        let header_info = self.get_header_info();
+        let mut modules: IndexSet<Artifact> = IndexSet::new();
+        for transitive_header_info in header_info.get_transitive_collection() {
+            let Some(module) = transitive_header_info.get_module(use_pic) else {
+                // If we don't have a main module, there is also not going to be a separate
+                // module. This is verified when constructing HeaderInfo instances.
+                continue;
+            };
+            if transitive_header_info
+                .modular_public_headers
+                .iter()
+                .any(|h| includes.contains(h))
+            {
+                modules.insert(module.clone());
+            }
+            if transitive_header_info
+                .modular_private_headers
+                .iter()
+                .any(|h| includes.contains(h))
+            {
+                modules.insert(module.clone());
+            }
+            if transitive_header_info
+                .separate_module_headers
+                .iter()
+                .any(|h| includes.contains(h))
+            {
+                modules.insert(
+                    transitive_header_info
+                        .get_separate_module(use_pic)
+                        .unwrap_or_else(|| panic!("NullPointerException: separate module"))
+                        .clone(),
+                );
+            }
+        }
+        // Do not add the module of the current rule for both:
+        // 1. the module compile itself
+        // 2. compiles of other translation units of the same rule.
+        let own = if separate {
+            header_info.get_separate_module(use_pic)
+        } else {
+            header_info.get_module(use_pic)
+        };
+        if let Some(own) = own {
+            modules.shift_remove(own);
+        }
+        modules.into_iter().collect()
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:506 CcCompilationContext.getHeaderModuleSrcs
@@ -312,19 +368,44 @@ fn handle_artifact(
 /// Enter the TreeArtifactValues in each TreeArtifact into pathToLegalArtifact. Returns true on
 /// success.
 ///
-/// PORT: see [`CcCompilationContext::create_include_scanning_header_data`].
+/// If a TreeArtifact's value is missing, returns false, and leave pathToLegalArtifact
+/// unmodified.
 // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:240 IncludeScanningHeaderDataHelper.handleTreeArtifacts
-fn handle_tree_artifacts(
-    _path_to_legal_artifact: &mut HashMap<PathFragment, Artifact>,
+pub fn handle_tree_artifacts(
+    env: &dyn blaze_exec::exec::action_execution_context::ActionExecutionContext,
+    path_to_legal_artifact: &mut HashMap<PathFragment, Artifact>,
     tree_artifacts: &[Artifact],
 ) -> bool {
     if tree_artifacts.is_empty() {
         return true;
     }
-    blaze_util::unported!(
-        "IncludeScanningHeaderDataHelper.handleTreeArtifacts",
-        "a tree artifact header needs ActionExecutionContext.getEnvironmentForDiscoveringInputs"
-    )
+    // env.getValuesAndExceptions(treeArtifacts); if (env.valuesMissing()) return false. A value
+    // missing although none was reported missing is Java's BugReport and `return false`, which
+    // the all-or-nothing read folds into the same answer.
+    let mut values = None;
+    env.with_environment_for_discovering_inputs(&mut |env| {
+        values = env.get_tree_artifact_values(tree_artifacts);
+    });
+    let Some(values) = values else {
+        return false;
+    };
+    for tree_artifact_value in values {
+        for tree_file_artifact in tree_artifact_value.get_children() {
+            let tree_file_artifact =
+                blaze_exec::actions::action_adapters::as_blaze_artifact(&tree_file_artifact)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "ClassCastException: {tree_file_artifact:?} is not a TreeFileArtifact"
+                        )
+                    })
+                    .clone();
+            path_to_legal_artifact.insert(
+                tree_file_artifact.get_exec_path().clone(),
+                tree_file_artifact,
+            );
+        }
+    }
+    true
 }
 
 /// Passes a list of headers to the include scanning helper for handling, and optionally adds
@@ -374,6 +455,8 @@ fn collect_modules(header_info: &HeaderInfoData, use_pic: bool, modules: &mut In
 /// Returns the C++ module map of the owner (its `file`).
 // Java: com/google/devtools/build/lib/rules/cpp/CcCompilationContext.java:546 CcCompilationContext.getCppModuleMap
 // Java: com/google/devtools/build/lib/rules/cpp/CppModuleMap.java:30 CppModuleMap.getArtifact
+// Java: com/google/devtools/build/lib/rules/cpp/CppModuleMap.java:26 CppModuleMap.<init>
+// PORT: skipped, no caller at the pin (the module map's name is read by the Starlark rules, not by a native): CppModuleMap.getName
 fn get_cpp_module_map(info: &StarlarkInfo) -> Option<Artifact> {
     let v = info.get_field("_module_map")?;
     if v.is_none() {

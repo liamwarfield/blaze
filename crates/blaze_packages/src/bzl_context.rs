@@ -47,17 +47,24 @@ use starlark::values::starlark_value;
 use crate::target::PackageSpecification;
 
 /// Java: cmdline/BazelModuleContext.java (AutoValue).
+// Java: com/google/devtools/build/lib/cmdline/BazelModuleContext.java:188 BazelModuleContext.create
+// PORT: skipped, the doc comments are computed from the file by `starlark_doc_extract`, their one reader (blaze_rules starlarkdocextract `compute_doc_comments`): BazelModuleContext.getDocCommentsMap, BazelModuleContext.getUnusedDocCommentLines
 #[derive(Debug)]
 pub struct BazelModuleContext {
     /// Java `key().getLabel()`. `is_builtins` tells `@_builtins` keys apart.
+    // Java: com/google/devtools/build/lib/cmdline/BazelModuleContext.java:50 BazelModuleContext.key
     pub label: Label,
     pub is_builtins: bool,
+    // Java: com/google/devtools/build/lib/cmdline/BazelModuleContext.java:53 BazelModuleContext.repoMapping
     pub repo_mapping: RepositoryMapping,
     /// The file name the module was compiled with (Java `filename()`; used in locations).
+    // Java: com/google/devtools/build/lib/cmdline/BazelModuleContext.java:56 BazelModuleContext.filename
     pub filename: String,
     /// The directly loaded modules, in load order (Java `loads()`).
+    // Java: com/google/devtools/build/lib/cmdline/BazelModuleContext.java:64 BazelModuleContext.loads
     pub loads: Vec<Arc<BazelModuleContext>>,
     /// Java `bzlTransitiveDigest()`.
+    // Java: com/google/devtools/build/lib/cmdline/BazelModuleContext.java:102 BazelModuleContext.bzlTransitiveDigest
     pub bzl_transitive_digest: Vec<u8>,
 }
 
@@ -193,6 +200,7 @@ impl BazelModuleContext {
     /// Java `visitLoadGraphRecursively`: every module reachable through loads, each once,
     /// depth-first in load order; `visitor` returns false to skip a module's loads.
     // Java: com/google/devtools/build/lib/cmdline/BazelModuleContext.java:88 BazelModuleContext.visitLoadGraphRecursively
+    // Java: com/google/devtools/build/lib/cmdline/BazelModuleContext.java:83 BazelModuleContext.LoadGraphVisitor.visit
     pub fn visit_load_graph_recursively(
         loads: &[Arc<BazelModuleContext>],
         visitor: &mut dyn FnMut(&Arc<BazelModuleContext>) -> bool,
@@ -257,13 +265,21 @@ impl BzlVisibility {
 
 /// Java: packages/BzlInitThreadContext.java. The `ThreadContext` payload during .bzl top-level
 /// evaluation.
+// Java: com/google/devtools/build/lib/packages/BzlInitThreadContext.java:64 BzlInitThreadContext.<init>
+// PORT: skipped, always empty in Bazel (nothing calls ConfiguredRuleClassProvider.Builder.setNetworkAllowlistForTests): BzlInitThreadContext.getNetworkAllowlistForTests
 #[derive(Debug)]
 pub struct BzlInitThreadContext {
+    // Java: com/google/devtools/build/lib/packages/BzlInitThreadContext.java:111 BzlInitThreadContext.getBzlFile
     pub bzl_file: Label,
+    // Java: com/google/devtools/build/lib/packages/BzlInitThreadContext.java:116 BzlInitThreadContext.getTransitiveDigest
     pub transitive_digest: Vec<u8>,
+    // Java: com/google/devtools/build/lib/packages/BzlInitThreadContext.java:123 BzlInitThreadContext.getBzlVisibility
+    // Java: com/google/devtools/build/lib/packages/BzlInitThreadContext.java:129 BzlInitThreadContext.setBzlVisibility
     pub bzl_visibility: Option<BzlVisibility>,
+    // Java: com/google/devtools/build/lib/packages/BzlInitThreadContext.java:134 BzlInitThreadContext.getToolsRepository
     pub tools_repository: RepositoryName,
     /// Java `fragmentNameToClass` keys (fragment names known to this Bazel).
+    // Java: com/google/devtools/build/lib/packages/BzlInitThreadContext.java:147 BzlInitThreadContext.getFragmentNameToClass
     pub fragment_names: Vec<String>,
     pub main_repo_mapping: RepositoryMapping,
 }

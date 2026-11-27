@@ -142,13 +142,5 @@ pub fn create_copts_filter(
     }
 }
 
-/// `cc_internal.expand_and_tokenize(ctx, attr, flags)`.
-// Java: com/google/devtools/build/lib/rules/cpp/CcStarlarkInternal.java:1270 CcStarlarkInternal.expandAndTokenize
-pub fn expand_and_tokenize(_attribute_name: &str, flags: &[String]) -> Vec<String> {
-    if flags.is_empty() {
-        return Vec::new();
-    }
-    // Needs RuleContext.getExpander (location and make-variable expansion) and
-    // Expander.tokenized; both belong to the analysis layer.
-    blaze_util::unported!("CcStarlarkInternal.expandAndTokenize")
-}
+// `cc_internal.expand_and_tokenize` (CcStarlarkInternal.expandAndTokenize) is ported in
+// blaze_rules `cpp::cc_starlark_internal`, which has the rule context's expander.

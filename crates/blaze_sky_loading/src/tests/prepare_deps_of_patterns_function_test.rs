@@ -1,7 +1,7 @@
 //! PREPARE_DEPS_OF_PATTERNS (SkyQuery's universe) and TRANSITIVE_TRAVERSAL.
 //!
 //! Java: src/test/java/com/google/devtools/build/lib/skyframe/PrepareDepsOfPatternsFunctionTest.java
-//! (the external-repository and cycle cases need the module registry harness and are ignored).
+//! (the external-repository and cycle cases are in blaze_sky_top's tests).
 
 use std::sync::Arc;
 
@@ -185,16 +185,9 @@ fn test_parsing_problems_no_keep_going() {
     parsing_problem(false);
 }
 
-// Java: src/test/java/com/google/devtools/build/lib/skyframe/PrepareDepsOfPatternsFunctionTest.java:209 PrepareDepsOfPatternsFunctionTest.testFunctionLoadsTargetFromExternalRepo
-#[test]
-#[ignore = "needs the bzlmod registry harness (FakeRegistry) in blaze_sky_loading's tests"]
-fn test_function_loads_target_from_external_repo() {}
-
-// Java: src/test/java/com/google/devtools/build/lib/skyframe/PrepareDepsOfPatternsFunctionTest.java:227 PrepareDepsOfPatternsFunctionTest.testDepOnCachedPDOPNodeThatItselfDependsOnBothCycleAndError
-#[test]
-#[ignore = "needs a cached PREPARE_DEPS_OF_PATTERN node over a cycle and an error (Java's \
-            SkyframeExecutor test harness)"]
-fn test_dep_on_cached_pdop_node_that_itself_depends_on_both_cycle_and_error() {}
+// testFunctionLoadsTargetFromExternalRepo and
+// testDepOnCachedPDOPNodeThatItselfDependsOnBothCycleAndError need BuildViewTestCase (the fake
+// registry, the mock test_defs rules): blaze_sky_top/src/tests/prepare_deps_of_patterns_function_test.rs.
 
 /// Not a Java test: a recursive pattern requests COLLECT_PACKAGES_UNDER_DIRECTORY and loads the
 /// targets of every package beneath the directory.

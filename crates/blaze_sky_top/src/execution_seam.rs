@@ -12,7 +12,6 @@ use std::fmt;
 use std::sync::Arc;
 
 use blaze_sky_exec::action_template_expansion_value::ActionTemplateExpansionKey;
-use std::sync::atomic::Ordering;
 
 use blaze_actions::analysis::workspace_status_action::BUILD_INFO_FUNCTION_NAME;
 use blaze_actions::{ActionLookupKeyRef, ActionRef, Artifact};
@@ -115,6 +114,223 @@ impl ActionLookupValue for CoverageReportActionLookupValue {
 }
 
 // -------------------------------------------------------------------------------------------
+// Merged analysis and execution (Skymeld): the suppliers SkyframeExecutor hands to
+// BuildDriverFunction
+
+/// `ConflictCheckingMode`.
+// Java: com/google/devtools/build/lib/skyframe/ConflictCheckingMode.java:18 ConflictCheckingMode
+#[allow(non_camel_case_types)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConflictCheckingMode {
+    NONE,
+    UPON_CONFIGURED_OBJECT_CREATION,
+    WITH_TRAVERSAL,
+}
+
+/// `BuildDriverFunction.TestTypeResolver`: determines the appropriate test type given the label
+/// of a `ConfiguredTarget` (`configuredTarget.getLabel()`).
+// Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:720 BuildDriverFunction.TestTypeResolver
+pub type TestTypeResolver =
+    Arc<dyn Fn(&Label, &dyn ExtendedEventHandler) -> TestType + Send + Sync>;
+
+/// The per-build Skymeld fields of `SkyframeExecutor`: `testTypeResolver`,
+/// `conflictCheckingModeInThisBuild` and `incrementalArtifactConflictFinder`.
+///
+/// PORT: Java keeps them on the executor and hands `BuildDriverFunction` suppliers of them; here
+/// they live in the build arena (released after every command) and the seam reads them.
+struct SkymeldStates {
+    test_type_resolver: parking_lot::Mutex<Option<TestTypeResolver>>,
+    conflict_checking_mode_in_this_build: parking_lot::Mutex<ConflictCheckingMode>,
+    incremental_artifact_conflict_finder: parking_lot::Mutex<
+        Option<Arc<crate::incremental_artifact_conflict_finder::IncrementalArtifactConflictFinder>>,
+    >,
+}
+
+impl Default for SkymeldStates {
+    fn default() -> Self {
+        SkymeldStates {
+            test_type_resolver: parking_lot::Mutex::new(None),
+            conflict_checking_mode_in_this_build: parking_lot::Mutex::new(
+                ConflictCheckingMode::NONE,
+            ),
+            incremental_artifact_conflict_finder: parking_lot::Mutex::new(None),
+        }
+    }
+}
+
+impl blaze_util::build_arena::ArenaSlot for SkymeldStates {
+    const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
+        blaze_util::build_arena::ReleaseOrder::State;
+}
+
+fn skymeld_states() -> Arc<SkymeldStates> {
+    blaze_util::build_arena::slot::<SkymeldStates>()
+}
+
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3475 SkyframeExecutor.setTestTypeResolver
+pub fn set_test_type_resolver(test_type_resolver: Option<TestTypeResolver>) {
+    *skymeld_states().test_type_resolver.lock() = test_type_resolver;
+}
+
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2468 SkyframeExecutor.setConflictCheckingModeInThisBuild
+pub fn set_conflict_checking_mode_in_this_build(mode: ConflictCheckingMode) {
+    *skymeld_states().conflict_checking_mode_in_this_build.lock() = mode;
+}
+
+/// `conflictCheckingModeInThisBuild`.
+pub fn conflict_checking_mode_in_this_build() -> ConflictCheckingMode {
+    *skymeld_states().conflict_checking_mode_in_this_build.lock()
+}
+
+/// Initialize the various conflict-finding states. These are good for 1 invocation.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2621 SkyframeExecutor.initializeSkymeldConflictFindingStates
+pub fn initialize_skymeld_conflict_finding_states(
+    action_key_context: Arc<blaze_actions::ActionKeyContext>,
+    walkable_graph: Arc<dyn blaze_skyframe::WalkableGraph>,
+) {
+    *skymeld_states().incremental_artifact_conflict_finder.lock() = Some(Arc::new(
+        crate::incremental_artifact_conflict_finder::IncrementalArtifactConflictFinder::new(
+            action_key_context,
+            walkable_graph,
+        ),
+    ));
+}
+
+/// Clear the incremental conflict finding states to save memory.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2629 SkyframeExecutor.clearIncrementalArtifactConflictFindingStates
+pub fn clear_incremental_artifact_conflict_finding_states() {
+    let states = skymeld_states();
+    // Create a local ref for shutting down, in case there's a race.
+    let local_ref = states.incremental_artifact_conflict_finder.lock().take();
+    if let Some(local_ref) = local_ref {
+        local_ref.shutdown();
+    }
+    *states.conflict_checking_mode_in_this_build.lock() = ConflictCheckingMode::NONE;
+}
+
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2640 SkyframeExecutor.getCheckerForConflictCheckingMode
+pub fn get_checker_for_conflict_checking_mode(
+    expected_mode_from_caller: ConflictCheckingMode,
+) -> Option<Arc<crate::incremental_artifact_conflict_finder::IncrementalArtifactConflictFinder>> {
+    let states = skymeld_states();
+    if *states.conflict_checking_mode_in_this_build.lock() == expected_mode_from_caller {
+        states.incremental_artifact_conflict_finder.lock().clone()
+    } else {
+        None
+    }
+}
+
+/// The `SkyKey` of an `ActionLookupKey` of a top-level entity (a `ConfiguredTargetKey`, a
+/// `TopLevelAspectsKey` or an `AspectKey`; Java's keys are `SkyKey`s themselves).
+pub fn action_lookup_sky_key(key: &ActionLookupKeyRef) -> blaze_skyframe::SkyKey {
+    if let Some(ct_key) = as_configured_target_key(key) {
+        return blaze_skyframe::SkyKey::new(ct_key.clone());
+    }
+    if let Some(top_level_key) = key.as_any().downcast_ref::<TopLevelAspectsKey>() {
+        return blaze_skyframe::SkyKey::new(top_level_key.clone());
+    }
+    if let Some(aspect_key) = as_aspect_key(key) {
+        return blaze_skyframe::SkyKey::new(aspect_key.clone());
+    }
+    panic!("ClassCastException: {key} is not a top-level ActionLookupKey")
+}
+
+/// The `ConfiguredTarget` behind a view the seam created.
+fn configured_target_of(view: &Arc<dyn ConfiguredTargetView>) -> &ConfiguredTarget {
+    view.as_any()
+        .downcast_ref::<SkyframeConfiguredTargetView>()
+        .unwrap_or_else(|| panic!("ClassCastException: {view:?} is not a ConfiguredTarget"))
+        .get_configured_target()
+}
+
+/// `env.getListener()` while a [`EnvTargetLookup`] holds the environment: the events are kept
+/// and passed to the listener, in order, once the lookup released the environment.
+#[derive(Default)]
+struct DeferredListener {
+    events: parking_lot::Mutex<Vec<Result<Event, Arc<dyn blaze_events::Postable>>>>,
+}
+
+impl DeferredListener {
+    fn replay(self, listener: &dyn ExtendedEventHandler) {
+        for event in self.events.into_inner() {
+            match event {
+                Ok(event) => listener.handle(&event),
+                Err(postable) => listener.post(postable),
+            }
+        }
+    }
+}
+
+impl blaze_events::EventHandler for DeferredListener {
+    fn handle(&self, event: &Event) {
+        self.events.lock().push(Ok(event.clone()));
+    }
+}
+
+impl ExtendedEventHandler for DeferredListener {
+    fn post(&self, obj: Arc<dyn blaze_events::Postable>) {
+        self.events.lock().push(Err(obj));
+    }
+}
+
+/// `label -> getTarget(env, label)` of `BuildDriverFunction.isConfiguredTargetCompatible`: the
+/// target from the package's Skyframe value (`None` when the value is missing), with the
+/// environment groups of its package (see `TargetLookup`).
+// Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:579 BuildDriverFunction.getTarget
+struct EnvTargetLookup<'a, 'b, 'e> {
+    env: &'a std::cell::RefCell<&'b mut Environment<'e>>,
+    /// The interrupt of a lookup (Java throws `InterruptedException` through the lookup).
+    interrupted: std::cell::Cell<bool>,
+}
+
+impl blaze_analysis::constraints::top_level_constraint_semantics::TargetLookup
+    for EnvTargetLookup<'_, '_, '_>
+{
+    fn get_target(
+        &self,
+        label: &Label,
+    ) -> Result<
+        Option<(
+            Target,
+            Vec<Arc<blaze_packages::target::environment_group::EnvironmentGroup>>,
+        )>,
+        blaze_analysis::constraints::top_level_constraint_semantics::TargetLookupException,
+    > {
+        let mut env = self.env.borrow_mut();
+        let package_value = match env.get_value(blaze_sky_loading::package_function::PackageKey(
+            label.get_package_identifier().clone(),
+        )) {
+            Ok(value) => value,
+            Err(blaze_skyframe::Interrupted) => {
+                self.interrupted.set(true);
+                None
+            }
+        };
+        let Some(package_value) = package_value else {
+            return Ok(None);
+        };
+        if env.values_missing() {
+            return Ok(None);
+        }
+        let package = package_value.get_package();
+        let target = package.get_target(label.get_name()).map_err(|e| {
+            blaze_analysis::constraints::top_level_constraint_semantics::TargetLookupException {
+                message: e.get_message().to_string(),
+                failure_detail: crate::skyframe_error_processor::packages_failure_detail(
+                    &e.get_detailed_exit_code(),
+                ),
+            }
+        })?;
+        let groups = package
+            .get_targets()
+            .values()
+            .filter_map(|t| t.as_environment_group().cloned())
+            .collect();
+        Ok(Some((target.clone(), groups)))
+    }
+}
+
+// -------------------------------------------------------------------------------------------
 // The seam
 
 /// [`AnalysisSeam`] over the analysis values of the command's evaluator.
@@ -155,6 +371,366 @@ impl AnalysisSeam for SkyframeAnalysisSeam {
             Some(filter) => filter.is_included(owner_label),
             None => true,
         }
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:174 BuildDriverFunction.compute
+    fn get_top_level_value_or_throw(
+        &self,
+        key: &BuildDriverKey,
+        env: &mut Environment<'_>,
+    ) -> Result<
+        Result<
+            Option<blaze_sky_exec::build_driver_function::TopLevelSkyValue>,
+            blaze_skyframe::SkyError,
+        >,
+        ComputeError,
+    > {
+        use blaze_sky_exec::build_driver_function::TopLevelSkyValue;
+        // env.getValueOrThrow(actionLookupKey, AbstractSaneAnalysisException.class)
+        let catch_sane = |e: &blaze_skyframe::SkyError| {
+            crate::skyframe_error_processor::is_sane_analysis_exception(&**e).then(|| e.clone())
+        };
+        if key.is_top_level_aspect_driver() {
+            let top_level_key = key
+                .action_lookup_key
+                .as_any()
+                .downcast_ref::<TopLevelAspectsKey>()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "ClassCastException: {} is not a TopLevelAspectsKey",
+                        key.action_lookup_key
+                    )
+                });
+            return Ok(
+                match env.get_value_or_throw_with(top_level_key.clone(), catch_sane)? {
+                    Err(e) => Err(e),
+                    Ok(None) => Ok(None),
+                    Ok(Some(_)) => Ok(self
+                        .get_top_level_aspects(&key.action_lookup_key, env)?
+                        .map(TopLevelSkyValue::TopLevelAspects)),
+                },
+            );
+        }
+        let Some(ct_key) = as_configured_target_key(&key.action_lookup_key) else {
+            panic!(
+                "ClassCastException: {} is not a ConfiguredTargetKey",
+                key.action_lookup_key
+            );
+        };
+        Ok(
+            match env.get_value_or_throw_with(ct_key.clone(), catch_sane)? {
+                Err(e) => Err(e),
+                Ok(None) => Ok(None),
+                Ok(Some(_)) => Ok(self
+                    .get_configured_target(&key.action_lookup_key, env)?
+                    .map(TopLevelSkyValue::ConfiguredTarget)),
+            },
+        )
+    }
+
+    /// The build installed a `TestTypeResolver`: `SkyframeBuildView.analyzeAndExecuteTargets`
+    /// is evaluating its `BuildDriverKey`s.
+    fn is_merged_analysis_and_execution(&self) -> bool {
+        skymeld_states().test_type_resolver.lock().is_some()
+    }
+
+    /// `TargetConfiguredEvent` (once per key) and the `TopLevelTargetAnalyzedEvent`.
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:415 BuildDriverFunction.announceTopLevelConfiguredTargetAnalyzed
+    fn announce_top_level_configured_target_analyzed(
+        &self,
+        configured_target: &Arc<dyn ConfiguredTargetView>,
+        post_target_configured: bool,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<Arc<dyn blaze_events::Postable>>, ComputeError> {
+        let configured_target = configured_target_of(configured_target);
+        if post_target_configured {
+            let label = configured_target.get_original_label();
+            // ((PackageValue) env.getValue(label.getPackageIdentifier())).getPackage()
+            let package_value = env
+                .get_value(blaze_sky_loading::package_function::PackageKey(
+                    label.get_package_identifier().clone(),
+                ))?
+                .unwrap_or_else(|| panic!("NullPointerException: package of {label}"));
+            let target = match package_value.get_package().get_target(label.get_name()) {
+                Ok(target) => target.clone(),
+                Err(e) => panic!(
+                    "IllegalStateException: Target should already be verified and available for top level ConfiguredTarget: {}: {}",
+                    label,
+                    e.get_message()
+                ),
+            };
+            // The target of `configuredTarget.getLabel()` (an alias's actual target), which the
+            // TargetCompleteEvent of the target reads (ConfiguredTargetAndData).
+            let actual_label = configured_target.get_label();
+            let actual_target = if actual_label == label {
+                target.clone()
+            } else {
+                env.get_value(blaze_sky_loading::package_function::PackageKey(
+                    actual_label.get_package_identifier().clone(),
+                ))?
+                .unwrap_or_else(|| panic!("NullPointerException: package of {actual_label}"))
+                .get_package()
+                .get_target(actual_label.get_name())
+                .unwrap_or_else(|e| panic!("IllegalStateException: {}", e.get_message()))
+                .clone()
+            };
+            // getConfigurationValue(env, configuredTarget.getConfigurationKey())
+            let configuration = match configured_target.get_configuration_key() {
+                None => None,
+                Some(key) => env.get_value(key)?,
+            };
+            env.listener()
+                .post(Arc::new(crate::build_view::TopLevelTargetConfiguredEvent {
+                    target,
+                    configuration,
+                    configured_target: Some(configured_target.clone()),
+                    actual_target: Some(actual_target),
+                }));
+        }
+        Ok(Some(Arc::new(
+            blaze_sky_analysis::top_level_status_events::TopLevelTargetAnalyzedEvent::create(
+                configured_target.clone(),
+            ),
+        )))
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:449 BuildDriverFunction.announceTopLevelAspectAnalyzed
+    fn announce_top_level_aspect_analyzed(
+        &self,
+        key: &BuildDriverKey,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<()>, ComputeError> {
+        let top_level_key = key
+            .action_lookup_key
+            .as_any()
+            .downcast_ref::<TopLevelAspectsKey>()
+            .unwrap_or_else(|| {
+                panic!(
+                    "ClassCastException: {} is not a TopLevelAspectsKey",
+                    key.action_lookup_key
+                )
+            });
+        let Some(top_level_aspects_value) = env.get_value(top_level_key.clone())? else {
+            return Ok(None);
+        };
+        // The ConfiguredTargetKey in the AspectKey will vary from the TopLevelAspectKey's
+        // ConfiguredTargetKey due to rule transitions. See the implementation in
+        // ToplevelStarlarkAspectFunction#getConfiguredTargetKey().
+        // Keep this logic in-sync with SkyframeExecutor#configureTargets().
+        let Some(first_aspect_key) = top_level_aspects_value
+            .get_top_level_aspects_map()
+            .keys()
+            .next()
+        else {
+            return Ok(Some(()));
+        };
+        let transitioned_key = first_aspect_key.get_base_configured_target_key().clone();
+        let aspect_count = top_level_aspects_value.get_top_level_aspects_map().len() as i32;
+        env.listener().post(Arc::new(
+            crate::skyframe_executor::ToplevelAspectsIdentifiedEvent {
+                configured_target_key: transitioned_key,
+                aspect_count,
+            },
+        ));
+        for (aspect_key, aspect_value) in top_level_aspects_value.get_top_level_aspects_map() {
+            // getConfigurationValue(env, aspectKey.getConfigurationKey())
+            let configuration = match aspect_key.get_configuration_key() {
+                None => None,
+                Some(config_key) => env.get_value(config_key.clone())?,
+            };
+            env.listener().post(Arc::new(
+                crate::skyframe_executor::AspectConfiguredEvent::new(
+                    aspect_key.get_label().clone(),
+                    /* aspect_class_name= */ aspect_key.get_aspect_class().get_name(),
+                    &aspect_key.get_aspect_descriptor().get_description(),
+                    configuration,
+                ),
+            ));
+            env.listener().post(Arc::new(
+                crate::analysis_phase_runner::AspectAnalyzedEvent::create(
+                    aspect_key.clone(),
+                    aspect_value.clone(),
+                ),
+            ));
+        }
+        Ok(Some(()))
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2487 SkyframeExecutor.evaluateBuildDriverKeys
+    fn should_check_for_conflict_with_traversal(&self) -> bool {
+        conflict_checking_mode_in_this_build() == ConflictCheckingMode::WITH_TRAVERSAL
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:661 BuildDriverFunction.checkActionConflicts
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:197 BuildDriverFunction.compute
+    fn check_action_conflicts(&self, key: &BuildDriverKey) -> Result<(), ComputeError> {
+        // incrementalArtifactConflictFinder.get(): a null value means that the conflict checker
+        // is shut down.
+        let Some(local_ref) = skymeld_states()
+            .incremental_artifact_conflict_finder
+            .lock()
+            .clone()
+        else {
+            return Ok(());
+        };
+        let action_lookup_key = action_lookup_sky_key(&key.action_lookup_key);
+        let action_conflicts = local_ref
+            .find_artifact_conflicts(&action_lookup_key)
+            .conflicts()
+            .clone();
+        if action_conflicts.is_empty() {
+            return Ok(());
+        }
+        // BuildDriverFunctionException(TopLevelConflictException): TRANSIENT, since it could be
+        // caused by external factors (conflict with another target).
+        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:704 BuildDriverFunction.BuildDriverFunctionException.<init>
+        Err(blaze_skyframe::SkyFunctionException::transient(
+            crate::top_level_conflict_exception::TopLevelConflictException::new(
+                format!(
+                    "Action conflict(s) detected while analyzing top-level target {}",
+                    key.action_lookup_key
+                        .get_label()
+                        .map(|l| l.to_string())
+                        .unwrap_or_else(|| "null".to_owned())
+                ),
+                action_conflicts,
+            ),
+        )
+        .into())
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:219 BuildDriverFunction.compute
+    fn determine_test_type(
+        &self,
+        configured_target: &Arc<dyn ConfiguredTargetView>,
+        env: &mut Environment<'_>,
+    ) -> TestType {
+        // Preconditions.checkNotNull(testTypeResolver)
+        let resolver = skymeld_states()
+            .test_type_resolver
+            .lock()
+            .clone()
+            .unwrap_or_else(|| panic!("NullPointerException: testTypeResolver"));
+        resolver(
+            &configured_target_of(configured_target).get_label(),
+            env.listener(),
+        )
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:523 BuildDriverFunction.isConfiguredTargetCompatible
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:247 BuildDriverFunction.compute
+    fn is_configured_target_compatible(
+        &self,
+        configured_target: &Arc<dyn ConfiguredTargetView>,
+        is_explicitly_requested: bool,
+        skip_incompatible_explicit_targets: bool,
+        checked_for_platform_compatibility: &mut bool,
+        env: &mut Environment<'_>,
+    ) -> Result<Option<bool>, ComputeError> {
+        use blaze_analysis::constraints::top_level_constraint_semantics::{
+            PlatformCompatibility, TargetCompatibilityCheckException, TopLevelConstraintSemantics,
+        };
+        let configured_target = configured_target_of(configured_target);
+        // BuildConfigurationValue buildConfigurationValue = getConfiguration(env, configuredTarget)
+        let build_configuration_value = match configured_target.get_configuration_key() {
+            None => None,
+            Some(key) => {
+                let value = env.get_value(key)?;
+                if env.values_missing() {
+                    return Ok(None);
+                }
+                value
+            }
+        };
+        // BuildDriverFunctionException(TargetCompatibilityCheckException): TRANSIENT.
+        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:708 BuildDriverFunction.BuildDriverFunctionException.<init>
+        let throw = |e: TargetCompatibilityCheckException| -> ComputeError {
+            blaze_skyframe::SkyFunctionException::transient(e).into()
+        };
+
+        if !*checked_for_platform_compatibility {
+            let platform_compatibility =
+                TopLevelConstraintSemantics::compatibility_with_platform_restrictions(
+                    configured_target,
+                    env.listener(),
+                    /* eagerly_throw_error= */ true,
+                    is_explicitly_requested,
+                    skip_incompatible_explicit_targets,
+                )
+                .map_err(throw)?;
+            *checked_for_platform_compatibility = true;
+            match platform_compatibility {
+                PlatformCompatibility::INCOMPATIBLE_EXPLICIT
+                | PlatformCompatibility::INCOMPATIBLE_IMPLICIT => return Ok(Some(false)),
+                PlatformCompatibility::COMPATIBLE => {}
+            }
+        }
+
+        let env_cell = std::cell::RefCell::new(env);
+        let listener = DeferredListener::default();
+        let (environment_compatibility, interrupted) = {
+            let target_lookup = EnvTargetLookup {
+                env: &env_cell,
+                interrupted: std::cell::Cell::new(false),
+            };
+            let environment_compatibility =
+                TopLevelConstraintSemantics::compatibility_with_target_environment(
+                    configured_target,
+                    build_configuration_value.as_deref(),
+                    &target_lookup,
+                    &listener,
+                );
+            (environment_compatibility, target_lookup.interrupted.get())
+        };
+        let env = env_cell.into_inner();
+        listener.replay(env.listener());
+        if interrupted {
+            return Err(blaze_skyframe::Interrupted.into());
+        }
+        let environment_compatibility = environment_compatibility.map_err(throw)?;
+        let Some(environment_compatibility) = environment_compatibility else {
+            return Ok(None);
+        };
+        if env.values_missing() {
+            return Ok(None);
+        }
+        if environment_compatibility.is_compatible() {
+            return Ok(Some(true));
+        }
+        let Some(severe_missing_environments) =
+            environment_compatibility.severe_missing_environments()
+        else {
+            return Ok(Some(false));
+        };
+        let bad_targets_user_message =
+            blaze_analysis::constraints::top_level_constraint_semantics::get_error_message_for_target(
+                configured_target,
+                severe_missing_environments,
+            );
+        Err(throw(TargetCompatibilityCheckException::new(
+            bad_targets_user_message.clone(),
+            blaze_protos::failure_details::FailureDetail {
+                message: bad_targets_user_message,
+                category: Some(blaze_protos::failure_details::failure_detail::Category::Analysis(
+                    blaze_protos::failure_details::Analysis {
+                        code: blaze_protos::failure_details::analysis::Code::TargetsMissingEnvironments
+                            as i32,
+                    },
+                )),
+            },
+        )))
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/TopLevelStatusEvents.java:93 TopLevelStatusEvents.TopLevelTargetSkippedEvent.create
+    fn top_level_target_skipped_event(
+        &self,
+        configured_target: &Arc<dyn ConfiguredTargetView>,
+    ) -> Arc<dyn blaze_events::Postable> {
+        Arc::new(
+            blaze_sky_analysis::top_level_status_events::TopLevelTargetSkippedEvent::create(
+                configured_target_of(configured_target).clone(),
+            ),
+        )
     }
 
     // Java: com/google/devtools/build/lib/skyframe/ArtifactFunction.java:378 ArtifactFunction.getActionLookupValue
@@ -244,7 +820,6 @@ impl AnalysisSeam for SkyframeAnalysisSeam {
     ) -> Result<Option<Arc<dyn ConfiguredTargetView>>, ComputeError> {
         // PORT: a top-level aspect is read through [`AnalysisSeam::get_top_level_aspects`] /
         // [`AnalysisSeam::get_configured_aspect`] (BuildDriverFunction, AspectCompletor).
-        check_top_level_aspect_drivers_created();
         let Some(ct_key) = as_configured_target_key(key) else {
             panic!("ClassCastException: {key} is not a ConfiguredTargetKey");
         };
@@ -949,59 +1524,6 @@ pub fn build_driver_keys(
     build_driver_ct_keys.into_iter().collect()
 }
 
-/// Whether the build command created the `BuildDriverKey.ofTopLevelAspect` keys of this
-/// command's top-level aspects.
-///
-/// PORT: Java creates the configured-target and the aspect driver keys in one method
-/// (`SkyframeBuildView.analyzeAndExecuteTargets`). In Blaze the build command creates them from
-/// the analysis result in two calls ([`build_driver_keys`], [`build_driver_aspect_keys`]); a
-/// command that analyzed top-level aspects for a build and then starts the execution phase
-/// without the second call would build no aspect and still report success. That fails loudly
-/// here. The state is per build: [`note_top_level_aspects_analyzed_for_execution`] sets both
-/// fields when `BuildView.update` starts the build's execution phase. It lives in the build arena
-/// (`blaze_util::build_arena`), which the persistent server also releases after every command.
-#[derive(Default)]
-struct TopLevelAspectDrivers {
-    /// The number of `TopLevelAspectsKey`s `BuildView.update` analyzed with the execution phase.
-    analyzed: std::sync::atomic::AtomicUsize,
-    /// [`build_driver_aspect_keys`] was called.
-    created: std::sync::atomic::AtomicBool,
-}
-
-impl blaze_util::build_arena::ArenaSlot for TopLevelAspectDrivers {
-    const RELEASE_ORDER: blaze_util::build_arena::ReleaseOrder =
-        blaze_util::build_arena::ReleaseOrder::State;
-}
-
-fn top_level_aspect_drivers() -> std::sync::Arc<TopLevelAspectDrivers> {
-    blaze_util::build_arena::slot::<TopLevelAspectDrivers>()
-}
-
-/// `BuildView.update` analyzed `count` `TopLevelAspectsKey`s for a build with an execution
-/// phase.
-pub(crate) fn note_top_level_aspects_analyzed_for_execution(count: usize) {
-    top_level_aspect_drivers()
-        .analyzed
-        .store(count, Ordering::SeqCst);
-    top_level_aspect_drivers()
-        .created
-        .store(false, Ordering::SeqCst);
-}
-
-/// Called when the execution phase first asks for a top-level configured target.
-// Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:680 SkyframeBuildView.analyzeAndExecuteTargets
-fn check_top_level_aspect_drivers_created() {
-    let analyzed = top_level_aspect_drivers().analyzed.load(Ordering::SeqCst);
-    if analyzed > 0 && !top_level_aspect_drivers().created.load(Ordering::SeqCst) {
-        unported!(
-            "SkyframeBuildView.analyzeAndExecuteTargets",
-            "the build command did not create the BuildDriverKey.ofTopLevelAspect keys \
-             (execution_seam::build_driver_aspect_keys) of {} top-level aspect key(s)",
-            analyzed
-        );
-    }
-}
-
 /// Creates the `BuildDriverKey`s of the top-level aspects of a build request (the
 /// `buildDriverAspectKeys` of `SkyframeBuildView.analyzeAndExecuteTargets`), one per
 /// `TopLevelAspectsKey` (`AnalysisResult::get_top_level_aspects_keys`), in their order. Java's
@@ -1019,9 +1541,6 @@ pub fn build_driver_aspect_keys(
     extra_action_top_level_only: bool,
     keep_going: bool,
 ) -> Vec<BuildDriverKey> {
-    top_level_aspect_drivers()
-        .created
-        .store(true, Ordering::SeqCst);
     let mut build_driver_aspect_keys: IndexSet<BuildDriverKey> = IndexSet::new();
     for k in top_level_aspects_keys {
         build_driver_aspect_keys.insert(BuildDriverKey::of_top_level_aspect(

@@ -27,7 +27,7 @@ use crate::util::DigestUtil;
 ///
 /// PORT: Java's `long` arithmetic wraps and its hashes are compared with
 /// `Long.compareUnsigned`; the hashes here are `u64` with wrapping arithmetic.
-// Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:61 RepMaxCdcChunker
+// Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:62 RepMaxCdcChunker
 pub struct RepMaxCdcChunker {
     min_size: i32,
     /// The amount of data that must be available (unless the end of the input has been reached)
@@ -40,12 +40,12 @@ pub struct RepMaxCdcChunker {
 }
 
 impl RepMaxCdcChunker {
-    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:72 RepMaxCdcChunker.<init>
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:73 RepMaxCdcChunker.<init>
     pub fn new(digest_util: DigestUtil) -> RepMaxCdcChunker {
         Self::from_config(&RepMaxCdcChunkingConfig::defaults(), digest_util)
     }
 
-    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:76 RepMaxCdcChunker.<init>
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:77 RepMaxCdcChunker.<init>
     pub fn from_config(
         config: &RepMaxCdcChunkingConfig,
         digest_util: DigestUtil,
@@ -55,7 +55,7 @@ impl RepMaxCdcChunker {
 
     /// Creates a chunker producing chunks of `[minSize, 2 * minSize)` bytes. Panics with Java's
     /// `IllegalArgumentException` text when the parameters are out of range.
-    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:89 RepMaxCdcChunker.<init>
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:90 RepMaxCdcChunker.<init>
     pub fn with_sizes(min_size: i32, horizon_size: i32, digest_util: DigestUtil) -> Self {
         blaze_util::check_argument!(
             min_size >= GEAR_HASH_WINDOW_SIZE,
@@ -86,7 +86,7 @@ impl RepMaxCdcChunker {
 
 impl ContentDefinedChunker for RepMaxCdcChunker {
     /// Chunks a blob and returns chunk digests.
-    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:121 RepMaxCdcChunker.chunkToDigests
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:119 RepMaxCdcChunker.chunkToDigests
     fn chunk_to_digests(&self, input: &mut dyn io::Read) -> io::Result<Vec<Digest>> {
         let mut digests = Vec::new();
         let mut session = ChunkingSession::new(self, input);
@@ -110,7 +110,7 @@ impl ContentDefinedChunker for RepMaxCdcChunker {
 /// This is a port of `repMaxContentDefinedChunker.ReadNextChunk()` from buildbarn/go-cdc on top
 /// of a sliding read buffer, and mirrors its structure closely. Comments are largely taken from
 /// the Go implementation.
-// Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:139 RepMaxCdcChunker.ChunkingSession
+// Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:141 RepMaxCdcChunker.ChunkingSession
 struct ChunkingSession<'a> {
     min_size: i32,
     peek_size: i32,
@@ -161,7 +161,7 @@ impl<'a> ChunkingSession<'a> {
 
     /// Makes up to `n` bytes available at `buf_start` and returns how many of them are available,
     /// which is only less than `n` at the end of the input.
-    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:192 RepMaxCdcChunker.ChunkingSession.peek
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:193 RepMaxCdcChunker.ChunkingSession.peek
     fn peek(&mut self, n: i32) -> io::Result<i32> {
         let mut available = self.buf_end - self.buf_start;
         if (available as i64) < i64::from(n) && !self.eof {
@@ -185,7 +185,7 @@ impl<'a> ChunkingSession<'a> {
 
     /// Returns the size of the next chunk, whose data is available in the buffer at `buf_start`,
     /// or zero at the end of the input.
-    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:217 RepMaxCdcChunker.ChunkingSession.nextChunkSize
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:219 RepMaxCdcChunker.ChunkingSession.nextChunkSize
     fn next_chunk_size(&mut self) -> io::Result<i32> {
         let min_size = self.min_size;
         // Discard data that was handed out by the previous call.
@@ -448,29 +448,34 @@ impl<'a> ChunkingSession<'a> {
 
 /// A minimal growable list of ints (Java's `IntList`, to avoid boxing on the chunking path);
 /// indices are Java `int`s, and an index out of range panics as Java's array access throws.
-// Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:478 RepMaxCdcChunker.IntList
+// Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:464 RepMaxCdcChunker.IntList
 #[derive(Default)]
 struct IntList {
     elements: Vec<i32>,
 }
 
 impl IntList {
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:468 RepMaxCdcChunker.IntList.size
     fn size(&self) -> i32 {
         self.elements.len() as i32
     }
 
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:472 RepMaxCdcChunker.IntList.isEmpty
     fn is_empty(&self) -> bool {
         self.elements.is_empty()
     }
 
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:476 RepMaxCdcChunker.IntList.get
     fn get(&self, index: i32) -> i32 {
         self.elements[usize::try_from(index).expect("ArrayIndexOutOfBoundsException")]
     }
 
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:480 RepMaxCdcChunker.IntList.set
     fn set(&mut self, index: i32, value: i32) {
         self.elements[usize::try_from(index).expect("ArrayIndexOutOfBoundsException")] = value;
     }
 
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:484 RepMaxCdcChunker.IntList.last
     fn last(&self) -> i32 {
         *self
             .elements
@@ -478,35 +483,40 @@ impl IntList {
             .expect("ArrayIndexOutOfBoundsException")
     }
 
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:488 RepMaxCdcChunker.IntList.add
     fn add(&mut self, value: i32) {
         self.elements.push(value);
     }
 
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:497 RepMaxCdcChunker.IntList.popLast
     fn pop_last(&mut self) -> i32 {
-        self.elements
-            .pop()
-            .expect("ArrayIndexOutOfBoundsException")
+        self.elements.pop().expect("ArrayIndexOutOfBoundsException")
     }
 
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:501 RepMaxCdcChunker.IntList.clear
     fn clear(&mut self) {
         self.elements.clear();
     }
 
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:505 RepMaxCdcChunker.IntList.truncate
     fn truncate(&mut self, new_size: i32) {
         self.elements.truncate(new_size as usize);
     }
 
     /// Removes the first `count` elements, shifting the rest to the front.
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:510 RepMaxCdcChunker.IntList.removePrefix
     fn remove_prefix(&mut self, count: i32) {
         self.elements.drain(..count as usize);
     }
 
     /// Removes the elements in `[from, to)`, shifting later elements down.
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:516 RepMaxCdcChunker.IntList.removeRange
     fn remove_range(&mut self, from: i32, to: i32) {
         self.elements.drain(from as usize..to as usize);
     }
 
     /// Reverses the elements in `[from, to)`.
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunker.java:522 RepMaxCdcChunker.IntList.reverse
     fn reverse(&mut self, from: i32, to: i32) {
         if from < to {
             self.elements[from as usize..to as usize].reverse();

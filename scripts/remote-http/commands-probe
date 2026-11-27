@@ -8,6 +8,7 @@
 #        scripts/remote-http/commands-probe help
 #
 # STARTUP_FLAGs (e.g. --digest_function=blake3) go before the command of every invocation.
+# WORKER_DIGEST (e.g. BLAKE3) starts the worker with -Dbazel.DigestFunction=<it>.
 #
 # One workspace and one output user root per side, reused by the whole sequence:
 #   ~/.cache/blaze/work/remote-7/commands-probe/<side-name>/{ws,ur,worker,log}
@@ -22,7 +23,7 @@
 set -uo pipefail
 
 if [[ $# -lt 2 || "$1" == "help" || "$1" == "-h" || "$1" == "--help" ]]; then
-  sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'
+  sed -n '2,24p' "$0" | sed 's/^# \{0,1\}//'
   [[ $# -ge 1 && ( "$1" == "help" || "$1" == "-h" || "$1" == "--help" ) ]] && exit 0
   exit 2
 fi
@@ -42,6 +43,7 @@ if [[ "${COMMANDS_PROBE_IN_UNIT:-}" != "1" ]]; then
   exec systemd-run --user --collect --wait --quiet --pipe -p MemoryMax=12G -p MemorySwapMax=0 \
     --setenv=HOME="$HOME" --setenv=PATH=/usr/bin:/bin:/usr/sbin \
     --setenv=COMMANDS_PROBE_IN_UNIT=1 --setenv=BLAZE_SERVER_MODE=daemon \
+    --setenv=WORKER_DIGEST="${WORKER_DIGEST:-}" \
     "$(realpath "$0")" "$@"
 fi
 
@@ -71,7 +73,7 @@ bazel() {
 mkdir -p "$BASE/worker/work" "$BASE/worker/cas" \
   "$BASE/worker/runfiles/io_bazel/src/tools/remote/src/main/java/com/google/devtools/build/remote/worker"
 worker_port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1])')
-RUNFILES_DIR="$BASE/worker/runfiles" "$JAVA" -jar "$JAR" --work_path="$BASE/worker/work" \
+RUNFILES_DIR="$BASE/worker/runfiles" "$JAVA" ${WORKER_DIGEST:+-Dbazel.DigestFunction=$WORKER_DIGEST} -jar "$JAR" --work_path="$BASE/worker/work" \
   --cas_path="$BASE/worker/cas" --listen_port="$worker_port" --pid_file="$BASE/worker/pid" \
   >> "$BASE/worker/log" 2>&1 &
 WORKER_PID=$!

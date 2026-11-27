@@ -23,8 +23,10 @@ use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_build_config::fragment::{Fragment, FragmentClass};
 use starlark::values::{Heap, Value};
 
+pub mod android_configuration;
 pub mod apple_configuration;
 pub mod coverage_configuration;
+pub mod j2objc_configuration;
 pub mod java_configuration;
 pub mod objc_configuration;
 pub mod platform_configuration;
@@ -62,6 +64,8 @@ pub fn register_fragments() {
     coverage_configuration::register();
     proto_configuration::register();
     java_configuration::register();
+    android_configuration::register();
+    j2objc_configuration::register();
 }
 
 /// The identity of a fragment: the address of its shared allocation (Java: the `Fragment`

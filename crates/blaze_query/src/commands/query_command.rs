@@ -121,6 +121,7 @@ fn interrupted_detailed_exit_code(message: &str) -> DetailedExitCode {
 }
 
 /// Reads the query expression from the residue or `--query_file`.
+// PORT: skipped, a module of free functions has no instance: QueryOptionHelper.<init>
 // Java: com/google/devtools/build/lib/runtime/commands/QueryOptionHelper.java:35 QueryOptionHelper.readQuery
 pub fn read_query(
     query_options: &QueryOptions,

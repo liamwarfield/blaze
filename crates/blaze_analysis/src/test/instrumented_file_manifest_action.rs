@@ -105,6 +105,10 @@ impl InstrumentedFileManifestAction {
 }
 
 impl Action for InstrumentedFileManifestAction {
+    fn java_class_name(&self) -> Option<&'static str> {
+        Some("com.google.devtools.build.lib.analysis.test.InstrumentedFileManifestAction")
+    }
+
     fn abstract_action(&self) -> &AbstractAction {
         &self.base
     }

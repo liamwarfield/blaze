@@ -2104,7 +2104,11 @@ impl SkyframeActionExecutor {
         );
         // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:436 ActionExecutionContext.getRichArtifactData
         let rich_artifact_data = context.rich_artifact_data.lock().clone();
-        Ok(self.create_action_execution_value(output_metadata_store, rich_artifact_data))
+        Ok(self.create_action_execution_value(
+            output_metadata_store,
+            rich_artifact_data,
+            action.as_ref(),
+        ))
     }
 
     /// `ActionExecutionValue.create(outputMetadataStore, richArtifactData, action)`.
@@ -2113,6 +2117,7 @@ impl SkyframeActionExecutor {
         &self,
         output_metadata_store: &ActionOutputMetadataStore,
         rich_artifact_data: Option<Arc<RunfilesArtifactValue>>,
+        action: &dyn Action,
     ) -> ActionExecutionValue {
         ActionExecutionValue::create_with_rich_metadata(
             output_metadata_store.get_all_artifact_data(),
@@ -2122,6 +2127,7 @@ impl SkyframeActionExecutor {
                 (r, metadata)
             }),
         )
+        .with_discovered_modules(action.include_scannable_discovered_modules())
     }
 
     /// Validates that all action outputs were created or intentionally omitted. This can result
@@ -2667,7 +2673,7 @@ impl SkyframeActionExecutor {
     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:922 SkyframeActionExecutor.discoverInputs
     pub fn discover_inputs(
         &self,
-        listener: &dyn ExtendedEventHandler,
+        env: &mut Environment<'_>,
         action: &ActionRef,
         input_metadata: Arc<ActionInputMetadata>,
         action_file_system: Option<Arc<RemoteActionFileSystem>>,
@@ -2696,7 +2702,7 @@ impl SkyframeActionExecutor {
             setup_action_fs_file_out_err(context.get_file_out_err(), action.as_ref())?;
         }
         // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:958 SkyframeActionExecutor.discoverInputs
-        listener.post(Arc::new(ScanningActionEvent {
+        env.listener().post(Arc::new(ScanningActionEvent {
             action: action.clone(),
         }));
         let Some(executable) = as_executable(action.as_ref()) else {
@@ -2706,17 +2712,21 @@ impl SkyframeActionExecutor {
                 action.get_mnemonic()
             ));
         };
-        let result = executable.discover_inputs(&context).and_then(|artifacts| {
-            // Input discovery may have been affected by lost inputs. If an action filesystem is
-            // used, it may know whether inputs were lost. We should fail fast if any were;
-            // rewinding may be able to fix it.
-            // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:967 SkyframeActionExecutor.discoverInputs
-            Self::check_action_file_system_for_lost_inputs(
-                context.action_file_system.as_ref(),
-                action.as_ref(),
-            )?;
-            Ok(artifacts)
-        });
+        // actionExecutionContext.getEnvironmentForDiscoveringInputs(): the node's environment is
+        // lent for the call.
+        let result =
+            crate::discovery_env::with_discovery_env(env, || executable.discover_inputs(&context))
+                .and_then(|artifacts| {
+                    // Input discovery may have been affected by lost inputs. If an action filesystem is
+                    // used, it may know whether inputs were lost. We should fail fast if any were;
+                    // rewinding may be able to fix it.
+                    // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:967 SkyframeActionExecutor.discoverInputs
+                    Self::check_action_file_system_for_lost_inputs(
+                        context.action_file_system.as_ref(),
+                        action.as_ref(),
+                    )?;
+                    Ok(artifacts)
+                });
         let outcome = (|| match result {
             Ok(artifacts) => Ok(artifacts),
             // Java: InterruptedException propagates unreported.
@@ -2746,7 +2756,7 @@ impl SkyframeActionExecutor {
                     // signal_lost_inputs.)
                     // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:983 SkyframeActionExecutor.discoverInputs
                     return Err(self.signal_lost_inputs(
-                        listener,
+                        env.listener(),
                         &primary_output_path,
                         action,
                         e,
@@ -2757,7 +2767,7 @@ impl SkyframeActionExecutor {
                 }
                 Err(self
                     .process_and_get_exception_to_throw(
-                        listener,
+                        env.listener(),
                         &primary_output_path,
                         action,
                         e,
@@ -2769,7 +2779,7 @@ impl SkyframeActionExecutor {
         })();
         // finally
         // Java: com/google/devtools/build/lib/skyframe/SkyframeActionExecutor.java:1002 SkyframeActionExecutor.discoverInputs
-        listener.post(Arc::new(StoppedScanningActionEvent {
+        env.listener().post(Arc::new(StoppedScanningActionEvent {
             action: action.clone(),
         }));
         close_context(context.get_file_out_err(), action, outcome)
@@ -4819,6 +4829,18 @@ fn action_exec_root(
 }
 
 impl ActionExecutionContext for ActionExecutionContextImpl<'_> {
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:516 ActionExecutionContext.getEnvironmentForDiscoveringInputs
+    fn with_environment_for_discovering_inputs(
+        &self,
+        f: &mut dyn FnMut(
+            &mut dyn blaze_exec::exec::action_execution_context::DiscoveryEnvironment,
+        ),
+    ) {
+        crate::discovery_env::get_discovery_env(|env| {
+            f(&mut crate::discovery_env::SkyframeDiscoveryEnvironment { env })
+        })
+    }
+
     // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:369 ActionExecutionContext.getExecRoot
     fn get_exec_root(&self) -> &Path {
         &self.exec_root

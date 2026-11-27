@@ -10,8 +10,12 @@
 //! | --- | --- | --- |
 //! | no delay | done (ok) at once | done (ok) at once |
 //! | `setDelayBeforeClosingStream(d)` | done (ok) at once | done (ok) after `d` |
-//! | `setDelayBeforeHalfClosingStream(d)` | done (ok) after `d` | done (ok) after `d` |
-//! | `setErrorMessage(m)` | done (ok): the half-close is acknowledged first | done (failed) |
+//! | `setDelayBeforeHalfClosingStream(d)` | done (ok) at once | done (ok) after `d` |
+//! | `setErrorMessage(m)` | done (ok) | done (failed) |
+//!
+//! The uploader completes the half-close future when it half-closes the stream after sending the
+//! final event (Java `BuildEventServiceUploader.halfCloseEventUploadingStream`), whatever the
+//! service does with its acknowledgements; so the half-close is never late.
 //!
 //! PORT: the service listens on `127.0.0.1:0` (no in-process gRPC transport), as in
 //! `build_event_service_transport_test`.
@@ -35,8 +39,8 @@ use blaze_bes::uploader::{BesClock, Sleeper};
 use blaze_events::{EventBus, Postable};
 use blaze_optdefs::misc::build_event_protocol_options::BuildEventProtocolOptions;
 use blaze_optdefs::misc::build_event_service_options::BuildEventServiceOptions;
-use blaze_protos::google::devtools::build::v1::build_event::build_component_stream_finished::FinishType;
 use blaze_protos::google::devtools::build::v1::build_event::Event;
+use blaze_protos::google::devtools::build::v1::build_event::build_component_stream_finished::FinishType;
 use blaze_protos::google::devtools::build::v1::{
     PublishBuildToolEventStreamRequest, PublishBuildToolEventStreamResponse,
     PublishLifecycleEventRequest,
@@ -298,14 +302,13 @@ fn delay_before_closing_stream_half_close_done_close_late() {
 }
 
 #[test]
-fn delay_before_half_closing_stream_both_late() {
+fn delay_before_half_closing_stream_half_close_done_close_late() {
     let (half_close, close) = run_build(DelayingService {
         delay_before_half_closing_stream: DELAY,
         ..DelayingService::default()
     });
-    pending(&half_close, Duration::from_millis(1000));
-    pending(&close, Duration::from_millis(100));
-    done_ok(&half_close, LATE);
+    done_ok(&half_close, SOON);
+    pending(&close, Duration::from_millis(500));
     done_ok(&close, LATE);
 }
 
@@ -319,11 +322,5 @@ fn error_message_half_close_done_close_fails() {
         CloseOutcome::Done(Err(_)) => {}
         other => panic!("expected a failed close, got {other:?}"),
     }
-    // Observed shape of the half-close future after the failed close.
-    let observed = half_close.get_outcome(Some(SOON));
-    eprintln!("half-close under setErrorMessage: {observed:?}");
-    assert!(
-        !matches!(observed, CloseOutcome::TimedOut),
-        "the half-close future must be complete once the close failed"
-    );
+    done_ok(&half_close, SOON);
 }

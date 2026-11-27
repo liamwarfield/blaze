@@ -40,16 +40,19 @@ impl ConfiguredTargetAndData {
     }
 
     /// Java `getTargetLabel()`.
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetAndData.java:217 ConfiguredTargetAndData.getTargetLabel
     pub fn get_target_label(&self) -> blaze_cmdline::Label {
         self.target.get_label().clone()
     }
 
     /// Java `getConfiguration()`.
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetAndData.java:199 ConfiguredTargetAndData.getConfiguration
     pub fn get_configuration(&self) -> Option<&Arc<BuildConfigurationValue>> {
         self.configuration.as_ref()
     }
 
     /// Java `getTransitionKeys()`.
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetAndData.java:213 ConfiguredTargetAndData.getTransitionKeys
     pub fn get_transition_keys(&self) -> &[String] {
         &self.transition_keys
     }

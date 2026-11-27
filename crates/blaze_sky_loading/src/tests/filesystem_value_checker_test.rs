@@ -35,7 +35,10 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Fixture {
-        let setup = TestSetup::new(FakeRepos::default());
+        Fixture::with_setup(TestSetup::new(FakeRepos::default()))
+    }
+
+    fn with_setup(setup: TestSetup) -> Fixture {
         let pkg_root = Root::from_path(setup.workspace().clone());
         let evaluator = setup.evaluator();
         Fixture {
@@ -273,9 +276,37 @@ fn test_explicit_files() {
 
 // Java: FilesystemValueCheckerTest.testFileWithIOExceptionNotConsideredDirty
 #[test]
-#[ignore = "needs a file system whose readlink throws (Java's InMemoryFileSystem \
-            readlinkThrowsIoException); the real file system cannot be made to fail so"]
-fn test_file_with_io_exception_not_considered_dirty() {}
+fn test_file_with_io_exception_not_considered_dirty() {
+    // Java MockFileSystem.readlinkThrowsIoException.
+    let readlink_throws_io_exception = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let flag = readlink_throws_io_exception.clone();
+    let scratch = crate::test_util::Scratch::with_file_system(move |unix| {
+        blaze_vfs::testing::FaultInjectingFileSystem::new(
+            unix,
+            blaze_vfs::testing::Hooks {
+                read_symbolic_link: Some(Box::new(move |_path| {
+                    flag.load(std::sync::atomic::Ordering::SeqCst)
+                        .then(|| Err(std::io::Error::other("readlink failed")))
+                })),
+                ..Default::default()
+            },
+        )
+    });
+    let f = Fixture::with_setup(TestSetup::with_scratch(FakeRepos::default(), scratch));
+    let workspace = f.setup.workspace().clone();
+    let foo = workspace.get_relative(&PathFragment::create("foo"));
+    f.setup.scratch.symlink(foo.get_path_string(), "bar");
+
+    readlink_throws_io_exception.store(true, std::sync::atomic::Ordering::SeqCst);
+    let file_key = SkyKey::new(FileStateKey::key(f.rooted_path("foo")));
+    let result = f.evaluate(vec![file_key]);
+    assert!(result.has_error());
+
+    readlink_throws_io_exception.store(false, std::sync::atomic::Ordering::SeqCst);
+    let diff = f.get_dirty_filesystem_keys(&checker());
+    assert!(diff.changed_keys_without_new_values().is_empty());
+    assert!(diff.changed_keys_with_new_values().is_empty());
+}
 
 // Java: FilesystemValueCheckerTest.testFilesInCycleNotConsideredDirty
 #[test]

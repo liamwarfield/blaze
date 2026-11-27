@@ -316,11 +316,21 @@ fn download_chunked_window_refills_after_one_chunk_completes() {
             .iter()
             .all(|d| f.source.calls(d) == 1)
     };
-    let overflow_chunk_requested = || f.source.calls(&chunk_digests[MAX_IN_FLIGHT_CHUNK_DOWNLOADS]) == 1;
+    let overflow_chunk_requested = || {
+        f.source
+            .calls(&chunk_digests[MAX_IN_FLIGHT_CHUNK_DOWNLOADS])
+            == 1
+    };
     assert!(await_until(Duration::from_secs(1), first_window_requested));
-    assert!(!await_until(Duration::from_millis(100), overflow_chunk_requested));
+    assert!(!await_until(
+        Duration::from_millis(100),
+        overflow_chunk_requested
+    ));
     chunk_futures[0].set(Ok(vec![expected_data[0]]));
-    assert!(await_until(Duration::from_secs(1), overflow_chunk_requested));
+    assert!(await_until(
+        Duration::from_secs(1),
+        overflow_chunk_requested
+    ));
     for (i, settable) in chunk_futures.iter().enumerate() {
         if !settable.is_done() {
             settable.set(Ok(vec![expected_data[i]]));
@@ -377,10 +387,19 @@ fn download_chunked_long_duplicate_run_resumes_after_drain() {
     let initial_downloads_requested =
         || f.source.calls(&first) == 1 && f.source.calls(&duplicate) == 1;
     let final_chunk_requested = || f.source.calls(&last) == 1;
-    assert!(await_until(Duration::from_secs(1), initial_downloads_requested));
-    assert!(!await_until(Duration::from_millis(100), final_chunk_requested));
+    assert!(await_until(
+        Duration::from_secs(1),
+        initial_downloads_requested
+    ));
+    assert!(!await_until(
+        Duration::from_millis(100),
+        final_chunk_requested
+    ));
     duplicate_future.set(Ok(vec![2]));
-    assert!(!await_until(Duration::from_millis(100), final_chunk_requested));
+    assert!(!await_until(
+        Duration::from_millis(100),
+        final_chunk_requested
+    ));
     first_future.set(Ok(vec![1]));
     assert!(await_until(Duration::from_secs(1), final_chunk_requested));
     last_future.set(Ok(vec![3]));

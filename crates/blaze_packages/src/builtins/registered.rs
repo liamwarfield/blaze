@@ -122,6 +122,7 @@ impl RuleClassProviderRegistrations {
         );
         // CcBootstrap
         // Java: com/google/devtools/build/lib/starlarkbuildapi/cpp/CcBootstrap.java:50 CcBootstrap.addBindingsToBuilder
+        // PORT: skipped, the constructor takes the cc module and keeps nothing (an empty body at the pin): CcBootstrap.<init>
         let cc_allowed = pkgs(&[
             ("_builtins", ""),
             ("bazel_tools", ""),

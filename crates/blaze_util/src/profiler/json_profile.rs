@@ -214,11 +214,13 @@ impl PhaseSummaryStatistics {
         self.get_duration_nanos(phase) as f64 / self.total_duration_nanos as f64
     }
 
+    // Java: com/google/devtools/build/lib/profiler/statistics/PhaseSummaryStatistics.java:65 PhaseSummaryStatistics.getTotalDuration
     pub fn get_total_duration(&self) -> i64 {
         self.total_duration_nanos
     }
 
     /// The executed phases, in declaration order.
+    // Java: com/google/devtools/build/lib/profiler/statistics/PhaseSummaryStatistics.java:69 PhaseSummaryStatistics.iterator
     pub fn phases(&self) -> impl Iterator<Item = ProfilePhase> + '_ {
         self.durations.iter().map(|(p, _)| *p)
     }
@@ -321,14 +323,17 @@ impl JsonProfile {
         }
     }
 
+    // Java: com/google/devtools/build/lib/profiler/JsonProfile.java:123 JsonProfile.getPhaseSummaryStatistics
     pub fn get_phase_summary_statistics(&self) -> Option<&PhaseSummaryStatistics> {
         self.phase_summary_statistics.as_ref()
     }
 
+    // Java: com/google/devtools/build/lib/profiler/JsonProfile.java:127 JsonProfile.getTraceEvents
     pub fn get_trace_events(&self) -> &[TraceEvent] {
         &self.trace_events
     }
 
+    // Java: com/google/devtools/build/lib/profiler/JsonProfile.java:131 JsonProfile.getBuildMetadata
     pub fn get_build_metadata(&self) -> Option<&BuildMetadata> {
         self.build_metadata.as_ref()
     }

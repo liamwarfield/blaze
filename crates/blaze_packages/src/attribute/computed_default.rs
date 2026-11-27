@@ -298,6 +298,8 @@ impl StarlarkComputedDefaultTemplate {
                 &self.dependencies,
                 rule,
                 // Java: com/google/devtools/build/lib/packages/Attribute.java:1154 Attribute.FixedComputationLimiter
+                // Java: com/google/devtools/build/lib/packages/Attribute.java:1162 Attribute.FixedComputationLimiter.onComputationCount
+                // Java: com/google/devtools/build/lib/packages/Attribute.java:1134 Attribute.ComputationLimiter.onComputationCount
                 &mut |count| {
                     if count > COMPUTED_DEFAULT_MAX_COMBINATIONS {
                         // Java: com/google/devtools/build/lib/packages/Attribute.java:1144 Attribute.TooManyConfigurableAttributesException
@@ -308,6 +310,7 @@ impl StarlarkComputedDefaultTemplate {
                     }
                     Ok(())
                 },
+                // Java: com/google/devtools/build/lib/packages/Attribute.java:1180 Attribute.ComputationStrategy.compute
                 &mut |map| match self.compute_value(event_handler, map) {
                     Ok(v) => Ok::<_, std::convert::Infallible>(v),
                     Err(ex) => {
@@ -560,6 +563,27 @@ impl LateBoundDefault {
 
     pub fn kind(&self) -> LateBoundDefaultKind {
         self.kind
+    }
+
+    /// `getClass().getName()` of the Java object, which `StarlarkValue.repr` prints: the
+    /// constructors of the three kinds make these classes themselves (no subclass); `None` for
+    /// another `SimpleLateBoundDefault`.
+    pub fn java_class_name(&self) -> Option<&'static str> {
+        match self.kind {
+            // Java: com/google/devtools/build/lib/packages/Attribute.java:1720 Attribute.LabelLateBoundDefault
+            LateBoundDefaultKind::Label => {
+                Some("com.google.devtools.build.lib.packages.Attribute$LabelLateBoundDefault")
+            }
+            // Java: com/google/devtools/build/lib/packages/Attribute.java:1789 Attribute.LabelListLateBoundDefault
+            LateBoundDefaultKind::LabelList => {
+                Some("com.google.devtools.build.lib.packages.Attribute$LabelListLateBoundDefault")
+            }
+            // Java: com/google/devtools/build/lib/packages/Attribute.java:1710 Attribute.AlwaysNullLateBoundDefault
+            LateBoundDefaultKind::AlwaysNull => {
+                Some("com.google.devtools.build.lib.packages.Attribute$AlwaysNullLateBoundDefault")
+            }
+            LateBoundDefaultKind::Other => None,
+        }
     }
 
     /// The default value used when the configuration is unknown.

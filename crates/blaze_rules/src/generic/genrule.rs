@@ -80,6 +80,7 @@ impl GenRuleAction {
             Self::MNEMONIC,
             OutputPathsMode::OFF,
         )
+        .with_java_class("com.google.devtools.build.lib.rules.genrule.GenRuleAction")
     }
 }
 

@@ -6,8 +6,11 @@
 //! `no-remote-exec`) consumes its output locally; the worker is restarted with an empty cache,
 //! so `foo.out` is lost when `bar` needs it.
 //!
+//! The rewind build sets `--experimental_remote_cache_eviction_retries=0`, so the build cannot
+//! succeed by retrying the whole build after the cache error (review round 2, RW-6).
+//!
 //! Expected results recorded from the oracle (Bazel 9.3.2, 2026-11-26, the same commands):
-//! exit code 0, "Build completed successfully, 2 total actions", and an execution log in which
+//! exit code 0, no "retrying the build" line, "Build completed successfully, 2 total actions", and an execution log in which
 //! `//a:foo` ran again on the remote runner (the rewound action) and `//a:bar` ran on
 //! `linux-sandbox`.
 //!
@@ -165,6 +168,8 @@ genrule(
         "--remote_download_minimal",
         "--jobs=4",
         "--rewind_lost_inputs",
+        // Without the build retry, success can only come from rewinding (review RW-6).
+        "--experimental_remote_cache_eviction_retries=0",
         &format!("--execution_log_json_file={}", execution_log.display()),
         "//a:bar",
     ]);
@@ -172,6 +177,7 @@ genrule(
     worker(&["stop", &name]);
 
     assert_eq!(rc, 0, "{err}");
+    assert!(!err.contains("retrying the build"), "{err}");
     assert!(
         err.contains("Build completed successfully, 2 total actions"),
         "{err}"

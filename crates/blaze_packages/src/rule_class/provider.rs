@@ -7,12 +7,14 @@ use blaze_cmdline::Label;
 
 /// A serializable identity of a provider (Java `Provider.Key`).
 // Java: com/google/devtools/build/lib/packages/Provider.java:64 Provider.Key
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone)]
 pub enum ProviderKey {
     /// Java `BuiltinProvider.Key(name, providerClass)`; equality is by provider class.
     /// `provider_class` is the Java simple name of the provider's value class (e.g.
     /// `DefaultInfo`, `OutputGroupInfo`), the class `BuiltinProvider` is parameterized with.
     // Java: com/google/devtools/build/lib/packages/BuiltinProvider.java:118 BuiltinProvider.Key
+    // Java: com/google/devtools/build/lib/packages/BuiltinProvider.java:122 BuiltinProvider.Key.Key
+    // PORT: skipped, no caller in the Bazel binary: BuiltinProvider.Key.getProviderClass
     Builtin {
         name: String,
         provider_class: String,
@@ -26,6 +28,57 @@ pub enum ProviderKey {
         extension_label: Label,
         exported_name: String,
     },
+}
+
+impl PartialEq for ProviderKey {
+    // Java: com/google/devtools/build/lib/packages/BuiltinProvider.java:147 BuiltinProvider.Key.equals
+    // Java: com/google/devtools/build/lib/packages/StarlarkProvider.java:634 StarlarkProvider.Key.equals
+    fn eq(&self, other: &ProviderKey) -> bool {
+        match (self, other) {
+            // A builtin key is equal to another by its provider class alone.
+            (
+                ProviderKey::Builtin { provider_class, .. },
+                ProviderKey::Builtin {
+                    provider_class: other_class,
+                    ..
+                },
+            ) => provider_class == other_class,
+            (
+                ProviderKey::Starlark {
+                    extension_label,
+                    exported_name,
+                },
+                ProviderKey::Starlark {
+                    extension_label: other_label,
+                    exported_name: other_name,
+                },
+            ) => extension_label == other_label && exported_name == other_name,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for ProviderKey {}
+
+impl std::hash::Hash for ProviderKey {
+    // Java: com/google/devtools/build/lib/packages/BuiltinProvider.java:142 BuiltinProvider.Key.hashCode
+    // Java: com/google/devtools/build/lib/packages/StarlarkProvider.java:629 StarlarkProvider.Key.hashCode
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        match self {
+            ProviderKey::Builtin { provider_class, .. } => {
+                0u8.hash(state);
+                provider_class.hash(state);
+            }
+            ProviderKey::Starlark {
+                extension_label,
+                exported_name,
+            } => {
+                1u8.hash(state);
+                extension_label.hash(state);
+                exported_name.hash(state);
+            }
+        }
+    }
 }
 
 impl ProviderKey {
@@ -78,6 +131,10 @@ impl fmt::Display for ProviderKey {
 /// `StarlarkProviderIdentifier`).
 // Java: com/google/devtools/build/lib/packages/StarlarkProviderIdentifier.java:27 StarlarkProviderIdentifier
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
+// Java: com/google/devtools/build/lib/packages/StarlarkProviderIdentifier.java:54 StarlarkProviderIdentifier.KeyedIdentifier.<init>
+// Java: com/google/devtools/build/lib/packages/StarlarkProviderIdentifier.java:69 StarlarkProviderIdentifier.KeyedIdentifier.hashCode
+// Java: com/google/devtools/build/lib/packages/StarlarkProviderIdentifier.java:74 StarlarkProviderIdentifier.KeyedIdentifier.equals
+// PORT: skipped, identifiers are not interned (derived equality on the key): StarlarkProviderIdentifier.KeyedIdentifier.intern
 pub struct StarlarkProviderIdentifier {
     key: ProviderKey,
 }
@@ -89,11 +146,13 @@ impl StarlarkProviderIdentifier {
     }
 
     // Java: com/google/devtools/build/lib/packages/StarlarkProviderIdentifier.java:37 StarlarkProviderIdentifier.getKey
+    // Java: com/google/devtools/build/lib/packages/StarlarkProviderIdentifier.java:58 StarlarkProviderIdentifier.KeyedIdentifier.getKey
     pub fn get_key(&self) -> &ProviderKey {
         &self.key
     }
 
     // Java: com/google/devtools/build/lib/packages/StarlarkProviderIdentifier.java:64 StarlarkProviderIdentifier.KeyedIdentifier.fingerprint
+    // Java: com/google/devtools/build/lib/packages/StarlarkProviderIdentifier.java:39 StarlarkProviderIdentifier.fingerprint
     pub fn fingerprint(&self, fp: &mut blaze_util::Fingerprint) {
         fp.add_boolean(false);
         self.key.fingerprint(fp);
@@ -102,6 +161,7 @@ impl StarlarkProviderIdentifier {
 
 impl fmt::Display for StarlarkProviderIdentifier {
     // Java: com/google/devtools/build/lib/packages/StarlarkProviderIdentifier.java:86 StarlarkProviderIdentifier.KeyedIdentifier.toString
+    // Java: com/google/devtools/build/lib/packages/StarlarkProviderIdentifier.java:47 StarlarkProviderIdentifier.toString
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.key)
     }

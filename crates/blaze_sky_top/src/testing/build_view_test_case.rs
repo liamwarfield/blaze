@@ -132,6 +132,12 @@ impl From<BuildViewError> for UpdateError {
             },
             BuildViewError::InvalidConfiguration(e) => UpdateError::InvalidConfiguration(e),
             BuildViewError::Interrupted => UpdateError::Interrupted,
+            // BuildViewTestCase analyzes without the execution phase.
+            other @ (BuildViewError::Execution(_) | BuildViewError::BuildTool(_)) => {
+                panic!(
+                    "IllegalStateException: an execution phase error in an analysis test: {other:?}"
+                )
+            }
         }
     }
 }

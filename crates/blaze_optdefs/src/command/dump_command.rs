@@ -302,6 +302,7 @@ impl Converter for MemoryModeConverter {
     fn convert(&self, input: Option<&str>, _: Option<&ConversionContext>) -> ConvResult {
         Ok(Some(Value::new(self.convert_mode(non_null(input))?)))
     }
+    // Java: com/google/devtools/build/lib/runtime/commands/DumpCommand.java:136 DumpCommand.MemoryModeConverter.getTypeDescription
     fn get_type_description(&self) -> String {
         "memory mode".into()
     }

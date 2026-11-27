@@ -95,8 +95,10 @@ impl BuildConfigurationSupplier {
         // TODO(bazel-team): What if there are multiple configurations? [multi-config]
         let build_options = create_build_options(&rule_class_provider, &self.options);
         let reporter: Arc<dyn blaze_events::ExtendedEventHandler> = self.reporter.clone();
+        // The client refuses `info` outside a workspace ("Bazel 'info' must be invoked from
+        // within a workspace", checked against the oracle), so the server always has one here.
         let Some(workspace) = self.workspace.clone() else {
-            blaze_util::unported!("InfoCommand.exec (configuration outside a workspace)");
+            panic!("IllegalStateException: 'info' ran outside a workspace");
         };
         let executor = SkyframeExecutor::create(SkyframeExecutorInputs {
             incremental: Some(self.incremental.clone()),

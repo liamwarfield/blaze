@@ -132,6 +132,9 @@ pub struct KnownNestedSets {
 }
 
 impl KnownNestedSets {
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/KnownNestedSets.java:28 KnownNestedSets.<init>
+    // PORT: the output handler and KnownArtifacts are arguments of
+    // `data_to_id_and_stream_output_proto` (the caches are borrowed mutably one at a time).
     pub fn new() -> Self {
         KnownNestedSets {
             base: BaseCache::new(),
@@ -144,9 +147,10 @@ impl KnownNestedSets {
         known_artifacts: &mut KnownArtifacts,
         out: &mut dyn AqueryOutputHandler,
     ) -> u32 {
+        // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/KnownNestedSets.java:33 KnownNestedSets.transformToKey
         let (id, is_new) = self.base.id_for(nested_set.to_node());
         if is_new {
-            // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/KnownNestedSets.java:39 KnownNestedSets.createProto
+            // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/KnownNestedSets.java:38 KnownNestedSets.createProto
             let mut dep_set = analysis::DepSetOfFiles {
                 id,
                 transitive_dep_set_ids: Vec::new(),
@@ -166,6 +170,7 @@ impl KnownNestedSets {
                     .direct_artifact_ids
                     .push(known_artifacts.data_to_id_and_stream_output_proto(&elem, out));
             }
+            // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/KnownNestedSets.java:59 KnownNestedSets.toOutput
             out.output_dep_set_of_files(dep_set);
         }
         id

@@ -30,6 +30,7 @@ pub mod analysis_seam;
 pub mod artifact_function;
 pub mod build_driver_function;
 pub mod completion_function;
+pub mod discovery_env;
 pub mod events;
 pub mod keys;
 pub mod metadata_consumer_for_metrics;

@@ -45,7 +45,10 @@ fn chunk_to_digests_small_input_returns_single_chunk() {
 fn chunk_to_digests_data_at_min_size_returns_single_chunk() {
     let config = config_1024();
     let chunker = FastCdcChunker::from_config(&config, digest_util());
-    let digests = chunk(&chunker, &random_bytes(42, config.min_chunk_size() as usize));
+    let digests = chunk(
+        &chunker,
+        &random_bytes(42, config.min_chunk_size() as usize),
+    );
     assert_eq!(digests.len(), 1);
     assert_eq!(digests[0].size_bytes, i64::from(config.min_chunk_size()));
 }
@@ -71,7 +74,10 @@ fn chunk_to_digests_same_input_produces_same_chunks() {
 fn chunk_to_digests_chunk_sizes_within_bounds() {
     let config = config_1024();
     let chunker = FastCdcChunker::from_config(&config, digest_util());
-    let digests = chunk(&chunker, &random_bytes(42, config.max_chunk_size() as usize * 10));
+    let digests = chunk(
+        &chunker,
+        &random_bytes(42, config.max_chunk_size() as usize * 10),
+    );
     for digest in &digests[..digests.len() - 1] {
         assert!(digest.size_bytes >= i64::from(config.min_chunk_size()));
         assert!(digest.size_bytes <= i64::from(config.max_chunk_size()));
@@ -154,7 +160,14 @@ fn chunk_to_digests_with_default_config() {
 fn chunk_to_digests_test_vectors_seed0() {
     verify_test_vectors(
         0,
-        &[(0, 19186), (19186, 19279), (38465, 17354), (55819, 16387), (72206, 19940), (92146, 17320)],
+        &[
+            (0, 19186),
+            (19186, 19279),
+            (38465, 17354),
+            (55819, 16387),
+            (72206, 19940),
+            (92146, 17320),
+        ],
         &[
             "0f9efa589121d5d9e9e2c4ace91337d77cae866537143f6f15a0ffd525a77c2d",
             "c7c86a165573c16448cda35c9169742e85645af42be22889f8b96b8ee0ec7cb0",
@@ -170,7 +183,14 @@ fn chunk_to_digests_test_vectors_seed0() {
 fn chunk_to_digests_test_vectors_seed666() {
     verify_test_vectors(
         666,
-        &[(0, 17635), (17635, 17334), (34969, 19136), (54105, 17467), (71572, 23593), (95165, 14301)],
+        &[
+            (0, 17635),
+            (17635, 17334),
+            (34969, 19136),
+            (54105, 17467),
+            (71572, 23593),
+            (95165, 14301),
+        ],
         &[
             "cb3a9d80a3569772d4ed331ca37ab0c862c759897b890fc1aac90a4f2ea3a407",
             "d758c6b7b0b7eef1e996f8ccd17de6c645360b03a26c35541e7581348ac08944",
@@ -198,7 +218,10 @@ fn verify_test_vectors(seed: u64, expected_chunks: &[(i64, i64)], expected_hashe
         assert_eq!((offset, digest.size_bytes), expected_chunks[i]);
         let (start, len) = expected_chunks[i];
         let chunk_data = &file_data[start as usize..(start + len) as usize];
-        assert_eq!(hex::encode(sha2::Sha256::digest(chunk_data)), expected_hashes[i]);
+        assert_eq!(
+            hex::encode(sha2::Sha256::digest(chunk_data)),
+            expected_hashes[i]
+        );
         offset += digest.size_bytes;
     }
 }

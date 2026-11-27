@@ -436,7 +436,9 @@ impl PieceException {
     /// of the piece functions, each a SkyFunctionException wrapping one of these causes.
     // Java: com/google/devtools/build/lib/skyframe/EvalMacroFunction.java:403 EvalMacroFunction.EvalMacroFunctionException.<init>
     // Java: com/google/devtools/build/lib/skyframe/MacroInstanceFunction.java:69 MacroInstanceFunction.MacroInstanceFunctionException.<init>
-    // Java: com/google/devtools/build/lib/skyframe/NonFinalizerPackagePiecesFunction.java:107 NonFinalizerPackagePiecesFunction.NonFinalizerPackagePiecesFunctionException.<init>
+    // Java: com/google/devtools/build/lib/skyframe/NonFinalizerPackagePiecesFunction.java:107 NonFinalizerPackagePiecesFunction.NonFinalizerPackagePiecesFunctionException.NonFinalizerPackagePiecesFunctionException
+    // Java: com/google/devtools/build/lib/skyframe/NonFinalizerPackagePiecesFunction.java:111 NonFinalizerPackagePiecesFunction.NonFinalizerPackagePiecesFunctionException.NonFinalizerPackagePiecesFunctionException
+    // Java: com/google/devtools/build/lib/skyframe/NonFinalizerPackagePiecesFunction.java:115 NonFinalizerPackagePiecesFunction.NonFinalizerPackagePiecesFunctionException.NonFinalizerPackagePiecesFunctionException
     // Java: com/google/devtools/build/lib/skyframe/PackageDeclarationsFunction.java:65 PackageDeclarationsFunction.PackageDeclarationsFunctionException.<init>
     fn rethrow(self) -> ComputeError {
         match self {

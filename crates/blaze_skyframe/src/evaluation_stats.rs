@@ -68,7 +68,31 @@ fn from_multiset(multiset: &Mutex<IndexMap<&'static str, i32>>) -> Vec<(&'static
     result
 }
 
+/// A copy of the five counts (see [`crate::Evaluator::evaluation_stats_snapshot`]).
+#[derive(Clone, Debug)]
+pub struct EvaluationStatsSnapshot([IndexMap<&'static str, i32>; 5]);
+
 impl EvaluationStatsCounters {
+    fn multisets(&self) -> [&Mutex<IndexMap<&'static str, i32>>; 5] {
+        [
+            &self.dirtied,
+            &self.changed,
+            &self.built,
+            &self.cleaned,
+            &self.evaluated,
+        ]
+    }
+
+    pub(crate) fn snapshot(&self) -> EvaluationStatsSnapshot {
+        EvaluationStatsSnapshot(self.multisets().map(|multiset| multiset.lock().clone()))
+    }
+
+    pub(crate) fn restore(&self, snapshot: EvaluationStatsSnapshot) {
+        for (multiset, saved) in self.multisets().into_iter().zip(snapshot.0) {
+            *multiset.lock() = saved;
+        }
+    }
+
     /// Removes the counts of `function` from every statistic.
     pub(crate) fn remove_function(&self, function: crate::SkyFunctionName) {
         for multiset in [

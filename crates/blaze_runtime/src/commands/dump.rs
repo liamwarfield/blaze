@@ -441,40 +441,24 @@ impl SkyKeyStats {
 /// `HashMap<String, SkyKeyStats>` filled by `computeIfAbsent` in the order of the graph's done
 /// values: a stable sort by descending count of the map's iteration order.
 ///
-/// PORT: the map's order is `java.util.HashMap`'s for the keys' `String.hashCode`; within one
-/// bin it is the insertion order, which follows Java's `ConcurrentHashMap` of graph nodes. That
-/// order only shows when two entries of one bin have the same count, which fails loudly.
-fn sorted_by_count_desc(stats: Vec<SkyKeyStats>, method: &'static str) -> Vec<SkyKeyStats> {
-    use blaze_util::profiler::java_hash_order::{Insertion, java_hash_map_order, string_hash_code};
-    let keys: Vec<String> = stats.iter().map(|s| s.key.clone()).collect();
-    let order = java_hash_map_order(&keys, |k| string_hash_code(k), Insertion::ComputeIfAbsent);
+/// PORT: the map's order is `java.util.HashMap`'s for the keys' `String.hashCode` (reproduced:
+/// a table of the size the entries grew it to, bins in index order); within one bin it is the
+/// insertion order, which follows the graph's `ConcurrentHashMap` (hash order of the SkyKeys,
+/// not reproduced): entries of one bin are sorted by key. That order shows only when two entries
+/// of one bin have the same count.
+fn sorted_by_count_desc(stats: Vec<SkyKeyStats>) -> Vec<SkyKeyStats> {
+    use blaze_util::profiler::java_hash_order::string_hash_code;
     let mut capacity = 16usize;
-    while keys.len() > capacity * 3 / 4 {
+    while stats.len() > capacity * 3 / 4 {
         capacity *= 2;
     }
+    // HashMap.hash: h ^ (h >>> 16), then the table index.
     let bin = |k: &str| {
         let h = string_hash_code(k);
         ((h ^ ((h as u32) >> 16) as i32) as u32 as usize) & (capacity - 1)
     };
-    let mut by_key: std::collections::HashMap<String, SkyKeyStats> =
-        stats.into_iter().map(|s| (s.key.clone(), s)).collect();
-    let mut ordered: Vec<SkyKeyStats> = order
-        .iter()
-        .map(|k| by_key.remove(k).expect("key of the map"))
-        .collect();
-    for (i, a) in ordered.iter().enumerate() {
-        for b in &ordered[i + 1..] {
-            if a.count == b.count && bin(&a.key) == bin(&b.key) {
-                blaze_util::unported!(
-                    method,
-                    "the order of {} and {} (same count, same HashMap bin): Java's insertion \
-                     order from the graph's ConcurrentHashMap",
-                    a.key,
-                    b.key
-                );
-            }
-        }
-    }
+    let mut ordered = stats;
+    ordered.sort_by(|a, b| (bin(&a.key), &a.key).cmp(&(bin(&b.key), &b.key)));
     // Comparator.comparing(SkyKeyStats::getCount).reversed(): a stable sort.
     ordered.sort_by(|a, b| b.count.cmp(&a.count));
     ordered
@@ -532,14 +516,8 @@ fn get_skyframe_stats(evaluator: &Evaluator) -> (Vec<SkyKeyStats>, Vec<SkyKeySta
         }
     }
     (
-        sorted_by_count_desc(
-            rule_stats.into_values().collect(),
-            "SequencedSkyframeExecutor.getSkyframeStats",
-        ),
-        sorted_by_count_desc(
-            aspect_stats.into_values().collect(),
-            "SequencedSkyframeExecutor.getSkyframeStats",
-        ),
+        sorted_by_count_desc(rule_stats.into_values().collect()),
+        sorted_by_count_desc(aspect_stats.into_values().collect()),
     )
 }
 

@@ -76,6 +76,9 @@ use super::include_scanner::{IncludeScanningHeaderData, ValidUndeclaredHeaderPre
 
 /// `UUID.fromString("97493805-894f-493a-be66-9a698f45c31d")`: (least, most) significant bits.
 // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:122 CppCompileAction.GUID
+// PORT: skipped, test-only accessors (`@VisibleForTesting`; no caller outside tests at the pin): CppCompileAction.getPossibleInputsForTesting, CppCompileAction.getDefines, CppCompileAction.getIncompleteEnvironmentForTesting
+// PORT: skipped, /showIncludes parsing is MSVC-only (the parse_showincludes feature; `execute` fails loudly there): CppCompileAction.copyTempOutErrToActionOutErrMaybe, CppCompileAction.discoverInputsFromShowIncludesFilters
+// PORT: skipped, the /showIncludes output filter of MSVC (used only with the parse_showincludes feature, see above): ShowIncludesFilter.<init>, ShowIncludesFilter.FilterShowIncludesOutputStream.<init>, ShowIncludesFilter.FilterShowIncludesOutputStream.write, ShowIncludesFilter.FilterShowIncludesOutputStream.flush, ShowIncludesFilter.FilterShowIncludesOutputStream.getDependencies, ShowIncludesFilter.FilterShowIncludesOutputStream.sawPotentialUnsupportedShowIncludesLine, ShowIncludesFilter.getFilteredOutputStream, ShowIncludesFilter.getDependencies, ShowIncludesFilter.sawPotentialUnsupportedShowIncludesLine
 const GUID_LEAST: u64 = 0xbe66_9a69_8f45_c31d;
 const GUID_MOST: u64 = 0x9749_3805_894f_493a;
 
@@ -165,6 +168,9 @@ pub struct CppCompileAction {
     discovered_modules: Mutex<Option<NestedSet<Artifact>>>,
     /// Used modules that are not transitively used through other topLevelModules.
     top_level_modules: Mutex<Option<NestedSet<Artifact>>>,
+    /// `usedModules`: set by the include-scanning path of `discoverInputs` with header modules,
+    /// kept across a restart of discovery and cleared once the required modules are added.
+    used_modules: Mutex<Option<Vec<Artifact>>>,
     param_file_action_input: Mutex<Option<ParamFileActionInput>>,
     param_file_path: Option<PathFragment>,
     module_files: Option<NestedSet<Artifact>>,
@@ -267,6 +273,7 @@ impl CppCompileAction {
             feature_configuration.clone(),
             variables,
         );
+        // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:2116 CppCompileAction.isGenerateDotdFile
         let is_generate_dotd_file = cpp_file_types::header_discovery_required(&source_file)
             && !feature_configuration.is_enabled(cpp_rule_classes::PARSE_SHOWINCLUDES);
         let param_file_path =
@@ -337,6 +344,7 @@ impl CppCompileAction {
             inputs_discovered: AtomicBool::new(false),
             discovered_modules: Mutex::new(None),
             top_level_modules: Mutex::new(None),
+            used_modules: Mutex::new(None),
             param_file_action_input: Mutex::new(None),
             param_file_path,
             module_files,
@@ -365,6 +373,7 @@ impl CppCompileAction {
         let top_level_modules = self
             .cc_compilation_context
             .get_direct_modules(self.use_pic, separate);
+        // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:565 CppCompileAction.setTopLevelModules
         *self.top_level_modules.get_mut() = Some(top_level_modules.clone());
         if cpp_file_types::CPP_MODULE.matches_artifact(&primary_output)
             && !is_cpp20_module_compilation_action(&self.action_name)
@@ -378,6 +387,7 @@ impl CppCompileAction {
         }
     }
 
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:906 CppCompileAction.cppConfiguration
     fn cpp_configuration(&self) -> &CppConfiguration {
         cpp_configuration(&self.configuration)
     }
@@ -693,12 +703,21 @@ pub fn compute_key_static(
 }
 
 impl Action for CppCompileAction {
+    fn java_class_name(&self) -> Option<&'static str> {
+        Some("com.google.devtools.build.lib.rules.cpp.CppCompileAction")
+    }
+
     fn abstract_action(&self) -> &AbstractAction {
         &self.base
     }
 
     fn as_any(&self) -> &dyn Any {
         self
+    }
+
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:807 CppCompileAction.getDiscoveredModules
+    fn include_scannable_discovered_modules(&self) -> Option<NestedSet<Artifact>> {
+        Some(self.get_discovered_modules())
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:2027 CppCompileAction.getMnemonic
@@ -1099,6 +1118,66 @@ fn create_failure_detail(
             code: detailed_code as i32,
         })),
     }
+}
+
+/// Results of C++ module discovery.
+// Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:614 CppCompileAction.CppDiscoveredModules
+struct CppDiscoveredModules {
+    transitively_used: NestedSet<Artifact>,
+    top_level: NestedSet<Artifact>,
+}
+
+/// The discovered modules of each used module's compile (`ActionExecutionValue
+/// .getDiscoveredModules()` of its generating action), in `used_modules`' order; `None` when a
+/// Skyframe restart is needed.
+// Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:2074 CppCompileAction.computeTransitivelyUsedModules
+fn compute_transitively_used_modules(
+    action_execution_context: &dyn ActionExecutionContext,
+    used_modules: &[Artifact],
+) -> Option<Vec<(Artifact, NestedSet<Artifact>)>> {
+    // Because SkyframeLookupResult.get call does not specify any exceptions where
+    // SkyframeLookupResult is returned by env.getValuesAndExceptions, it is impossible for input
+    // discovery to recover from exceptions thrown by spurious module deps.
+    let mut values = None;
+    action_execution_context.with_environment_for_discovering_inputs(&mut |env| {
+        values = env.get_discovered_modules(used_modules);
+    });
+    let values = values?;
+    let mut transitively_used_modules = Vec::with_capacity(used_modules.len());
+    for (module, discovered) in used_modules.iter().zip(values) {
+        check_state!(
+            cpp_file_types::CPP_MODULE.matches_artifact(module),
+            "Non-module? {}",
+            module
+        );
+        transitively_used_modules.push((module.clone(), discovered));
+    }
+    Some(transitively_used_modules)
+}
+
+/// `DiscoveredModulesPruner.DEFAULT.computeTopLevelModules`: the used modules that aren't also
+/// dependencies of other used modules, in `used_modules`' order.
+// Java: com/google/devtools/build/lib/actions/DiscoveredModulesPruner.java:57 DiscoveredModulesPruner.DEFAULT
+fn compute_top_level_modules(
+    used_modules: &[Artifact],
+    transitively_used_modules: &[(Artifact, NestedSet<Artifact>)],
+) -> Vec<Artifact> {
+    let mut top_level: indexmap::IndexSet<Artifact> = used_modules.iter().cloned().collect();
+
+    // It is better to iterate over each nested set here instead of creating a joint one and
+    // iterating over it, as this makes use of NestedSet's memoization.
+    for (direct_dep, transitive_deps) in transitively_used_modules {
+        if !top_level.contains(direct_dep) {
+            // If this module was removed from topLevel because it is a dependency of another
+            // module, we can safely ignore it now as all of its dependants have also been
+            // removed.
+            continue;
+        }
+        for module in transitive_deps.to_list().iter() {
+            top_level.shift_remove(module);
+        }
+    }
+    top_level.into_iter().collect()
 }
 
 // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:939 CppCompileAction.getCmdlineIncludes
@@ -1649,15 +1728,55 @@ impl CppCompileAction {
 
     /// Finds used modules based on results of include scanning; `None` without header modules.
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:604 CppCompileAction.findUsedModules
-    fn find_used_modules(&self, _used_headers: &NestedSet<Artifact>) -> Option<Vec<Artifact>> {
+    fn find_used_modules(&self, used_headers: &NestedSet<Artifact>) -> Option<Vec<Artifact>> {
         if !self.use_header_modules {
             return None;
         }
-        blaze_util::unported!(
-            "CppCompileAction.findUsedModules",
-            "header modules with include scanning (CcCompilationContext.computeUsedModules, \
-             findMinimalSetOfRequiredModules)"
-        )
+        let separate = self
+            .cc_compilation_context
+            .get_separate_header_module(self.use_pic)
+            == Some(&self.get_primary_output());
+        let used_headers: HashSet<Artifact> = used_headers.to_list().iter().cloned().collect();
+        Some(self.cc_compilation_context.compute_used_modules(
+            self.use_pic,
+            &used_headers,
+            separate,
+        ))
+    }
+
+    /// Computes the minimal set of modules required for the compilation, based on all used
+    /// modules that the include scanner found. `None` when a Skyframe restart is needed.
+    // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:622 CppCompileAction.findMinimalSetOfRequiredModules
+    fn find_minimal_set_of_required_modules(
+        &self,
+        action_execution_context: &dyn ActionExecutionContext,
+        used_modules: &[Artifact],
+    ) -> Option<CppDiscoveredModules> {
+        let transitively_used_modules =
+            compute_transitively_used_modules(action_execution_context, used_modules)?;
+
+        // actionExecutionContext.getDiscoveredModulesPruner(): DiscoveredModulesPruner.DEFAULT
+        // (Bazel's executor never sets another one).
+        let top_level = compute_top_level_modules(used_modules, &transitively_used_modules);
+
+        let mut top_level_modules_builder = NestedSetBuilder::<Artifact>::stable_order();
+        let mut discovered_modules_builder = NestedSetBuilder::<Artifact>::stable_order();
+        for module in &top_level {
+            top_level_modules_builder.add(module.clone());
+            let transitive = transitively_used_modules
+                .iter()
+                .find(|(m, _)| m == module)
+                .map(|(_, t)| t)
+                .unwrap_or_else(|| panic!("NullPointerException: {module}"));
+            discovered_modules_builder.add_transitive(transitive);
+        }
+
+        let top_level_modules = top_level_modules_builder.build();
+        discovered_modules_builder.add_transitive(&top_level_modules);
+        Some(CppDiscoveredModules {
+            transitively_used: discovered_modules_builder.build(),
+            top_level: top_level_modules,
+        })
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:769 CppCompileAction.getValidUndeclaredHeaderPredicate
@@ -1733,7 +1852,11 @@ impl CppCompileAction {
         }
         let Some(include_scanning_header_data) = self
             .cc_compilation_context
-            .create_include_scanning_header_data(self.use_pic, self.use_header_modules)
+            .create_include_scanning_header_data(
+                action_execution_context,
+                self.use_pic,
+                self.use_header_modules,
+            )
         else {
             return Ok(None);
         };
@@ -1780,10 +1903,22 @@ impl CppCompileAction {
             return Ok(None);
         };
 
-        if self.find_used_modules(&used_headers).is_none() {
+        let Some(used_modules) = self.find_used_modules(&used_headers) else {
             return Ok(Some(used_headers));
-        }
-        unreachable!("findUsedModules is unported! with header modules")
+        };
+        let Some(required_modules) =
+            self.find_minimal_set_of_required_modules(action_execution_context, &used_modules)
+        else {
+            return Ok(None);
+        };
+        // Update state used when forming the command line.
+        *self.top_level_modules.lock() = Some(required_modules.top_level);
+
+        // Note that we do not update discoveredModules here even though it would allow to avoid
+        // waste by sharing work with action execution (see discoverInputs).
+        let mut builder = NestedSetBuilder::from_nested_set(&used_headers);
+        builder.add_transitive(&required_modules.transitively_used);
+        Ok(Some(builder.build()))
     }
 
     /// `getArguments(pathMapper)`.
@@ -2336,7 +2471,11 @@ impl ExecutableAction for CppCompileAction {
             }
             let Some(include_scanning_header_data_builder) = self
                 .cc_compilation_context
-                .create_include_scanning_header_data(self.use_pic, self.use_header_modules)
+                .create_include_scanning_header_data(
+                    action_execution_context,
+                    self.use_pic,
+                    self.use_header_modules,
+                )
             else {
                 return Ok(None);
             };
@@ -2361,20 +2500,44 @@ impl ExecutableAction for CppCompileAction {
                 return Ok(None);
             };
             *self.additional_inputs.lock() = Some(additional_inputs.clone());
-            if self.find_used_modules(&additional_inputs).is_some() {
-                unreachable!("findUsedModules is unported! with header modules");
-            }
+            *self.used_modules.lock() = self.find_used_modules(&additional_inputs);
         }
 
-        // usedModules == null: there are two paths in which this can be reached:
-        // 1. This is not a modular compilation or one without include scanning. In either case,
-        //    we never compute used modules.
-        // 2. This function has completed on a previous execution, adding all used modules to
-        //    additionalInputs and resetting usedModules to null below.
-        // In either case, there is nothing more to do here.
-        // PORT: usedModules is only set by the include-scanning path with header modules
-        // (findUsedModules, unported!).
-        Ok(self.additional_inputs.lock().clone())
+        let used_modules = self.used_modules.lock().clone();
+        let Some(used_modules) = used_modules else {
+            // There are two paths in which this can be reached:
+            // 1. This is not a modular compilation or one without include scanning. In either
+            //    case, we never compute used modules.
+            // 2. This function has completed on a previous execution, adding all used modules to
+            //    additionalInputs and resetting usedModules to null below.
+            // In either case, there is nothing more to do here.
+            return Ok(self.additional_inputs.lock().clone());
+        };
+
+        let Some(required_modules) =
+            self.find_minimal_set_of_required_modules(action_execution_context, &used_modules)
+        else {
+            return Ok(None);
+        };
+        *self.top_level_modules.lock() = Some(required_modules.top_level.clone());
+        let additional_inputs = {
+            let current = self
+                .additional_inputs
+                .lock()
+                .clone()
+                .unwrap_or_else(|| panic!("NullPointerException: additionalInputs"));
+            let mut builder = NestedSetBuilder::from_nested_set(&current);
+            builder.add_transitive(&required_modules.transitively_used);
+            builder.build()
+        };
+        *self.additional_inputs.lock() = Some(additional_inputs.clone());
+        if cpp_file_types::CPP_MODULE.matches_artifact(&self.get_primary_output())
+            && !is_cpp20_module_compilation_action(&self.action_name)
+        {
+            *self.discovered_modules.lock() = Some(required_modules.transitively_used);
+        }
+        *self.used_modules.lock() = None;
+        Ok(Some(additional_inputs))
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CppCompileAction.java:1484 CppCompileAction.execute

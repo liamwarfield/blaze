@@ -17,7 +17,6 @@ use std::sync::Arc;
 
 use blaze_bzlmod::skyframe::precomputed::Precomputed as BzlmodPrecomputed;
 use blaze_bzlmod::skyframe::precomputed::VENDOR_DIRECTORY;
-use blaze_bzlmod_model::AttributeValue;
 use blaze_bzlmod_model::module::BOOTSTRAP_REPO_RULES;
 use blaze_cmdline::RepositoryMapping;
 use blaze_cmdline::RepositoryName;
@@ -45,7 +44,6 @@ use blaze_starlark::EvalError;
 use blaze_starlark::Phase;
 use blaze_starlark::StarlarkSemantics;
 use blaze_starlark::error::EvalErrorKind;
-use blaze_util::unported;
 use blaze_vfs::Path;
 use blaze_vfs::PathFragment;
 use blaze_vfs::Root;
@@ -72,7 +70,6 @@ use super::repository_resolved_event::RepositoryResolvedEvent;
 use super::repository_utils::get_external_repository_directory;
 use super::repository_utils::is_valid_repo_root;
 use super::repository_utils::replant_symlinks;
-use crate::attr_values::starlark_to_attribute_value;
 use crate::env_handle::SkyEnv;
 use crate::precomputed::FETCH_DISABLED;
 use crate::precomputed::FORCE_FETCH;
@@ -273,7 +270,7 @@ fn success(repo_root: &Path, exclude_from_vendoring: bool) -> RepositoryDirector
 enum ImplReturn {
     /// `case Dict<?, ?> dict`, after `Dict.cast(dict, String.class, Object.class, "return
     /// value")`.
-    Dict(IndexMap<String, AttributeValue>),
+    Dict(IndexMap<String, crate::starlark::repo_metadata::ReproducibilityValue>),
     /// `Dict.cast` failed: Java's `EvalException` message (it has no call stack).
     DictCastError(String),
     /// `case RepoMetadata rm`.
@@ -305,16 +302,10 @@ fn extract_return_value<'v>(
         let mut attrs = IndexMap::new();
         for (k, v) in dict.iter() {
             let key = k.unpack_str().expect("checked above").to_owned();
-            match starlark_to_attribute_value(v) {
-                Ok(value) => {
-                    attrs.insert(key, value);
-                }
-                Err(message) => unported!(
-                    "RepositoryFetchFunction.fetch",
-                    "a repository rule returned a dict whose value for '{key}' is not an \
-                     attribute value: {message}"
-                ),
-            }
+            attrs.insert(
+                key,
+                crate::starlark::repo_metadata::ReproducibilityValue::of(v),
+            );
         }
         return Ok(ImplReturn::Dict(attrs));
     }

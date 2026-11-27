@@ -16,7 +16,6 @@ use blaze_actions::analysis::actions::file_write_action::FileWriteAction;
 use blaze_actions::analysis::actions::lazy_write_nested_set_of_tuple_action::LazyWriteNestedSetOfTupleAction;
 use blaze_actions::analysis::actions::lazy_write_paths_file_action::LazyWritePathsFileAction;
 use blaze_actions::analysis::actions::parameter_file_write_action::ParameterFileWriteAction;
-use blaze_actions::analysis::actions::spawn_action::{SpawnAction, SpawnActionClass};
 use blaze_actions::analysis::actions::symlink_action::SymlinkAction;
 use blaze_actions::analysis::actions::symlink_tree_action::SymlinkTreeAction;
 use blaze_actions::analysis::actions::template_expansion_action::TemplateExpansionAction;
@@ -358,14 +357,15 @@ fn pretty_print_artifact_diffs(sb: &mut String, diff: &[Artifact]) {
 
 /// `action.getClass().toString()`: `class <binary name of the Java class>`.
 ///
-/// PORT: a Rust action does not know the name of its Java class; the classes of `blaze_actions`
-/// and of this crate (`TestRunnerAction`) are listed here. An action of another crate
-/// (`CppCompileAction`, `CopyWithoutCachingAction`, the workspace status action) or a native
-/// `SpawnAction` (which may be Java's `SpawnAction` or its subclass `GenRuleAction`) fails loudly
-/// until `Action` has an accessor for it.
+/// The action names its Java class ([`blaze_actions::Action::java_class_name`]: native
+/// `SpawnAction`s carry theirs, e.g. `GenRuleAction`); the classes of `blaze_actions` that do not
+/// are listed here.
 // Java: com/google/devtools/build/lib/actions/ActionConflictException.java:245 ActionConflictException.debugSuffix
 fn java_action_class(action: &ActionRef) -> String {
     const ANALYSIS_ACTIONS: &str = "com.google.devtools.build.lib.analysis.actions";
+    if let Some(name) = action.java_class_name() {
+        return format!("class {name}");
+    }
     let any = action.as_any();
     let name = if let Some(file_write_action) = any.downcast_ref::<FileWriteAction>() {
         // FileWriteAction is abstract; `FileWriteAction.create` instantiates one of its two
@@ -375,18 +375,6 @@ fn java_action_class(action: &ActionRef) -> String {
             format!("{ANALYSIS_ACTIONS}.FileWriteAction$CompressedFileWriteAction")
         } else {
             format!("{ANALYSIS_ACTIONS}.FileWriteAction$RegularFileWriteAction")
-        }
-    } else if let Some(spawn_action) = any.downcast_ref::<SpawnAction>() {
-        match spawn_action.get_class() {
-            SpawnActionClass::Starlark => format!("{ANALYSIS_ACTIONS}.StarlarkAction"),
-            SpawnActionClass::EnhancedStarlark(_) => {
-                format!("{ANALYSIS_ACTIONS}.StarlarkAction$EnhancedStarlarkAction")
-            }
-            SpawnActionClass::Spawn => blaze_util::unported!(
-                "ActionAnalysisMetadata.getClass",
-                "the Java class of a native SpawnAction (mnemonic {})",
-                action.get_mnemonic()
-            ),
         }
     } else if any.is::<SymlinkAction>() {
         format!("{ANALYSIS_ACTIONS}.SymlinkAction")
@@ -412,8 +400,6 @@ fn java_action_class(action: &ActionRef) -> String {
         "com.google.devtools.build.lib.analysis.starlark.UnresolvedSymlinkAction".to_owned()
     } else if any.is::<RunfilesTreeAction>() {
         "com.google.devtools.build.lib.actions.RunfilesTreeAction".to_owned()
-    } else if any.is::<crate::test::test_runner_action::TestRunnerAction>() {
-        "com.google.devtools.build.lib.analysis.test.TestRunnerAction".to_owned()
     } else {
         blaze_util::unported!(
             "ActionAnalysisMetadata.getClass",

@@ -305,15 +305,18 @@ impl OptionsParser {
         self.impl_.conversion_context.as_ref()
     }
 
+    // Java: com/google/devtools/common/options/OptionsProvider.java:75 OptionsProvider.getStarlarkOptions
     pub fn get_starlark_options(&self) -> &BTreeMap<String, Value> {
         &self.starlark_options
     }
 
+    // Java: com/google/devtools/common/options/OptionsProvider.java:89 OptionsProvider.getScopesAttributes
     pub fn get_scopes_attributes(&self) -> &BTreeMap<String, String> {
         &self.scopes_attributes
     }
 
     // Java: com/google/devtools/common/options/OptionsParser.java:318 OptionsParser.getExplicitStarlarkOptions
+    // Java: com/google/devtools/common/options/OptionsProvider.java:81 OptionsProvider.getExplicitStarlarkOptions
     pub fn get_explicit_starlark_options(
         &self,
         filter: impl Fn(&ParsedOptionRef) -> bool,
@@ -744,6 +747,7 @@ impl OptionsParser {
     }
 
     // Java: com/google/devtools/common/options/OptionsParser.java:818 OptionsParser.getOptions
+    // Java: com/google/devtools/common/options/OptionsProvider.java:63 OptionsProvider.getOptions
     /// A fresh instance of `O` with the parsed values, or `None` if `O` is not registered.
     pub fn get_options<O: OptionsClass>(&self) -> Option<O> {
         self.impl_.get_parsed_options::<O>()
@@ -804,6 +808,7 @@ impl OptionsParser {
     // Java: com/google/devtools/common/options/OptionsParser.java:868 OptionsParser.getUserOptions
     /// Options from user rc files or the command line, mapped to their top-level expansion.
     /// PORT: java-hash-order — Java builds a HashMap; this returns insertion order.
+    // Java: com/google/devtools/common/options/OptionsProvider.java:87 OptionsProvider.getUserOptions
     pub fn get_user_options(&self) -> IndexMap<String, String> {
         if self.ignore_user_options {
             return IndexMap::new();

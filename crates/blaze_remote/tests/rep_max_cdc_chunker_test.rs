@@ -155,7 +155,14 @@ fn chunk_to_digests_with_default_config() {
 #[test]
 fn chunk_to_digests_random_data_produces_valid_chunks() {
     let mut random = JavaRandom::new(42);
-    let params = [(64, 0), (64, 256), (128, 1024), (1024, 0), (1024, 8 * 1024), (2048, 16 * 1024)];
+    let params = [
+        (64, 0),
+        (64, 256),
+        (128, 1024),
+        (1024, 0),
+        (1024, 8 * 1024),
+        (2048, 16 * 1024),
+    ];
     for (min_size, horizon_size) in params {
         let peek_size = 2 * min_size + horizon_size;
         let sizes = [
@@ -213,7 +220,11 @@ fn chunk_to_digests_random_parameters_produces_valid_chunks() {
 #[test]
 fn chunk_to_digests_large_input_produces_valid_chunks() {
     let data = random_bytes(123, 4 * 1024 * 1024);
-    assert_valid_chunks(/* min_size= */ 1024, /* horizon_size= */ 8 * 1024, &data);
+    assert_valid_chunks(
+        /* min_size= */ 1024,
+        /* horizon_size= */ 8 * 1024,
+        &data,
+    );
 }
 
 /// Chunks `data` and verifies the guarantees of the algorithm: all chunks are within `[minSize,
@@ -244,7 +255,27 @@ fn chunk_to_digests_test_vectors() {
     verify_test_vectors(
         /* min_size= */ 4096,
         /* horizon_size= */ 32768,
-        &[(0, 7026), (7026, 5198), (12224, 5310), (17534, 4271), (21805, 5278), (27083, 5588), (32671, 5017), (37688, 6761), (44449, 5541), (49990, 7612), (57602, 5501), (63103, 4695), (67798, 4362), (72160, 6221), (78381, 7190), (85571, 5858), (91429, 4382), (95811, 8022), (103833, 5633)],
+        &[
+            (0, 7026),
+            (7026, 5198),
+            (12224, 5310),
+            (17534, 4271),
+            (21805, 5278),
+            (27083, 5588),
+            (32671, 5017),
+            (37688, 6761),
+            (44449, 5541),
+            (49990, 7612),
+            (57602, 5501),
+            (63103, 4695),
+            (67798, 4362),
+            (72160, 6221),
+            (78381, 7190),
+            (85571, 5858),
+            (91429, 4382),
+            (95811, 8022),
+            (103833, 5633),
+        ],
         &[
             "3c386537b8c3200dd2ab6623f6096a576d07844a4a0d5d2994d13e24887dae46",
             "cc7fb08694b471e3ba660b700b347775d1e7a55db8f308c176e2eb6776b5222c",
@@ -274,7 +305,21 @@ fn chunk_to_digests_test_vectors_zero_horizon() {
     verify_test_vectors(
         /* min_size= */ 8192,
         /* horizon_size= */ 0,
-        &[(0, 8192), (8192, 8192), (16384, 8192), (24576, 8192), (32768, 8192), (40960, 8192), (49152, 8192), (57344, 8192), (65536, 8192), (73728, 8192), (81920, 8192), (90112, 8192), (98304, 11162)],
+        &[
+            (0, 8192),
+            (8192, 8192),
+            (16384, 8192),
+            (24576, 8192),
+            (32768, 8192),
+            (40960, 8192),
+            (49152, 8192),
+            (57344, 8192),
+            (65536, 8192),
+            (73728, 8192),
+            (81920, 8192),
+            (90112, 8192),
+            (98304, 11162),
+        ],
         &[
             "716c5e702f4bee5f18426da9e9eb77d22aa936486741768b86fff472bc18c363",
             "33df8556634b77338abee984190d1aa21efb10411edeae3820fd61a93e489f58",
@@ -314,7 +359,10 @@ fn verify_test_vectors(
         assert_eq!((offset, digest.size_bytes), expected_chunks[i]);
         let (start, len) = expected_chunks[i];
         let chunk_data = &file_data[start as usize..(start + len) as usize];
-        assert_eq!(hex::encode(sha2::Sha256::digest(chunk_data)), expected_hashes[i]);
+        assert_eq!(
+            hex::encode(sha2::Sha256::digest(chunk_data)),
+            expected_hashes[i]
+        );
         offset += digest.size_bytes;
     }
 }

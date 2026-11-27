@@ -48,6 +48,7 @@ pub fn cc_toolchain_info_provider_keys() -> &'static [ProviderKey; 3] {
 
 /// Information about a C++ compiler used by the `cc_*` rules.
 // Java: com/google/devtools/build/lib/rules/cpp/CcToolchainProvider.java:50 CcToolchainProvider
+// PORT: skipped, no caller at the pin (the C++ rules read these fields of CcToolchainInfo in Starlark): CcToolchainProvider.getFromTarget, CcToolchainProvider.getToolPaths, CcToolchainProvider.getAllFilesIncludingLibc, CcToolchainProvider.getArFiles, CcToolchainProvider.getLinkerFiles, CcToolchainProvider.getStaticRuntimeLinkInputs, CcToolchainProvider.getDynamicRuntimeLinkInputs, CcToolchainProvider.getDynamicRuntimeSolibDir, CcToolchainProvider.supportsInterfaceSharedLibraries, CcToolchainProvider.getBuildVars, CcToolchainProvider.getSysrootPathFragment, CcToolchainProvider.getAbi, CcToolchainProvider.getAllowlistForLayeringCheck, CcToolchainProvider.getCcBuildInfoTranslator, CcToolchainProvider.getCppConfiguration, CcToolchainProvider.nullOrDepset
 #[derive(Clone, Copy)]
 pub struct CcToolchainProvider<'v> {
     value: &'v StarlarkInfo<'v>,

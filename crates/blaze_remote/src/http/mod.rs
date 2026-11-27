@@ -9,6 +9,7 @@
 //! `IdleTimeoutHandler`, `DownloadCommand`, `UploadCommand`) are not.
 
 pub mod http_cache_client;
+mod snappy;
 
 use std::error::Error;
 use std::fmt;

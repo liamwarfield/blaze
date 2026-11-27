@@ -40,6 +40,7 @@ pub fn event_location(location: Option<&Location>) -> Option<blaze_events::Locat
 
 /// Java `DetailedExitCode.of(FailureDetail{message, Analysis.CONFIGURED_VALUE_CREATION_FAILED})`.
 // Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:341 TargetAndConfigurationProducer.createDetailedExitCode
+// Java: com/google/devtools/build/lib/skyframe/ConfiguredValueCreationException.java:109 ConfiguredValueCreationException.createDetailedExitCode
 pub fn create_detailed_exit_code(message: &str) -> DetailedExitCode {
     DetailedExitCode {
         message: message.to_owned(),
@@ -233,18 +234,22 @@ impl ConfiguredValueCreationException {
         }
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredValueCreationException.java:90 ConfiguredValueCreationException.getLocation
     pub fn get_location(&self) -> Option<&Location> {
         self.location.as_ref()
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredValueCreationException.java:95 ConfiguredValueCreationException.getRootCauses
     pub fn get_root_causes(&self) -> &NestedSet<Cause> {
         &self.root_causes
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredValueCreationException.java:99 ConfiguredValueCreationException.getConfiguration
     pub fn get_configuration(&self) -> Option<&String> {
         self.configuration.as_ref()
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredValueCreationException.java:104 ConfiguredValueCreationException.getDetailedExitCode
     pub fn get_detailed_exit_code(&self) -> &DetailedExitCode {
         &self.detailed_exit_code
     }

@@ -51,6 +51,10 @@ pub(crate) fn java_update_pairs<'v>(
     pairs: Value<'v>,
     heap: Heap<'v>,
 ) -> crate::Result<Vec<(Value<'v>, Value<'v>)>> {
+    // Java Dict.update: `if (pairs instanceof Map)` puts its entries. // BLAZE PATCH 0068
+    if let Some(entries) = pairs.get_ref().java_map_entries(heap) { // BLAZE PATCH 0068
+        return entries; // BLAZE PATCH 0068
+    } // BLAZE PATCH 0068
     let it = pairs.iterate(heap).map_err(|_| {
         crate::Error::new_other(anyhow::anyhow!(
             "in {funcname}, got {}, want iterable",
@@ -78,6 +82,19 @@ pub(crate) fn java_update_pairs<'v>(
     }
     Ok(out)
 }
+
+/// BLAZE PATCH 0068: a non-dict value Java treats as a `Map`, copied into a new dict // BLAZE PATCH 0068
+/// (Java `Dict.builder().putAll(map)`); `None` if `v` is not such a value. // BLAZE PATCH 0068
+pub(crate) fn java_map_as_dict<'v>(v: Value<'v>, heap: Heap<'v>) -> Option<crate::Result<Value<'v>>> { // BLAZE PATCH 0068
+    let entries = v.get_ref().java_map_entries(heap)?; // BLAZE PATCH 0068
+    Some(entries.and_then(|entries| { // BLAZE PATCH 0068
+        let mut content = SmallMap::with_capacity(entries.len()); // BLAZE PATCH 0068
+        for (k, v) in entries { // BLAZE PATCH 0068
+            content.insert_hashed(k.get_hashed()?, v); // BLAZE PATCH 0068
+        } // BLAZE PATCH 0068
+        Ok(heap.alloc(Dict::new(content))) // BLAZE PATCH 0068
+    })) // BLAZE PATCH 0068
+} // BLAZE PATCH 0068
 
 #[starlark_module]
 pub(crate) fn register_dict(globals: &mut GlobalsBuilder) {

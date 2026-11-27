@@ -55,11 +55,16 @@ pub fn build_attribute_info(context: &ExtractorContext, attribute: &Attribute) -
                     {
                         // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkLateBoundDefault.java:124 StarlarkLateBoundDefault.repr
                         "<late-bound default>".to_owned()
-                    } else {
+                    } else if let Some(java_class_name) = late_bound.java_class_name() {
                         // StarlarkValue.repr: "<unknown object " + getClass().getName() + ">".
+                        // Java: net/starlark/java/eval/StarlarkValue.java:50 StarlarkValue.repr
+                        format!("<unknown object {java_class_name}>")
+                    } else {
                         blaze_util::unported!(
                             "StarlarkValue.repr",
-                            "the Java class name of the native LateBoundDefault {:?}",
+                            "the Java class name of the native LateBoundDefault {:?} (a \
+                             SimpleLateBoundDefault subclass that LateBoundDefaultKind::Other \
+                             does not name)",
                             late_bound.get_resolver_name()
                         )
                     }

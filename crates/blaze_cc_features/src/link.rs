@@ -1,28 +1,11 @@
 //! Port of `com.google.devtools.build.lib.rules.cpp.Link`: the link-related enums.
 //!
-//! PORT: the `FileTypeSet` constants (`SHARED_LIBRARY_FILETYPES`, `ARCHIVE_FILETYPES`, ...) need
-//! `CppFileTypes`/`FileTypeSet`, which are not ported yet; their accessors fail loudly.
+//! The `FileTypeSet` constants (`SHARED_LIBRARY_FILETYPES`, `ARCHIVE_FILETYPES`, ...) are in
+//! blaze_rules `cpp::cpp_file_types`, next to the `CppFileTypes` they are made of (this crate
+//! does not depend on blaze_rules).
 
 use crate::artifact_category::ArtifactCategory;
 use crate::cpp_action_names::CppActionNames;
-
-/// Java: `Link.SHARED_LIBRARY_FILETYPES`.
-// Java: com/google/devtools/build/lib/rules/cpp/Link.java:39 Link.SHARED_LIBRARY_FILETYPES
-pub fn shared_library_filetypes() -> ! {
-    blaze_util::unported!("Link.SHARED_LIBRARY_FILETYPES (needs CppFileTypes)")
-}
-
-/// Java: `Link.ARCHIVE_LIBRARY_FILETYPES`.
-// Java: com/google/devtools/build/lib/rules/cpp/Link.java:55 Link.ARCHIVE_LIBRARY_FILETYPES
-pub fn archive_library_filetypes() -> ! {
-    blaze_util::unported!("Link.ARCHIVE_LIBRARY_FILETYPES (needs CppFileTypes)")
-}
-
-/// Java: `Link.OBJECT_FILETYPES`.
-// Java: com/google/devtools/build/lib/rules/cpp/Link.java:72 Link.OBJECT_FILETYPES
-pub fn object_filetypes() -> ! {
-    blaze_util::unported!("Link.OBJECT_FILETYPES (needs CppFileTypes)")
-}
 
 /// Whether a particular link target requires PIC code.
 // Java: com/google/devtools/build/lib/rules/cpp/Link.java:82 Link.Picness

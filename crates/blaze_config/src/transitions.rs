@@ -234,6 +234,7 @@ impl<'v> Freeze for StarlarkDefinedConfigTransition<'v> {
 
 impl<'v> StarlarkDefinedConfigTransition<'v> {
     // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:274 StarlarkDefinedConfigTransition.newRegularTransition
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:385 RegularTransition.<init>
     pub fn new_regular_transition(
         impl_: Value<'v>,
         inputs: &[String],
@@ -259,6 +260,7 @@ impl<'v> StarlarkDefinedConfigTransition<'v> {
     }
 
     // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:287 StarlarkDefinedConfigTransition.newExecTransition
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:758 ExecTransition.<init>
     pub fn new_exec_transition(
         impl_: Value<'v>,
         inputs: &[String],
@@ -284,6 +286,7 @@ impl<'v> StarlarkDefinedConfigTransition<'v> {
     }
 
     // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:300 StarlarkDefinedConfigTransition.newAnalysisTestTransition
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:315 AnalysisTestTransition.<init>
     pub fn new_analysis_test_transition(
         changed_settings: Vec<(String, Value<'v>)>,
         repo_mapping: &RepositoryMapping,
@@ -391,6 +394,10 @@ where
         }
     }
 
+    /// Hashes what `equals` compares; Java's cached `hashCode` is only consistent with `equals`
+    /// too (a hash code value is never printed).
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:373 AnalysisTestTransition.hashCode
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:751 RegularTransition.hashCode
     fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
         self.data.get_inputs().hash(hasher);
         self.data.get_outputs().hash(hasher);

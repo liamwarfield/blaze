@@ -53,6 +53,7 @@ fn fmt_chain(
 
 /// Key of FILE_SYMLINK_CYCLE_UNIQUENESS: a canonicalized cycle.
 // Java: com/google/devtools/build/lib/io/FileSymlinkCycleUniquenessFunction.java:39 FileSymlinkCycleUniquenessFunction.Key
+// PORT: skipped, a newtype key (Key::FUNCTION; no interning): FileSymlinkCycleUniquenessFunction.Key.create, FileSymlinkCycleUniquenessFunction.Key.functionName, FileSymlinkCycleUniquenessFunction.Key.getSkyKeyInterner
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct FileSymlinkCycleUniquenessKey(Vec<RootedPath>);
 
@@ -83,6 +84,7 @@ impl Key for FileSymlinkCycleUniquenessKey {
 
 /// Key of FILE_SYMLINK_INFINITE_EXPANSION_UNIQUENESS: a canonicalized chain.
 // Java: com/google/devtools/build/lib/io/FileSymlinkInfiniteExpansionUniquenessFunction.java:40 FileSymlinkInfiniteExpansionUniquenessFunction.Key
+// PORT: skipped, a newtype key (Key::FUNCTION; no interning): FileSymlinkInfiniteExpansionUniquenessFunction.Key.create, FileSymlinkInfiniteExpansionUniquenessFunction.Key.functionName, FileSymlinkInfiniteExpansionUniquenessFunction.Key.getSkyKeyInterner
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct FileSymlinkInfiniteExpansionUniquenessKey(Vec<RootedPath>);
 
@@ -136,6 +138,10 @@ fn compute_chain(
 
 /// A SkyFunction that has the side effect of reporting a file symlink cycle.
 // Java: com/google/devtools/build/lib/io/FileSymlinkCycleUniquenessFunction.java:30 FileSymlinkCycleUniquenessFunction
+// Java: com/google/devtools/build/lib/io/FileSymlinkCycleUniquenessFunction.java:64 FileSymlinkCycleUniquenessFunction.elementToString
+// Java: com/google/devtools/build/lib/io/FileSymlinkCycleUniquenessFunction.java:69 FileSymlinkCycleUniquenessFunction.getConciseDescription
+// Java: com/google/devtools/build/lib/io/FileSymlinkCycleUniquenessFunction.java:74 FileSymlinkCycleUniquenessFunction.getHeaderMessage
+// Java: com/google/devtools/build/lib/io/FileSymlinkCycleUniquenessFunction.java:79 FileSymlinkCycleUniquenessFunction.getFooterMessage
 pub fn file_symlink_cycle_uniqueness_function(
     key: &FileSymlinkCycleUniquenessKey,
     env: &mut Environment<'_>,
@@ -152,6 +158,10 @@ pub fn file_symlink_cycle_uniqueness_function(
 /// A SkyFunction that has the side effect of reporting a file symlink expansion error exactly
 /// once.
 // Java: com/google/devtools/build/lib/io/FileSymlinkInfiniteExpansionUniquenessFunction.java:30 FileSymlinkInfiniteExpansionUniquenessFunction
+// Java: com/google/devtools/build/lib/io/FileSymlinkInfiniteExpansionUniquenessFunction.java:65 FileSymlinkInfiniteExpansionUniquenessFunction.elementToString
+// Java: com/google/devtools/build/lib/io/FileSymlinkInfiniteExpansionUniquenessFunction.java:70 FileSymlinkInfiniteExpansionUniquenessFunction.getConciseDescription
+// Java: com/google/devtools/build/lib/io/FileSymlinkInfiniteExpansionUniquenessFunction.java:75 FileSymlinkInfiniteExpansionUniquenessFunction.getHeaderMessage
+// Java: com/google/devtools/build/lib/io/FileSymlinkInfiniteExpansionUniquenessFunction.java:80 FileSymlinkInfiniteExpansionUniquenessFunction.getFooterMessage
 pub fn file_symlink_infinite_expansion_uniqueness_function(
     key: &FileSymlinkInfiniteExpansionUniquenessKey,
     env: &mut Environment<'_>,

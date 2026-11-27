@@ -2864,3 +2864,87 @@ fn patch_0067_def_repr_during_module_execution() {
         .join()
         .unwrap();
 }
+
+mod java_map {
+    use allocative::Allocative;
+    use starlark::any::ProvidesStaticType;
+    use starlark::starlark_simple_value;
+    use starlark::values::Heap;
+    use starlark::values::NoSerialize;
+    use starlark::values::StarlarkValue;
+    use starlark::values::Value;
+    use starlark::values::starlark_value;
+
+    /// A native value Java would implement as a `Map` (like Bazel's `existing_rule` views):
+    /// `{"a": 1, "b": 2}`.
+    #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative)]
+    pub struct JavaMap;
+
+    impl std::fmt::Display for JavaMap {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "<java map>")
+        }
+    }
+
+    starlark_simple_value!(JavaMap);
+
+    #[starlark_value(type = "dict")]
+    impl<'v> StarlarkValue<'v> for JavaMap {
+        fn java_map_entries(
+            &self,
+            heap: Heap<'v>,
+        ) -> Option<starlark::Result<Vec<(Value<'v>, Value<'v>)>>> {
+            Some(Ok(vec![
+                (heap.alloc("a"), heap.alloc(1)),
+                (heap.alloc("b"), heap.alloc(2)),
+            ]))
+        }
+    }
+}
+
+/// Patch 0068: a native value with `java_map_entries` is accepted where Java accepts any `Map`:
+/// `dict(m)`, `d.update(m)`, `f(**m)`, `m | d`, `d | m`, `m | m`, `d |= m` and set methods.
+#[test]
+fn patch_0068_java_map_values() {
+    std::thread::Builder::new()
+        .stack_size(1 << 30)
+        .spawn(|| {
+            let globals = dialect::bazel_universe();
+            let program = r#"
+def f(**kw):
+    return kw
+d = {"z": 0}
+d.update(m)
+e = {"z": 0}
+e |= m
+r = repr((
+    dict(m),
+    dict(m, c = 3),
+    d,
+    f(**m),
+    m | {"c": 3},
+    {"c": 3} | m,
+    m | m,
+    e,
+    sorted(set().union(m)),
+))
+"#;
+            let ast =
+                AstModule::parse("t.bzl", program.to_owned(), &dialect::bzl_dialect()).unwrap();
+            Module::with_temp_heap(|module| {
+                module.set("m", module.heap().alloc(java_map::JavaMap));
+                let mut e = Evaluator::new(&module);
+                e.eval_module(ast, &globals).unwrap();
+                assert_eq!(
+                    module.get("r").unwrap().unpack_str().unwrap(),
+                    "({\"a\": 1, \"b\": 2}, {\"a\": 1, \"b\": 2, \"c\": 3}, \
+                     {\"z\": 0, \"a\": 1, \"b\": 2}, {\"a\": 1, \"b\": 2}, \
+                     {\"a\": 1, \"b\": 2, \"c\": 3}, {\"c\": 3, \"a\": 1, \"b\": 2}, \
+                     {\"a\": 1, \"b\": 2}, {\"z\": 0, \"a\": 1, \"b\": 2}, [\"a\", \"b\"])"
+                );
+            });
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}

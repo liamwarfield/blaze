@@ -38,18 +38,22 @@ impl OptionInstanceOrigin {
         }
     }
 
+    // Java: com/google/devtools/common/options/OptionInstanceOrigin.java:39 OptionInstanceOrigin.getPriority
     pub fn get_priority(&self) -> &OptionPriority {
         &self.priority
     }
 
+    // Java: com/google/devtools/common/options/OptionInstanceOrigin.java:43 OptionInstanceOrigin.getSource
     pub fn get_source(&self) -> Option<&str> {
         self.source.as_deref()
     }
 
+    // Java: com/google/devtools/common/options/OptionInstanceOrigin.java:48 OptionInstanceOrigin.getImplicitDependent
     pub fn get_implicit_dependent(&self) -> Option<&ParsedOptionRef> {
         self.implicit_dependent.as_ref()
     }
 
+    // Java: com/google/devtools/common/options/OptionInstanceOrigin.java:53 OptionInstanceOrigin.getExpandedFrom
     pub fn get_expanded_from(&self) -> Option<&ParsedOptionRef> {
         self.expanded_from.as_ref()
     }
@@ -67,6 +71,8 @@ pub struct ParsedOptionDescription {
 }
 
 impl ParsedOptionDescription {
+    /// PORT: Java's two overloads; the one without `oldNameUsed` passes `false`.
+    // Java: com/google/devtools/common/options/ParsedOptionDescription.java:52 ParsedOptionDescription.newParsedOptionDescription
     // Java: com/google/devtools/common/options/ParsedOptionDescription.java:69 ParsedOptionDescription.newParsedOptionDescription
     pub fn new_parsed_option_description(
         option_definition: OptionDefinitionRef,
@@ -102,10 +108,12 @@ impl ParsedOptionDescription {
         })
     }
 
+    // Java: com/google/devtools/common/options/ParsedOptionDescription.java:99 ParsedOptionDescription.getOptionDefinition
     pub fn get_option_definition(&self) -> OptionDefinitionRef {
         self.option_definition
     }
 
+    // Java: com/google/devtools/common/options/ParsedOptionDescription.java:103 ParsedOptionDescription.getCommandLineForm
     pub fn get_command_line_form(&self) -> Option<&str> {
         self.command_line_form.as_deref()
     }
@@ -158,6 +166,7 @@ impl ParsedOptionDescription {
 
     // Java: com/google/devtools/common/options/ParsedOptionDescription.java:156 ParsedOptionDescription.isDocumented
     pub fn is_documented(&self) -> bool {
+        // Java: com/google/devtools/common/options/ParsedOptionDescription.java:148 ParsedOptionDescription.documentationCategory
         self.option_definition.get_documentation_category()
             != OptionDocumentationCategory::UNDOCUMENTED
             && !self.is_hidden()
@@ -165,34 +174,42 @@ impl ParsedOptionDescription {
 
     // Java: com/google/devtools/common/options/ParsedOptionDescription.java:160 ParsedOptionDescription.isHidden
     pub fn is_hidden(&self) -> bool {
+        // Java: com/google/devtools/common/options/ParsedOptionDescription.java:152 ParsedOptionDescription.metadataTags
         let tags = self.option_definition.get_option_metadata_tags();
         tags.contains(&OptionMetadataTag::HIDDEN) || tags.contains(&OptionMetadataTag::INTERNAL)
     }
 
+    // Java: com/google/devtools/common/options/ParsedOptionDescription.java:165 ParsedOptionDescription.getUnconvertedValue
     pub fn get_unconverted_value(&self) -> Option<&str> {
         self.unconverted_value.as_deref()
     }
 
+    // Java: com/google/devtools/common/options/ParsedOptionDescription.java:170 ParsedOptionDescription.getOrigin
     pub fn get_origin(&self) -> &OptionInstanceOrigin {
         &self.origin
     }
 
+    // Java: com/google/devtools/common/options/ParsedOptionDescription.java:174 ParsedOptionDescription.getPriority
     pub fn get_priority(&self) -> &OptionPriority {
         self.origin.get_priority()
     }
 
+    // Java: com/google/devtools/common/options/ParsedOptionDescription.java:178 ParsedOptionDescription.isOldNameUsed
     pub fn is_old_name_used(&self) -> bool {
         self.old_name_used
     }
 
+    // Java: com/google/devtools/common/options/ParsedOptionDescription.java:182 ParsedOptionDescription.getSource
     pub fn get_source(&self) -> Option<&str> {
         self.origin.get_source()
     }
 
+    // Java: com/google/devtools/common/options/ParsedOptionDescription.java:187 ParsedOptionDescription.getImplicitDependent
     pub fn get_implicit_dependent(&self) -> Option<&ParsedOptionRef> {
         self.origin.get_implicit_dependent()
     }
 
+    // Java: com/google/devtools/common/options/ParsedOptionDescription.java:192 ParsedOptionDescription.getExpandedFrom
     pub fn get_expanded_from(&self) -> Option<&ParsedOptionRef> {
         self.origin.get_expanded_from()
     }

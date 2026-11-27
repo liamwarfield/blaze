@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 use std::io::{self, Write};
 
+use futures::FutureExt;
 use futures::future::BoxFuture;
 use futures::stream::{FuturesUnordered, StreamExt};
-use futures::FutureExt;
 
 use crate::chunking::ChunkingConfig;
 use crate::combined_cache::CombinedCache;
@@ -96,7 +96,7 @@ fn key(digest: &Digest) -> DigestKey {
 }
 
 impl<'a> ChunkedBlobDownloader<'a> {
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:51 ChunkedBlobDownloader.<init>
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:52 ChunkedBlobDownloader.<init>
     pub fn new(
         grpc_cache_client: &'a dyn ChunkSplitter,
         combined_cache: &'a dyn ChunkSource,
@@ -112,7 +112,7 @@ impl<'a> ChunkedBlobDownloader<'a> {
     }
 
     /// Downloads a blob using chunked download via the SplitBlob API.
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:67 ChunkedBlobDownloader.downloadChunked
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:68 ChunkedBlobDownloader.downloadChunked
     pub async fn download_chunked(
         &self,
         context: &RemoteActionExecutionContext<'_>,
@@ -134,7 +134,7 @@ impl<'a> ChunkedBlobDownloader<'a> {
     /// Returns the chunks the blob is composed of; a [`BlobNotSplittableException`] if the server
     /// cannot describe the blob as a sequence of chunks, in which case the caller may fall back
     /// to downloading the whole blob.
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:86 ChunkedBlobDownloader.getChunkDigests
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:90 ChunkedBlobDownloader.getChunkDigests
     async fn get_chunk_digests(
         &self,
         context: &RemoteActionExecutionContext<'_>,
@@ -156,7 +156,7 @@ impl<'a> ChunkedBlobDownloader<'a> {
         Ok(chunk_digests)
     }
 
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:131 ChunkedBlobDownloader.downloadAndReassembleChunks
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:135 ChunkedBlobDownloader.downloadAndReassembleChunks
     async fn download_and_reassemble_chunks(
         &self,
         context: &RemoteActionExecutionContext<'_>,
@@ -187,7 +187,7 @@ type PendingDownload<'b> = BoxFuture<'b, (DigestKey, io::Result<Vec<u8>>)>;
 /// PORT: Java's completion queue of listener callbacks is a `FuturesUnordered` here; dropping
 /// the session (an error, or the caller giving up) drops the downloads still in flight, which is
 /// `cancelAllDownloads()` in the `finally` block.
-// Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:137 ChunkedBlobDownloader.DownloadSession
+// Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:141 ChunkedBlobDownloader.DownloadSession
 struct DownloadSession<'b, 'c> {
     combined_cache: &'b dyn ChunkSource,
     context: &'b RemoteActionExecutionContext<'c>,
@@ -202,7 +202,7 @@ struct DownloadSession<'b, 'c> {
 }
 
 impl<'b, 'c> DownloadSession<'b, 'c> {
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:157 ChunkedBlobDownloader.DownloadSession.run
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:160 ChunkedBlobDownloader.DownloadSession.run
     async fn run(mut self) -> io::Result<()> {
         self.fill_window();
         while self.next_to_write < self.chunk_digests.len() {
@@ -213,7 +213,7 @@ impl<'b, 'c> DownloadSession<'b, 'c> {
         Ok(())
     }
 
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:170 ChunkedBlobDownloader.DownloadSession.fillWindow
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:173 ChunkedBlobDownloader.DownloadSession.fillWindow
     fn fill_window(&mut self) {
         while self.next_to_start < self.chunk_digests.len() {
             if self.next_to_start - self.next_to_write >= MAX_IN_FLIGHT_CHUNK_DOWNLOADS {
@@ -230,7 +230,7 @@ impl<'b, 'c> DownloadSession<'b, 'c> {
         }
     }
 
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:187 ChunkedBlobDownloader.DownloadSession.startDownload
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:190 ChunkedBlobDownloader.DownloadSession.startDownload
     fn start_download(&mut self, chunk_index: usize) {
         let chunk_digest: &'b Digest = &self.chunk_digests[chunk_index];
         let combined_cache = self.combined_cache;
@@ -248,7 +248,7 @@ impl<'b, 'c> DownloadSession<'b, 'c> {
         }));
     }
 
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:195 ChunkedBlobDownloader.DownloadSession.drainCompletedDownloads
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:198 ChunkedBlobDownloader.DownloadSession.drainCompletedDownloads
     async fn drain_completed_downloads(&mut self) -> io::Result<()> {
         // completedDownloads.take()
         let Some(mut download) = self.downloads.next().await else {
@@ -264,7 +264,7 @@ impl<'b, 'c> DownloadSession<'b, 'c> {
         }
     }
 
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:203 ChunkedBlobDownloader.DownloadSession.processCompletedDownload
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:206 ChunkedBlobDownloader.DownloadSession.processCompletedDownload
     fn process_completed_download(
         &mut self,
         (digest_key, result): (DigestKey, io::Result<Vec<u8>>),
@@ -285,7 +285,7 @@ impl<'b, 'c> DownloadSession<'b, 'c> {
         Ok(())
     }
 
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:217 ChunkedBlobDownloader.DownloadSession.drainReadyChunks
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobDownloader.java:220 ChunkedBlobDownloader.DownloadSession.drainReadyChunks
     fn drain_ready_chunks(&mut self) -> io::Result<()> {
         while let Some(chunk) = self.ready_chunks.remove(&self.next_to_write) {
             self.out.write_all(&chunk)?;

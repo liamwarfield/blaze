@@ -555,6 +555,9 @@ enum PlannedDependency {
 /// `TransitionApplier` and `processTransitionResult`): the configuration(s) of one dependency
 /// edge.
 // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:132 DependencyProducer.step
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:125 DependencyProducer.<init>
+// PORT: skipped, the state machine's result sink is the return value of the synchronous port (the dependency's PrerequisiteMap entry or the DependencyError the caller collects): DependencyProducer.ResultSink.acceptDependencyValues, DependencyProducer.ResultSink.acceptMaterializerTarget, DependencyProducer.ResultSink.acceptDependencyError
+// PORT: skipped, materializer rules (dormant dependencies) are not ported (see the module documentation): DependencyProducer.MaterializerRuleDependencySink.acceptTransition, DependencyProducer.MaterializerRuleDependencySink.acceptDependencyValues, DependencyProducer.MaterializerRuleDependencySink.acceptMaterializerTarget, DependencyProducer.MaterializerRuleDependencySink.acceptDependencyError
 fn plan_dependency(
     env: &mut Environment<'_>,
     parameters: &mut PrerequisiteParameters<'_>,
@@ -633,6 +636,8 @@ fn plan_dependency(
         ExecutionPlatformResult::Skip => return Ok(PlannedDependency::Skipped),
         ExecutionPlatformResult::Error(message) => {
             // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:617 ExecGroupErrorEmitter
+            // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:625 ExecGroupErrorEmitter.step
+            // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:633 ExecGroupErrorEmitter.accept
             // The configuration value should already exist as a dependency so this lookup is
             // safe enough for error handling.
             let Some(configuration) = env.get_value(configuration_key)? else {
@@ -702,10 +707,13 @@ fn plan_dependency(
                         get_message_with_edge_transition_info(parameters, kind, to_label, &m),
                     )
                 }
+                // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:244 DependencyProducer.acceptBuildOptionsScopeFunctionError
                 TransitionApplierError::BuildOptionsScope(m) => {
                     DependencyError::BuildOptionsScope(m)
                 }
+                // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:249 DependencyProducer.acceptPlatformMappingError
                 TransitionApplierError::PlatformMapping(m) => DependencyError::PlatformMapping(m),
+                // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:254 DependencyProducer.acceptPlatformFlagsError
                 TransitionApplierError::PlatformFlags(m) => DependencyError::InvalidPlatform(m),
             };
             errors.accept_dependency_error(error);
@@ -713,6 +721,7 @@ fn plan_dependency(
         }
     };
 
+    // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:224 DependencyProducer.acceptTransitionedConfigurations
     // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:306 DependencyProducer.processTransitionResult
     let mut is_nonconfigurable_target_in_same_package = false;
     match get_target_in_same_package_without_skyframe(env, parameters.target(), to_label)? {
@@ -854,6 +863,8 @@ fn get_target_in_same_package_without_skyframe(
 
 /// `computePrerequisites` followed by `evaluateMaterializerTargets` and `emitResults`.
 // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:389 DependencyProducer.computePrerequisites
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:374 DependencyProducer.acceptPrerequisitesValue
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:567 DependencyProducer.emitResults
 fn compute_prerequisites(
     env: &mut Environment<'_>,
     parameters: &mut PrerequisiteParameters<'_>,

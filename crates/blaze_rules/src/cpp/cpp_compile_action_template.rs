@@ -376,6 +376,10 @@ impl ActionTemplate for CppCompileActionTemplate {
 }
 
 impl Action for CppCompileActionTemplate {
+    fn java_class_name(&self) -> Option<&'static str> {
+        Some("com.google.devtools.build.lib.rules.cpp.CppCompileActionTemplate")
+    }
+
     fn abstract_action(&self) -> &AbstractAction {
         &self.base
     }

@@ -83,6 +83,8 @@ impl AqueryProcessor {
         &self,
         skyframe_executor: &SkyframeExecutor,
     ) -> blaze_query_engine::DetailedExitCode {
+        // Java: com/google/devtools/build/lib/buildtool/AqueryProcessor.java:73 AqueryProcessor.getQueryOptions
+        // (env.getOptions().getOptions(AqueryOptions.class), passed to the constructor here).
         let aquery_options = &self.aquery_options;
         // env.getRuntime().getQueryRuntimeHelperFactory().create(env, aqueryOptions)
         let output = match blaze_query::query::output::query_runtime_helper::create(

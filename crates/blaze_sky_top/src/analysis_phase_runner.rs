@@ -36,8 +36,35 @@ pub fn execute(
     target_pattern_phase_value: &TargetPatternPhaseValue,
     build_options: &Arc<BuildOptions>,
 ) -> Result<Option<AnalysisResult>, BuildToolError> {
-    // Compute the heuristic instrumentation filter if needed.
-    // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:115 AnalysisPhaseRunner.execute
+    let patched_build_options = compute_heuristic_instrumentation_filter(
+        skyframe_executor,
+        reporter,
+        request,
+        target_pattern_phase_value,
+        build_options,
+    )?;
+    let build_options = patched_build_options.as_ref().unwrap_or(build_options);
+    execute_after_instrumentation_filter(
+        skyframe_executor,
+        reporter,
+        relative_working_directory,
+        request,
+        target_pattern_phase_value,
+        build_options,
+    )
+}
+
+/// Compute the heuristic instrumentation filter if needed: the build options with the filter
+/// (`None` when they are unchanged). Shared by `AnalysisAndExecutionPhaseRunner.execute`.
+// Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:115 AnalysisPhaseRunner.execute
+// Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:74 AnalysisAndExecutionPhaseRunner.execute
+pub(crate) fn compute_heuristic_instrumentation_filter(
+    skyframe_executor: &SkyframeExecutor,
+    reporter: &Arc<dyn ExtendedEventHandler>,
+    request: &BuildRequest,
+    target_pattern_phase_value: &TargetPatternPhaseValue,
+    build_options: &Arc<BuildOptions>,
+) -> Result<Option<Arc<BuildOptions>>, BuildToolError> {
     let mut patched_build_options: Option<Arc<BuildOptions>> = None;
     if request.needs_instrumentation_filter() {
         // PORT: skipped, profiling ("Compute instrumentation filter").
@@ -77,30 +104,28 @@ pub fn execute(
             }
         }
     }
-    let build_options = patched_build_options.as_ref().unwrap_or(build_options);
+    Ok(patched_build_options)
+}
 
+/// The rest of `AnalysisPhaseRunner.execute`.
+fn execute_after_instrumentation_filter(
+    skyframe_executor: &SkyframeExecutor,
+    reporter: &Arc<dyn ExtendedEventHandler>,
+    relative_working_directory: &PathFragment,
+    request: &BuildRequest,
+    target_pattern_phase_value: &TargetPatternPhaseValue,
+    build_options: &Arc<BuildOptions>,
+) -> Result<Option<AnalysisResult>, BuildToolError> {
     // PORT: env.throwPendingException() (an exit requested by a module while the command runs)
     // is checked by the command dispatcher.
 
     let mut analysis_result = None;
     if request.perform_analysis_phase {
-        // PORT: the "runAnalysisAndExecutionPhase" scope of the merged phase also spans the
-        // execution, which the build command runs after this returns; only the marker is set.
-        // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:117 AnalysisAndExecutionPhaseRunner.execute
         // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:140 AnalysisPhaseRunner.execute
-        let merged = request.with_merged_analysis_and_execution_source_of_truth();
-        Profiler::instance().mark_phase(if merged {
-            ProfilePhase::ANALYZE_AND_EXECUTE
-        } else {
-            ProfilePhase::ANALYZE
-        });
+        Profiler::instance().mark_phase(ProfilePhase::ANALYZE);
         let result = {
             // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:142 AnalysisPhaseRunner.execute
-            let _c = if merged {
-                blaze_util::profiler::SilentCloseable::nop()
-            } else {
-                Profiler::instance().profile(ProfilerTask::INFO, "runAnalysisPhase")
-            };
+            let _c = Profiler::instance().profile(ProfilerTask::INFO, "runAnalysisPhase");
             run_analysis_phase(
                 skyframe_executor,
                 reporter,
@@ -115,13 +140,7 @@ pub fn execute(
         // it are Google-internal or the remote module).
 
         // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:156 AnalysisPhaseRunner.execute
-        // PORT: with merged analysis and execution, AnalysisAndExecutionPhaseRunner.execute
-        // reports the targets after the merged phase returned (not when it threw), before the
-        // finally block of BuildTool shows the results: the build command's execution phase
-        // does it (blaze_runtime commands/build.rs).
-        if !request.with_merged_analysis_and_execution_source_of_truth() {
-            report_analyzed_targets(reporter.as_ref(), request, &result);
-        }
+        report_analyzed_targets(reporter.as_ref(), request, &result);
 
         // PORT: postAbortedEventsForSkippedTargets (an AbortedEvent per skipped target for the
         // build event stream) is the command's, from `AnalysisResult::get_targets_to_skip()`:
@@ -191,10 +210,9 @@ fn run_analysis_phase(
             explicit_target_patterns,
             skip_incompatible_explicit_targets: request.skip_incompatible_explicit_targets,
             report_incompatible_targets: request.report_incompatible_targets,
-            // PORT: Java's AnalysisPhaseRunner always passes false: a merged (Skymeld) request
-            // goes through AnalysisAndExecutionPhaseRunner, which passes true. Blaze has the one
-            // runner.
-            include_execution_phase: request.with_merged_analysis_and_execution_source_of_truth(),
+            // A merged (Skymeld) request goes through AnalysisAndExecutionPhaseRunner, which
+            // passes true.
+            include_execution_phase: false,
         },
         &aspects_parameters,
         reporter.clone(),
@@ -209,31 +227,24 @@ fn run_analysis_phase(
         },
         BuildViewError::InvalidConfiguration(e) => BuildToolError::InvalidConfiguration(e),
         BuildViewError::Interrupted => BuildToolError::Interrupted,
+        BuildViewError::BuildTool(e) => *e,
+        BuildViewError::Execution(e) => {
+            panic!(
+                "IllegalStateException: an execution exception without an execution phase: {e:?}"
+            )
+        }
     })?;
 
     // TODO(bazel-team): Merge these into one event.
     // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:429 AnalysisPhaseRunner.runAnalysisPhase
-    // PORT: with merged analysis and execution Java posts it from
-    // SkyframeBuildView.analysisFinishedCallback (SkyframeBuildView.java:957), once the analysis
-    // of every top-level key concluded, and so never when there is no top-level key
-    // (AnalysisOperationWatcher.java:70); Blaze's merged build has concluded its analysis here.
-    // Java posts it before the errors of a keep_going analysis are reported, Blaze after
-    // (open: the "errors encountered while analyzing" warnings precede the summary line). The
-    // event's counters for the build metrics are the command's
+    // The event's counters for the build metrics are the command's
     // (`AnalysisResult::get_analysis_phase_complete_stats`).
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:713 SkyframeBuildView.analyzeAndExecuteTargets
-    if analysis_phase_complete_event_posted(request, &analysis_result) {
-        reporter.post(Arc::new(
-            blaze_buildtool::buildtool::buildevent::AnalysisPhaseCompleteEvent::new(
-                analysis_result.get_targets_to_build().len(),
-            ),
-        ));
-    }
-    // PORT: Java's AnalysisPhaseRunner serves only requests without merged analysis and
-    // execution; for a merged request BuildDriverFunction posts the top-level status events,
-    // which `build_view::update` (analyzed, skipped) and the command (skipped tests) do here,
-    // and no TestFilteringCompleteEvent is posted.
-    if !request.with_merged_analysis_and_execution_source_of_truth() {
+    reporter.post(Arc::new(
+        blaze_buildtool::buildtool::buildevent::AnalysisPhaseCompleteEvent::new(
+            analysis_result.get_targets_to_build().len(),
+        ),
+    ));
+    {
         // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:454 AnalysisPhaseRunner.runAnalysisPhase
         // PORT: the event carries the labels of the test targets (see the type);
         // AggregatingTestListener.populateTests does what populateTest does with the
@@ -261,11 +272,10 @@ fn run_analysis_phase(
 // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:429 AnalysisPhaseRunner.runAnalysisPhase
 // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:911 SkyframeBuildView.analysisFinishedCallback
 pub fn analysis_phase_complete_event_posted(
-    request: &BuildRequest,
+    _request: &BuildRequest,
     analysis_result: &AnalysisResult,
 ) -> bool {
-    !request.with_merged_analysis_and_execution_source_of_truth()
-        || analysis_result.has_top_level_keys()
+    analysis_result.analysis_phase_complete_event_posted()
 }
 
 /// An event that marks the successful analysis of an aspect.
@@ -349,7 +359,7 @@ fn post_top_level_status_events(
 
 /// Returns the set of labels of target patterns that represent single targets.
 // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:541 AnalysisPhaseRunner.getExplicitTargetPatterns
-fn get_explicit_target_patterns(
+pub(crate) fn get_explicit_target_patterns(
     skyframe_executor: &SkyframeExecutor,
     reporter: &Arc<dyn ExtendedEventHandler>,
     relative_working_directory: &PathFragment,

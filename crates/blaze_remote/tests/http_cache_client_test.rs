@@ -969,8 +969,9 @@ fn cache_miss_and_request_heads() {
 /// written (an upload timeout once the socket buffers are full).
 const LARGE_BODY: usize = 16 * 1024 * 1024;
 
-fn large_put_answered_early(answer: impl Fn(&Request) -> Option<Answer> + Send + Sync + 'static)
--> EarlyHandler {
+fn large_put_answered_early(
+    answer: impl Fn(&Request) -> Option<Answer> + Send + Sync + 'static,
+) -> EarlyHandler {
     Arc::new(move |request: &Request| {
         let length: usize = request
             .header("content-length")
@@ -1016,7 +1017,11 @@ fn upload_answered_before_body_reports_the_status(kind: ServerKind) {
         false,
     ))
     .unwrap_err();
-    assert!(start.elapsed() < Duration::from_secs(5), "{:?}", start.elapsed());
+    assert!(
+        start.elapsed() < Duration::from_secs(5),
+        "{:?}",
+        start.elapsed()
+    );
     let http_exception = errors::downcast_ref::<HttpException>(&e).expect("an HttpException");
     assert_eq!(http_exception.status, 403);
     assert_eq!(e.to_string(), "403 Forbidden");
@@ -1046,8 +1051,14 @@ fn expired_auth_token_before_body_is_refreshed(kind: ServerKind) {
         })),
     );
     let credentials = Arc::new(MockCredentials::default());
-    let blob_store =
-        create_http_blob_store(&server, 10, true, Vec::new(), Some(credentials.clone()), None);
+    let blob_store = create_http_blob_store(
+        &server,
+        10,
+        true,
+        Vec::new(),
+        Some(credentials.clone()),
+        None,
+    );
     let data = bytes::Bytes::from(vec![7u8; LARGE_BODY]);
     get_from_future(blob_store.upload_bytes(
         &context(),
@@ -1081,15 +1092,20 @@ fn expired_auth_token_for_a_file_is_not_retried(kind: ServerKind) {
         })),
     );
     let credentials = Arc::new(MockCredentials::default());
-    let blob_store =
-        create_http_blob_store(&server, 10, true, Vec::new(), Some(credentials.clone()), None);
+    let blob_store = create_http_blob_store(
+        &server,
+        10,
+        true,
+        Vec::new(),
+        Some(credentials.clone()),
+        None,
+    );
     let dir = tempfile::tempdir().unwrap();
     let file_path = dir.path().join("big");
     let data = vec![7u8; LARGE_BODY];
     std::fs::write(&file_path, &data).unwrap();
-    let fs: blaze_vfs::FileSystemRef = Arc::new(blaze_vfs::UnixFileSystem::new(
-        DigestHashFunction::Sha256,
-    ));
+    let fs: blaze_vfs::FileSystemRef =
+        Arc::new(blaze_vfs::UnixFileSystem::new(DigestHashFunction::Sha256));
     let file = blaze_vfs::Path::create_from_str(file_path.to_str().unwrap(), &fs);
     let e = get_from_future(blob_store.upload_file(
         &context(),

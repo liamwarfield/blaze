@@ -14,6 +14,7 @@ pub enum LocationCheck {
 
 /// An allowlist check a rule class performs during analysis (Java `AllowlistChecker`).
 // Java: com/google/devtools/build/lib/packages/AllowlistChecker.java:33 AllowlistChecker
+// PORT: skipped, the AutoBuilder is a struct literal at its callers: AllowlistChecker.builder, AllowlistChecker.Builder.setAllowlistAttr, AllowlistChecker.Builder.setErrorMessage, AllowlistChecker.Builder.setAttributeSetTrigger, AllowlistChecker.Builder.setLocationCheck, AllowlistChecker.Builder.build
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AllowlistChecker {
     pub allowlist_attr: String,

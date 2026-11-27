@@ -114,6 +114,9 @@ pub fn dict_entries<'v>(v: Value<'v>) -> Option<Vec<(Value<'v>, Value<'v>)>> {
 /// Java `Dict.cast(x, keyType, valueType, what)`; `key_want`/`value_want` are the
 /// `Starlark.classType` names.
 // Java: net/starlark/java/eval/Dict.java:659 Dict.cast
+// The class names passed as `want` are those of Java's `Starlark.classType`: a parameter typed
+// `Object` prints as `unknown` (Starlark.java, classType), never as `Object` or `any` (review
+// 2026-11-26-rewinding-round2, AT-1).
 pub fn dict_cast<'v>(
     x: Value<'v>,
     key_want: &str,
@@ -122,6 +125,8 @@ pub fn dict_cast<'v>(
     value_accepts: impl Fn(Value<'v>) -> bool,
     what: &str,
 ) -> starlark::Result<Vec<(Value<'v>, Value<'v>)>> {
+    // `((Map) x).entrySet()`: a key-tracking dict (`ctx.var`) records every key.
+    starlark::values::dict::dict_record_all_keys_accessed(x);
     let Some(entries) = dict_entries(x) else {
         return Err(errorf(format!(
             "got {} for '{what}', want dict",

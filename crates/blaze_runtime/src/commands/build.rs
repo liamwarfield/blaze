@@ -53,9 +53,7 @@ use blaze_optdefs::misc::local_execution_options::LocalExecutionOptions;
 use blaze_optdefs::misc::sandbox_options::SandboxOptions;
 use blaze_options::Options;
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail::Category};
-use blaze_sky_analysis::top_level_status_events::{
-    TopLevelTargetAnalyzedEvent, TopLevelTargetSkippedEvent,
-};
+use blaze_sky_analysis::top_level_status_events::TopLevelTargetAnalyzedEvent;
 use blaze_sky_exec::build_driver_function::TopLevelSkyValue;
 use blaze_sky_exec::events::TestAnalyzedEvent;
 use blaze_sky_exec::keys::{
@@ -388,13 +386,9 @@ fn run_build_with_bep(
     let ui_test_summaries = Arc::new(UiTestSummaryCounter::default());
     env.get_event_bus().register(ui_test_summaries.clone());
     // CommandEnvironment.<init>: eventBus.register(buildResultListener)
-    let build_result_listener = Arc::new(BuildResultListener::default());
+    let build_result_listener =
+        Arc::new(blaze_sky_top::build_result_listener::BuildResultListener::default());
     env.get_event_bus().register(build_result_listener.clone());
-    // AnalysisAndExecutionPhaseRunner's buildConfigurationCreatedCallback
-    // (`result::setBuildConfiguration`).
-    let build_configuration_created = Arc::new(BuildConfigurationCreatedCallback::default());
-    env.get_event_bus()
-        .register(build_configuration_created.clone());
     let test_support = run_tests.then(|| {
         TestCommandSupport::new(
             Arc::new(execution_options.clone()),
@@ -478,7 +472,8 @@ fn run_build_with_bep(
         .map(|d| d as Arc<dyn blaze_exec::exec::spawn_log_context::SpawnLogContext>);
 
     // OutputFilteringModule: the reporter's filter (see `output_filter`).
-    let reporter_output_filter = output_filter(options, &build_request_options);
+    let (reporter_output_filter, auto_output_filter) =
+        output_filter(options, &build_request_options);
 
     let jobs = if build_request_options.jobs > 0 {
         build_request_options.jobs as usize
@@ -831,6 +826,9 @@ fn run_build_with_bep(
         non_merged_coverage_artifacts: std::cell::RefCell::new(None),
         event_bus: env.get_event_bus().clone(),
         incremental_package_roots: RefCell::new(None),
+        tracks_state_for_incrementality: env.tracks_state_for_incrementality(),
+        is_run_command: request.command_name == "run",
+        top_level_target_analysis_watcher: parking_lot::Mutex::new(None),
     };
     let post_processor = ExecutionToolConstruction {
         execution_phase: &execution_phase,
@@ -861,10 +859,23 @@ fn run_build_with_bep(
         None => build_tool,
     };
     // The build event stream's loading and analysis posting points.
-    let build_tool = match (bep, metrics_only) {
-        (Some(bep), _) => build_tool.with_build_event_hooks(bep.as_ref()),
-        // Without a transport, the MetricsCollector's analysis hook.
-        (None, Some(metrics_only)) => build_tool.with_build_event_hooks(metrics_only),
+    let event_hooks: Option<&dyn blaze_sky_top::build_tool::BuildEventHooks> =
+        match (bep, metrics_only) {
+            (Some(bep), _) => Some(bep.as_ref()),
+            // Without a transport, the MetricsCollector's analysis hook.
+            (None, Some(metrics_only)) => Some(metrics_only),
+            (None, None) => None,
+        };
+    // OutputFilteringModule.targetParsingComplete, a subscriber of the TargetParsingCompleteEvent
+    // posted after the target patterns are evaluated.
+    let output_filtering_hooks = auto_output_filter.map(|(auto, slot)| OutputFilteringHooks {
+        inner: event_hooks,
+        auto_output_filter: auto,
+        slot,
+    });
+    let build_tool = match (&output_filtering_hooks, event_hooks) {
+        (Some(hooks), _) => build_tool.with_build_event_hooks(hooks),
+        (None, Some(hooks)) => build_tool.with_build_event_hooks(hooks),
         (None, None) => build_tool,
     };
     // BuildTool.buildTargets: BuildStartingEvent. Its subscriber OutputFilteringModule sets the
@@ -947,70 +958,10 @@ fn run_build_with_bep(
         keep_going,
         &execution_options,
     ));
-    if !execution_phase.results_shown.get()
-        && !execution_phase.execution_tool_failed.get()
-        && merged_analysis_and_execution
-        && build_tool.analysis_and_execution_entered()
-    {
-        // The finally block of BuildTool.buildTargetsWithMergedAnalysisExecution also runs when
-        // the analysis (or the preparation of the execution) throws: the targets analyzed so far
-        // are the build result's targets, none of them was built, and
-        // ExecutionTool.nonCatastrophicFinalizations shows them as failed. The sets are empty,
-        // not null, when nothing was analyzed, which is how TestCommand.doTest tells this from a
-        // build that never started.
-        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:664 BuildTool.buildTargetsWithMergedAnalysisExecution
-        let analyzed_targets = build_result_listener.get_analyzed_targets();
-        if let Some(configuration) = build_configuration_created.get() {
-            // We still need to do this even in case of an exception.
-            // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:668 BuildTool.buildTargetsWithMergedAnalysisExecution
-            build_result.set_build_configuration(configuration.clone());
-            let symlinks = execution_phase.handle_convenience_symlinks(
-                &skyframe_executor,
-                &analyzed_targets,
-                &configuration,
-            );
-            build_result.set_convenience_symlinks(symlinks.get_created_symlinks().clone());
-        }
-        let views = configured_target_views(&analyzed_targets);
-        let skipped_targets = configured_target_views(&build_result_listener.get_skipped_targets());
-        build_result.set_actual_targets(Some(views.clone()));
-        // getAnalyzedTests(): the TestAnalyzedEvents are posted when the execution starts.
-        build_result.set_test_targets(Some(Vec::new()));
-        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:552 ExecutionTool.nonCatastrophicFinalizations
-        build_result.set_successful_targets(Some(Vec::new()));
-        build_result.set_successful_aspects(Some(indexmap::IndexSet::new()));
-        build_result.set_skipped_targets(Some(skipped_targets.clone()));
-        let generating_rule_lookup =
-            |target: &ConfiguredTargetRef| output_file_generating_rule(&analyzed_targets, target);
-        BuildResultPrinter::new(
-            env.get_runtime().get_product_name(),
-            env.get_relative_working_directory().clone(),
-        )
-        .show_build_result(
-            &execution_phase.request_view,
-            &build_result,
-            &views,
-            &skipped_targets,
-            &indexmap::IndexMap::new(),
-            &generating_rule_lookup,
-        );
-    }
-    // The Skymeld path constructs the ExecutionTool (and with it BuildSummaryStatsModule
-    // .executorInit) when it enters buildTargetsWithMergedAnalysisExecution, after the target
-    // patterns are evaluated and validated (RunCommand's TargetValidator throws in
-    // evaluateTargetPatterns, before it) and the project file is applied; Blaze's
-    // ExecutionToolConstruction runs after the analysis, so a failed analysis initializes it
-    // here. The ExecutionFinishedEvent of ExecutionTool.unconditionalExecutionPhaseFinalizations
-    // is posted whenever the ExecutionTool exists.
-    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:613 BuildTool.buildTargetsWithMergedAnalysisExecution
+    // The ExecutionFinishedEvent of ExecutionTool.unconditionalExecutionPhaseFinalizations is
+    // posted whenever the ExecutionTool exists (the Skymeld path constructs it when it enters
+    // buildTargetsWithMergedAnalysisExecution: ExecutionToolConstruction::before_merged_analysis).
     // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:601 ExecutionTool.unconditionalExecutionPhaseFinalizations
-    if merged_analysis_and_execution
-        && !collector.executor_initialized()
-        && build_tool.analysis_and_execution_entered()
-        && let Some(state) = skyframe_executor.get_execution()
-    {
-        executor_init_build_summary_stats(&collector, &execution_options, state);
-    }
     if collector.executor_initialized() {
         collector.execution_phase_finish();
     }
@@ -1374,40 +1325,22 @@ struct ExecutionToolConstruction<'a> {
 }
 
 impl AnalysisPostProcessor for ExecutionToolConstruction<'_> {
-    /// Skymeld constructs the ExecutionTool before the analysis: the modules' `executorInit`
-    /// that Blaze runs there (`SpawnLogModule`'s; the others run in [`Self::construct`]), then
-    /// `AnalysisAndExecutionPhaseRunner.execute`'s `env.throwPendingException()`.
+    /// Skymeld constructs the ExecutionTool before the analysis (`new ExecutionTool(env,
+    /// request)` at the start of `buildTargetsWithMergedAnalysisExecution`): the modules'
+    /// `executorInit` and the executor ([`Self::construct`]).
     // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:613 BuildTool.buildTargetsWithMergedAnalysisExecution
-    // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:113 AnalysisAndExecutionPhaseRunner.execute
-    // (runAnalysisAndExecutionPhase is blaze_sky_top's BuildTool analysis with these hooks:
-    // BuildView.update, then execute_build.)
-    // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:173 AnalysisAndExecutionPhaseRunner.runAnalysisAndExecutionPhase
-    // PORT: skipped, Blaze analyzes before it executes, so no watcher follows each top-level entity's analysis to start its execution: AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.<init> AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.createAndRegisterWithEventBus AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.handleTopLevelTargetAnalysisConcluded AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.handleAspectAnalyzed
-    // PORT: skipped, same reason: AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.handleTestAnalyzed AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.handleKnownCoverageArtifacts AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.close AnalysisAndExecutionPhaseRunner.<init>
     fn before_merged_analysis(
         &self,
         _request: &BuildRequest,
         skyframe_executor: &SkyframeExecutor,
     ) -> Result<(), BuildToolError> {
-        // ExecutionTool.prepareForExecution ("preparingExecroot"), which Skymeld runs before the
-        // analysis (BuildTool.buildTargetsWithMergedAnalysisExecution).
-        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:270 ExecutionTool.prepareForExecution
-        self.execution_phase
-            .prepare_incremental_package_roots(skyframe_executor)?;
-        set_salt_and_delete_actions_if_changed(skyframe_executor);
-        // new ExecutionTool(env, request) runs the modules' executorInit before the analysis,
-        // which with merged analysis and execution also executes actions (the workspace status
-        // action among them): CacheFileDigestsModule configures the digest cache and takes the
-        // command's starting statistics here.
-        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:613 BuildTool.buildTargetsWithMergedAnalysisExecution
-        self.cache_file_digests_executor_init();
-        // The end of prepareForExecution: announceEnteringDirIfEmacs().
-        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:358 ExecutionTool.prepareForExecution
-        if let Some(state) = skyframe_executor.get_execution() {
-            self.execution_phase
-                .announce_entering_dir_if_emacs(&state.config.exec_root);
-        }
-        self.spawn_log.executor_init();
+        self.construct(skyframe_executor)
+    }
+
+    /// `env.throwPendingException()` of `AnalysisAndExecutionPhaseRunner.execute`: the exit a
+    /// module requested (`SpawnLogModule.executorInit`'s).
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:113 AnalysisAndExecutionPhaseRunner.execute
+    fn throw_pending_exception(&self) -> Result<(), BuildToolError> {
         if let Err(e) = self.spawn_log.module_environment.throw_pending_exception() {
             // catch (AbruptExitException e): result.setCatastrophe().
             // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:987 BuildTool.processRequest
@@ -1622,105 +1555,6 @@ fn determine_if_merging_analysis_execution(
     effective_value
 }
 
-/// A listener for the results of a build: the top-level targets that were analyzed and the
-/// ones that were skipped.
-///
-/// PORT: the analyzed tests are the analysis result's tests (Blaze analyzes every top-level
-/// target before it executes), the built targets are read from the graph
-/// ([`top_level_target_built`]), and there are no top-level aspects.
-///
-/// The analyzed tests are `analysis_result.get_targets_to_test()`, the analyzed aspects the keys
-/// of `get_aspects_map()`, and the built targets and aspects are read from the evaluation
-/// (`top_level_target_built`, `top_level_aspect_built`) where Java collects them from events.
-// Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:42 BuildResultListener
-// Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:59 BuildResultListener.addAnalyzedTest
-// Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:93 BuildResultListener.getAnalyzedTests
-// Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:65 BuildResultListener.addAnalyzedAspect
-// Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:97 BuildResultListener.getAnalyzedAspects
-// Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:77 BuildResultListener.addBuiltTarget
-// Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:105 BuildResultListener.getBuiltTargets
-// Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:83 BuildResultListener.addBuiltAspect
-// Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:109 BuildResultListener.getBuiltAspects
-#[derive(Default)]
-struct BuildResultListener {
-    // Also includes test targets.
-    analyzed_targets: parking_lot::Mutex<Vec<ConfiguredTarget>>,
-    // Also includes test targets.
-    skipped_targets: parking_lot::Mutex<Vec<ConfiguredTarget>>,
-}
-
-impl BuildResultListener {
-    /// `Set.add`: a configured target is one instance per lookup key.
-    ///
-    /// PORT: java-hash-order. Java's sets are `ConcurrentHashMap.newKeySet()` over identity hash
-    /// codes, so the order of the result lines of several targets changes from run to run; here
-    /// it is the order of the events.
-    fn add(set: &parking_lot::Mutex<Vec<ConfiguredTarget>>, target: &ConfiguredTarget) {
-        let mut set = set.lock();
-        if !set
-            .iter()
-            .any(|t| t.get_lookup_key() == target.get_lookup_key())
-        {
-            set.push(target.clone());
-        }
-    }
-
-    // Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:89 BuildResultListener.getAnalyzedTargets
-    fn get_analyzed_targets(&self) -> Vec<ConfiguredTarget> {
-        self.analyzed_targets.lock().clone()
-    }
-
-    // Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:101 BuildResultListener.getSkippedTargets
-    fn get_skipped_targets(&self) -> Vec<ConfiguredTarget> {
-        self.skipped_targets.lock().clone()
-    }
-}
-
-/// The `buildConfigurationCreatedCallback` that `BuildTool.buildTargetsWithMergedAnalysisExecution`
-/// hands to `AnalysisAndExecutionPhaseRunner.execute` (`result::setBuildConfiguration`), called
-/// when `BuildView.update` created the top-level configuration.
-///
-/// PORT: blaze_sky_top's `BuildView.update` takes no callback; it posts the configuration's build
-/// event (`TopLevelConfigurationEvent`) at that point, which this subscriber records.
-// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:627 BuildTool.buildTargetsWithMergedAnalysisExecution
-#[derive(Default)]
-struct BuildConfigurationCreatedCallback {
-    configuration: parking_lot::Mutex<Option<Arc<BuildConfigurationValue>>>,
-}
-
-impl BuildConfigurationCreatedCallback {
-    fn get(&self) -> Option<Arc<BuildConfigurationValue>> {
-        self.configuration.lock().clone()
-    }
-}
-
-impl blaze_events::EventBus for BuildConfigurationCreatedCallback {
-    fn post(&self, event: Arc<dyn blaze_events::Postable>) {
-        if let Some(event) = blaze_sky_exec::events::downcast_event::<
-            blaze_sky_top::build_view::TopLevelConfigurationEvent,
-        >(&event)
-        {
-            *self.configuration.lock() = Some(event.configuration.clone());
-        }
-    }
-}
-
-impl blaze_events::EventBus for BuildResultListener {
-    fn post(&self, event: Arc<dyn blaze_events::Postable>) {
-        if let Some(event) =
-            blaze_sky_exec::events::downcast_event::<TopLevelTargetAnalyzedEvent>(&event)
-        {
-            // Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:55 BuildResultListener.addAnalyzedTarget
-            Self::add(&self.analyzed_targets, &event.configured_target);
-        } else if let Some(event) =
-            blaze_sky_exec::events::downcast_event::<TopLevelTargetSkippedEvent>(&event)
-        {
-            // Java: com/google/devtools/build/lib/skyframe/BuildResultListener.java:73 BuildResultListener.addSkippedTarget
-            Self::add(&self.skipped_targets, &event.configured_target);
-        }
-    }
-}
-
 /// What `BuildResultPrinter` reads from Java's `BuildRequest`.
 // Java: com/google/devtools/build/lib/buildtool/BuildRequest.java:59 BuildRequest
 struct RuntimeBuildRequestView {
@@ -1919,7 +1753,7 @@ struct RuntimeExecutionPhase {
     /// then never entered the `try` whose `finally` shows the results.
     execution_tool_failed: Cell<bool>,
     /// `env.getBuildResultListener()`.
-    build_result_listener: Arc<BuildResultListener>,
+    build_result_listener: Arc<blaze_sky_top::build_result_listener::BuildResultListener>,
     /// The `BuildRequest` as `BuildResultPrinter` reads it.
     request_view: RuntimeBuildRequestView,
     /// The command's Build Event Protocol support (`None` without `--build_event_*_file`).
@@ -1945,6 +1779,12 @@ struct RuntimeExecutionPhase {
     incremental_package_roots: RefCell<
         Option<Arc<blaze_sky_top::incremental_package_roots::IncrementalPackageRoots>>,
     >,
+    /// `env.getSkyframeExecutor().tracksStateForIncrementality()`.
+    tracks_state_for_incrementality: bool,
+    /// The request is the `run` command's (`TopLevelArtifactContext` of a run request).
+    is_run_command: bool,
+    /// The merged phase's `TopLevelTargetAnalysisWatcher`, while it is registered.
+    top_level_target_analysis_watcher: parking_lot::Mutex<Option<Arc<TopLevelTargetAnalysisWatcher>>>,
 }
 
 impl RuntimeExecutionPhase {
@@ -2065,150 +1905,45 @@ struct ExclusiveTestsOutcome {
 
 impl RuntimeExecutionPhase {
     /// Runs the exclusive tests sequentially, one Skyframe evaluation of its
-    /// `TestCompletionKey(exclusiveTesting = true)` each, after the main evaluation.
-    ///
-    /// Skymeld (`merged`): the exclusive tests are the `ExclusiveTestBuildDriverValue`s of the
-    /// main evaluation (those whose analysis and build succeeded), run when the main evaluation
-    /// has no error or with `--keep_going`. The other path (SkyframeBuilder.buildArtifacts) runs
-    /// `analysisResult.getExclusiveTests()` and then `getExclusiveIfLocalTests()` (the
-    /// `Sets.union` ExecutionTool passes) without the skipped targets, after the main evaluation's
-    /// errors were processed (which throws without `--keep_going`).
+    /// `TestCompletionKey(exclusiveTesting = true)` each, after the main evaluation
+    /// (SkyframeBuilder.buildArtifacts, the path without merged analysis and execution):
+    /// `analysisResult.getExclusiveTests()` and then `getExclusiveIfLocalTests()` (the `Sets.union`
+    /// ExecutionTool passes) without the skipped targets, after the main evaluation's errors
+    /// were processed (which throws without `--keep_going`). The merged path runs its exclusive
+    /// tests in `SkyframeBuildView.analyzeAndExecuteTargets`, in the order of
+    /// [`SkymeldExecutionHooks::get_exclusive_tests`].
     ///
     /// The coverage report artifacts that Java evaluates after the exclusive tests are
     /// `execute_build`'s.
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:758 SkyframeBuildView.analyzeAndExecuteTargets
     // Java: com/google/devtools/build/lib/buildtool/SkyframeBuilder.java:203 SkyframeBuilder.buildArtifacts
-    #[allow(clippy::too_many_arguments)]
     fn run_exclusive_tests(
         &self,
         skyframe_executor: &SkyframeExecutor,
         config: &blaze_buildtool::buildtool::execution_tool::ExecutionToolConfig,
         reporter: Arc<dyn ExtendedEventHandler>,
-        merged: bool,
-        for_run_command: bool,
         keep_going: bool,
         keys_to_execute: &[BuildDriverKey],
-        root_keys: &[BuildDriverKey],
-        skipped_keys: &[BuildDriverKey],
         main_evaluation_result: &blaze_skyframe::EvaluationResult,
     ) -> Result<ExclusiveTestsOutcome, blaze_skyframe::Interrupted> {
         let mut outcome = ExclusiveTestsOutcome::default();
-        let exclusive_tests_to_run: indexmap::IndexSet<&BuildDriverKey> = if merged {
-            // The exclusive tests whose analysis succeeded i.e. those that can be run.
-            // PORT: java-hash-order. `evaluationResult.values()` iterates the HashMap of the
-            // result (crate::commands::exclusive_test_order).
-            // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1103 SkyframeBuildView.getExclusiveTests
-            let flags = super::exclusive_test_order::TopLevelArtifactContextFlags {
-                run_tests_exclusively: self.execution_options.test_strategy == "exclusive",
-                expand_filesets: self.expand_filesets,
-                for_run_command,
-            };
-            let mut exclusive: Vec<(usize, &BuildDriverKey)> = Vec::new();
-            // Every distinct key of the result in root order, with its Java hash code when it is
-            // known here (a BuildDriverKey of a configured target).
-            //
-            // Java evaluates every BuildDriverKey (SkyframeExecutor.evaluateBuildDriverKeys roots:
-            // the configured-target keys, the aspect keys, the workspace status artifacts); for a
-            // target skipped as incompatible BuildDriverFunction.compute returns a skipped
-            // BuildDriverValue, so its key is an entry of the result map too (review exec-2
-            // round 2, E2-9). Blaze does not evaluate the skipped keys: they are added here, with
-            // an index past the evaluated values, at their place among the roots.
-            // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2503 SkyframeExecutor.evaluateBuildDriverKeys
-            // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:292 BuildDriverFunction.compute
-            let mut result_entries: Vec<(usize, Option<i32>)> = Vec::new();
-            let mut seen: std::collections::HashSet<&blaze_skyframe::SkyKey> =
-                std::collections::HashSet::new();
-            let mut evaluated_driver_keys: Vec<(usize, &BuildDriverKey, bool)> = Vec::new();
-            let mut other_entries: Vec<usize> = Vec::new();
-            for (index, (sky_key, value)) in main_evaluation_result.values.iter().enumerate() {
-                if !seen.insert(sky_key) {
-                    continue;
-                }
-                let Some(key) = sky_key.downcast::<BuildDriverKey>() else {
-                    other_entries.push(index);
-                    continue;
-                };
-                let key = keys_to_execute
-                    .iter()
-                    .find(|k| *k == key)
-                    .expect("an evaluated BuildDriverKey is a key to execute");
-                let is_exclusive = value
-                    .clone()
-                    .downcast::<blaze_sky_exec::build_driver_function::BuildDriverValue>()
-                    .is_ok_and(|value| value.exclusive_test);
-                evaluated_driver_keys.push((index, key, is_exclusive));
-            }
-            let mut next_skipped_index = main_evaluation_result.values.len();
-            let mut placed: Vec<usize> = Vec::new();
-            for root in root_keys {
-                if skipped_keys.contains(root) {
-                    let hash_code =
-                        super::exclusive_test_order::build_driver_key_hash_code(root, &flags);
-                    result_entries.push((next_skipped_index, hash_code));
-                    next_skipped_index += 1;
-                    continue;
-                }
-                let Some(&(index, key, is_exclusive)) =
-                    evaluated_driver_keys.iter().find(|(_, k, _)| *k == root)
-                else {
-                    // Not analyzed (an analysis error) or in error: not a value of the result.
-                    continue;
-                };
-                placed.push(index);
-                let hash_code =
-                    super::exclusive_test_order::build_driver_key_hash_code(key, &flags);
-                result_entries.push((index, hash_code));
-                if !is_exclusive {
-                    continue;
-                }
-                assert!(
-                    hash_code.is_some(),
-                    "an exclusive test's key is a ConfiguredTargetKey"
-                );
-                exclusive.push((index, key));
-            }
-            assert_eq!(
-                placed.len(),
-                evaluated_driver_keys.len(),
-                "every evaluated BuildDriverKey is a root"
-            );
-            for index in other_entries {
-                result_entries.push((index, None));
-            }
-            let order = super::exclusive_test_order::evaluation_result_values_order(result_entries);
-            order
-                .into_iter()
-                .filter_map(|index| {
-                    exclusive
-                        .iter()
-                        .find(|(i, _)| *i == index)
-                        .map(|(_, key)| *key)
-                })
-                .collect()
-        } else {
-            let of_type = |test_type: TestType| {
-                keys_to_execute
-                    .iter()
-                    .filter(move |key| key.test_type == test_type)
-            };
+        let of_type = |test_type: TestType| {
+            keys_to_execute
+                .iter()
+                .filter(move |key| key.test_type == test_type)
+        };
+        let exclusive_tests_to_run: indexmap::IndexSet<&BuildDriverKey> =
             of_type(TestType::EXCLUSIVE)
                 .chain(of_type(TestType::EXCLUSIVE_IF_LOCAL))
-                .collect()
-        };
+                .collect();
         let continue_with_exclusive_tests = !main_evaluation_result.has_error() || keep_going;
         if !continue_with_exclusive_tests || exclusive_tests_to_run.is_empty() {
             return Ok(outcome);
         }
-        // SkyframeBuilder.buildArtifacts: isBuildingExclusiveArtifacts.set(true) (the path without
-        // merged analysis and execution only).
+        // SkyframeBuilder.buildArtifacts: isBuildingExclusiveArtifacts.set(true).
         // Java: com/google/devtools/build/lib/buildtool/SkyframeBuilder.java:205 SkyframeBuilder.buildArtifacts
-        if !merged {
-            self.is_building_exclusive_artifacts
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-        }
+        self.is_building_exclusive_artifacts
+            .store(true, std::sync::atomic::Ordering::SeqCst);
         // Run exclusive tests sequentially.
-        // TestCompletionValue.keys(exclusiveTestsToRun, topLevelArtifactContext,
-        // /* exclusiveTesting= */ true)
         for key in exclusive_tests_to_run {
             let test_completion_key = TestCompletionKey {
                 configured_target_key: key.action_lookup_key.clone(),
@@ -2222,22 +1957,20 @@ impl RuntimeExecutionPhase {
                     config,
                     reporter.clone(),
                 )?;
-            if !merged {
-                // Java: com/google/devtools/build/lib/buildtool/SkyframeBuilder.java:228 SkyframeBuilder.buildArtifacts
-                blaze_util::check_state!(
-                    test_run_result.has_error() || !test_run_result.values.is_empty(),
-                    "Build reported as successful but test {:?} not executed: {:?}",
-                    key.action_lookup_key,
-                    test_run_result
-                );
-            }
+            // Java: com/google/devtools/build/lib/buildtool/SkyframeBuilder.java:228 SkyframeBuilder.buildArtifacts
+            blaze_util::check_state!(
+                test_run_result.has_error() || !test_run_result.values.is_empty(),
+                "Build reported as successful but test {:?} not executed: {:?}",
+                key.action_lookup_key,
+                test_run_result
+            );
             if test_run_result.has_error() {
                 match process_execution_errors(
                     &test_run_result,
                     keep_going,
                     skyframe_executor.get_cycles_reporter(),
                     &reporter,
-                    self.uses_process_errors(merged),
+                    self.uses_process_errors(/* merged= */ false),
                 ) {
                     Ok(code) => outcome.detailed_exit_codes.push(code),
                     Err(rethrown) => {
@@ -2505,8 +2238,11 @@ impl RuntimeExecutionPhase {
 }
 
 impl ExecutionPhase for RuntimeExecutionPhase {
+    /// `ExecutionTool.executeBuild`: the execution phase of a build without merged analysis and
+    /// execution (`--noexperimental_merged_skyframe_analysis_execution`). The merged build is
+    /// `blaze_sky_top::skyframe_build_view::analyze_and_execute_targets` with this phase's
+    /// hooks (`SkymeldExecutionHooks`, `merged_finalizations`).
     // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:367 ExecutionTool.executeBuild
-    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:595 BuildTool.buildTargetsWithMergedAnalysisExecution
     fn execute_build(
         &self,
         request: &BuildRequest,
@@ -2524,10 +2260,8 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         // (blaze_sky_top BuildEventHooks, crate::commands::bep).
 
         // ExecutionTool.prepareForExecution of the path without merged analysis and execution
-        // (Skymeld runs it before the analysis: `before_merged_analysis`).
-        if !request.with_merged_analysis_and_execution_source_of_truth() {
-            set_salt_and_delete_actions_if_changed(skyframe_executor);
-        }
+        // (Skymeld runs it from BuildView.update: `prepare_for_execution`).
+        set_salt_and_delete_actions_if_changed(skyframe_executor);
 
         // Without merged analysis and execution, ExecutionTool.executeBuild plants the symlink
         // forest of the exec root ("plantSymlinkForest"); Skymeld planted it incrementally
@@ -2537,19 +2271,15 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         // PORT: skipped, ExecutionTool.logDeleteTreeFailure: logging only (Java log).
         // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:1011 ExecutionTool.getExecRoot
         let exec_root = state.config.exec_root.clone();
-        let planted = if request.with_merged_analysis_and_execution_source_of_truth() {
-            Ok(Vec::new())
-        } else {
-            exec_root.create_directory_and_parents().and_then(|_| {
-                SymlinkForest::with_sibling_repository_layout(
-                    skyframe_executor.get_package_roots(),
-                    exec_root.clone(),
-                    &self.product_name,
-                    self.sibling_repository_layout,
-                )
-                .plant_symlink_forest()
-            })
-        };
+        let planted = exec_root.create_directory_and_parents().and_then(|_| {
+            SymlinkForest::with_sibling_repository_layout(
+                skyframe_executor.get_package_roots(),
+                exec_root.clone(),
+                &self.product_name,
+                self.sibling_repository_layout,
+            )
+            .plant_symlink_forest()
+        });
         if let Err(e) = planted {
             let message = format!("Source forest creation failed: {e}");
             return Err(BuildToolError::Exit(
@@ -2566,18 +2296,13 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         }
 
         // The convenience symlinks of the path without merged analysis and execution, at the
-        // start of ExecutionTool.executeBuild with `analysisResult.getTargetsToBuild()`. The
-        // Skymeld path creates them in the finally block of
-        // buildTargetsWithMergedAnalysisExecution (below, after the execution).
+        // start of ExecutionTool.executeBuild with `analysisResult.getTargetsToBuild()`.
         // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:393 ExecutionTool.executeBuild
-        let early_symlinks =
-            (!request.with_merged_analysis_and_execution_source_of_truth()).then(|| {
-                self.handle_convenience_symlinks(
-                    skyframe_executor,
-                    analysis_result.get_targets_to_build(),
-                    analysis_result.get_configuration(),
-                )
-            });
+        let symlinks = self.handle_convenience_symlinks(
+            skyframe_executor,
+            analysis_result.get_targets_to_build(),
+            analysis_result.get_configuration(),
+        );
 
         // `extraActionFilterSupplier` of BuildDriverFunction: the build's
         // `AnalysisOptions.extraActionFilter`.
@@ -2599,16 +2324,14 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         );
         let output_groups =
             top_level_output_groups(&self.build_request_options, request.should_run_tests());
-        // RemoteModule.afterAnalysis (or, with Skymeld, afterTopLevelTargetAnalysis for each
-        // top-level target): the outputs of the top-level targets are downloaded under
+        // RemoteModule.afterAnalysis: the outputs of the top-level targets are downloaded under
         // --remote_download_outputs=toplevel.
         // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:153 AnalysisPhaseRunner.execute
-        // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:324 AnalysisAndExecutionPhaseRunner.execute
         if let Some(remote) = &self.remote {
             remote.after_analysis(
                 analysis_result,
                 &output_groups,
-                request.with_merged_analysis_and_execution_source_of_truth(),
+                /* merged= */ false,
                 // analysisResult.getArtifactsToBuild(): read only for coverage.
                 &self
                     .non_merged_coverage_artifacts
@@ -2650,19 +2373,11 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             self.extra_action_top_level_only,
             request.keep_going,
         ));
-        // PORT: Blaze analyzed every top-level target before this point, and BuildView.update ran
-        // the compatibility check of BuildDriverFunction for the Skymeld path (see
-        // blaze_sky_top::build_view). What is left of a BuildDriverKey is the execution it
-        // requests, so the keys are split by how far Java's BuildDriverFunction.compute gets:
-        // - the target is not in `getTargetsToBuild()` (its analysis or its compatibility check
-        //   failed, with --keep_going): the function threw, the key has no value, nothing is
-        //   executed; BuildView.update reported the error;
-        // - the target is skipped: the function returns `BuildDriverValue(skipped = true)`
-        //   without requesting any execution;
-        // - otherwise the function requests the execution of the target.
-        // The non-Skymeld path (SkyframeBuilder.buildArtifacts) likewise builds
-        // `getTargetsToBuild()` without `getTargetsToSkip()`.
-        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:155 BuildDriverFunction.compute
+        // PORT: Java's path without merged analysis and execution builds the artifacts of
+        // `getTargetsToBuild()` without `getTargetsToSkip()` (SkyframeBuilder.buildArtifacts);
+        // Blaze builds them through the BuildDriverKeys of those targets (BuildDriverFunction
+        // without its analysis steps: `AnalysisSeam::is_merged_analysis_and_execution` false).
+        // Java: com/google/devtools/build/lib/buildtool/SkyframeBuilder.java:119 SkyframeBuilder.buildArtifacts
         let skipped_labels: indexmap::IndexSet<blaze_cmdline::Label> = analysis_result
             .get_targets_to_skip()
             .iter()
@@ -2691,7 +2406,6 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                 .map(|k| ActionLookupKeyRef::new(k.clone()))
                 .collect();
         let mut keys_to_execute: Vec<BuildDriverKey> = Vec::new();
-        let mut skipped_keys: Vec<BuildDriverKey> = Vec::new();
         for key in &keys {
             if key.is_top_level_aspect_driver() {
                 if analyzed_top_level_aspects_keys.contains(&key.action_lookup_key) {
@@ -2703,57 +2417,18 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                 .action_lookup_key
                 .get_label()
                 .expect("NullPointerException: the label of a top-level ConfiguredTargetKey");
-            if skipped_labels.contains(&label) {
-                skipped_keys.push(key.clone());
-            } else if analyzed_labels.contains(&label) {
+            if !skipped_labels.contains(&label) && analyzed_labels.contains(&label) {
                 keys_to_execute.push(key.clone());
             }
         }
-        if request.with_merged_analysis_and_execution_source_of_truth() {
-            // We still record analyzed but skipped tests, as this information is needed for the
-            // result summary.
-            // PORT: the other path posts its TestAnalyzedEvents in
-            // AnalysisPhaseRunner.postTopLevelStatusEvents.
-            // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:274 BuildDriverFunction.compute
-            let graph = skyframe_executor.get_walkable_graph();
-            for key in &skipped_keys {
-                if !key.test_type.is_test() {
-                    continue;
-                }
-                let label = key.action_lookup_key.get_label();
-                let configured_target = analysis_result
-                    .get_targets_to_skip()
-                    .iter()
-                    .find(|target| Some(target.get_original_label()) == label)
-                    .expect("the skipped target of a skipped key");
-                let build_configuration_value = get_configuration_from_graph(
-                    &*graph,
-                    configured_target.get_configuration_key().as_ref(),
-                )
-                .expect("NullPointerException: buildConfigurationValue");
-                let view = configured_target_views(std::slice::from_ref(configured_target))
-                    .pop()
-                    .expect("one view per configured target");
-                reporter.post(Arc::new(TestAnalyzedEvent {
-                    configured_target: view,
-                    configuration_checksum: build_configuration_value.checksum().to_owned(),
-                    configuration_mnemonic: build_configuration_value.get_mnemonic().to_owned(),
-                    is_skipped: true,
-                }));
-            }
-        }
-
         // Conditionally record dependency-checker log (uninstalled and closed when dropped, where
         // ExecutionTool.nonCatastrophicFinalizations does it: after the results are shown).
         // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:421 ExecutionTool.executeBuild
         let _explanation_handler = self.install_explanation_handler();
 
-        // announceEnteringDirIfEmacs() of executeBuild: the path without merged analysis and
-        // execution (Skymeld announces in prepareForExecution: `before_merged_analysis`).
+        // announceEnteringDirIfEmacs() of executeBuild.
         // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:426 ExecutionTool.executeBuild
-        if !request.with_merged_analysis_and_execution_source_of_truth() {
-            self.announce_entering_dir_if_emacs(&exec_root);
-        }
+        self.announce_entering_dir_if_emacs(&exec_root);
 
         let evaluated = evaluate_build_driver_keys(
             skyframe_executor.get_evaluator(),
@@ -2762,17 +2437,10 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             &state.config,
             reporter.clone(),
         );
-        // An interrupt (InterruptedException out of analyzeAndExecuteTargets) still reaches the
-        // finally block below, with buildCompleted false: the action cache is not saved and the
-        // targets built so far are shown.
-        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:620 BuildTool.buildTargetsWithMergedAnalysisExecution
+        // An interrupt still reaches the finalizations below, with buildCompleted false: the
+        // action cache is not saved and the targets built so far are shown.
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:492 ExecutionTool.executeBuild
         let mut interrupted = evaluated.is_err();
-        // IncrementalPackageRoots.analysisFinished(AnalysisPhaseCompleteEvent): every top-level
-        // key's BuildDriverFunction has run (and posted its planting event) by now.
-        // Java: com/google/devtools/build/lib/skyframe/IncrementalPackageRoots.java:303 IncrementalPackageRoots.analysisFinished
-        if let Some(incremental_package_roots) = self.incremental_package_roots.borrow().as_ref() {
-            incremental_package_roots.analysis_finished();
-        }
         let evaluation = match evaluated {
             Ok(result) => result.evaluation,
             Err(blaze_skyframe::Interrupted) => blaze_skyframe::EvaluationResult {
@@ -2790,12 +2458,8 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                 skyframe_executor,
                 &state.config,
                 reporter.clone(),
-                request.with_merged_analysis_and_execution_source_of_truth(),
-                request.command_name == "run",
                 request.keep_going,
                 &keys_to_execute,
-                &keys,
-                &skipped_keys,
                 &evaluation,
             ) {
                 Ok(outcome) => outcome,
@@ -2816,42 +2480,16 @@ impl ExecutionPhase for RuntimeExecutionPhase {
         if !interrupted
             && ((!evaluation.has_error() && !has_exclusive_tests_error) || request.keep_going)
         {
-            let coverage_report_artifacts: Vec<blaze_actions::Artifact> = if request
-                .with_merged_analysis_and_execution_source_of_truth()
-            {
-                let (coverage_report_artifacts, actions_wrapper) =
-                    blaze_sky_top::build_view::construct_coverage_artifacts(
-                        skyframe_executor,
-                        Some(&self.coverage_report_action_factory),
-                        &self.build_result_listener.get_analyzed_targets(),
-                        analysis_result.get_targets_to_test().unwrap_or(&[]),
-                        reporter.as_ref(),
-                    );
-                // eventBus.register(new CoverageReportCollector(wrapper))
-                if let (Some(bep), Some(wrapper)) = (&self.bep, &actions_wrapper) {
-                    bep.register_coverage_report_collector(
-                            blaze_analysis::bazel::coverage::bazel_coverage_report_module::coverage_report_build_tool_log_files(wrapper),
-                        );
-                }
-                // eventBus.post(CoverageArtifactsKnownEvent.create(coverageReportArtifacts)):
-                // its only subscriber is RemoteModule.coverageArtifactsKnown.
-                // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1062 RemoteModule.coverageArtifactsKnown
-                if let Some(remote) = &self.remote {
-                    remote.coverage_artifacts_known(&coverage_report_artifacts);
-                }
-                coverage_report_artifacts
-            } else {
-                // Without merged analysis and execution, BuildView.update computed them
-                // (with the collector) when the analysis returned, and they are built with
-                // the targets.
-                // PORT: Java builds them in the same evaluation as the top-level targets
-                // (ExecutionTool.executeBuild, artifactsToBuild); they are evaluated here,
-                // after the tests, as on the merged path.
-                self.non_merged_coverage_artifacts
-                    .borrow()
-                    .clone()
-                    .unwrap_or_default()
-            };
+            // BuildView.update computed them (with the collector) when the analysis returned,
+            // and they are built with the targets.
+            // PORT: Java builds them in the same evaluation as the top-level targets
+            // (ExecutionTool.executeBuild, artifactsToBuild); they are evaluated here, after the
+            // tests.
+            let coverage_report_artifacts: Vec<blaze_actions::Artifact> = self
+                .non_merged_coverage_artifacts
+                .borrow()
+                .clone()
+                .unwrap_or_default();
             match blaze_buildtool::buildtool::execution_tool::evaluate_artifacts(
                 skyframe_executor.get_evaluator(),
                 &coverage_report_artifacts,
@@ -2866,9 +2504,7 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                             request.keep_going,
                             skyframe_executor.get_cycles_reporter(),
                             &reporter,
-                            self.uses_process_errors(
-                                request.with_merged_analysis_and_execution_source_of_truth(),
-                            ),
+                            self.uses_process_errors(/* merged= */ false),
                         ));
                     }
                 }
@@ -2876,10 +2512,8 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             }
         }
 
-        // finally: SkyframeExecutor.clearExecutionStatesSkymeld: no more action execution beyond
-        // this point; the watchdog stops.
-        // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:822 SkyframeBuildView.analyzeAndExecuteTargets
-        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2525 SkyframeExecutor.clearExecutionStatesSkymeld
+        // No more action execution beyond this point; the watchdog stops.
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2520 SkyframeExecutor.clearExecutionStatesSkymeld
         if let Some(watchdog) = self.watchdog.lock().take() {
             watchdog.stop();
         }
@@ -2900,23 +2534,17 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             state.prepared.save_action_cache(reporter.as_ref());
         }
 
-        // SkyframeErrorProcessor.processErrors of the evaluation (the Skymeld path:
-        // SkyframeBuildView.analyzeAndExecuteTargets; the other path: SkyframeBuilder
-        // .buildArtifacts, which rethrows the same way). Without --keep_going it throws, and Java
-        // reaches the finally block below ("Show results") with the exception pending.
-        // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:853 SkyframeBuildView.analyzeAndExecuteTargets
+        // SkyframeErrorProcessor.processResult of the evaluation (SkyframeBuilder.buildArtifacts).
+        // Without --keep_going it throws, and Java reaches the finally block below ("Show
+        // results") with the exception pending.
+        // Java: com/google/devtools/build/lib/buildtool/SkyframeBuilder.java:191 SkyframeBuilder.buildArtifacts
         let mut test_exec_exception: Option<String> = None;
-        // Whether analyzeAndExecuteTargets threw (an interrupt or a rethrown error), as opposed
-        // to returning a delayed --keep_going failure.
-        let mut analyze_and_execute_threw = interrupted;
         let execution_error: Option<BuildToolError> = if interrupted {
             Some(BuildToolError::Interrupted)
         } else {
             // Without --keep_going the first exclusive test in error threw; with it, its
-            // DetailedExitCode joins the main evaluation's: Skymeld lists the exclusive tests'
-            // codes first (SkyframeBuildView.analyzeAndExecuteTargets), the other path the main
-            // evaluation's (SkyframeBuilder.buildArtifacts); Collections.max keeps the first of
-            // the most important.
+            // DetailedExitCode joins the main evaluation's, which SkyframeBuilder.buildArtifacts
+            // lists first; Collections.max keeps the first of the most important.
             let processed = match (exclusive_tests.rethrown, coverage_report_errors) {
                 (Some(rethrown), _) => Err(rethrown),
                 (None, Some(Err(rethrown))) => Err(rethrown),
@@ -2926,9 +2554,7 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                         request.keep_going,
                         skyframe_executor.get_cycles_reporter(),
                         &reporter,
-                        self.uses_process_errors(
-                            request.with_merged_analysis_and_execution_source_of_truth(),
-                        ),
+                        self.uses_process_errors(/* merged= */ false),
                     )
                     .map(|main| {
                         let mut codes = exclusive_tests.detailed_exit_codes;
@@ -2937,11 +2563,7 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                         if let Some(Ok(coverage_code)) = coverage_report_errors {
                             codes.push(coverage_code);
                         }
-                        if request.with_merged_analysis_and_execution_source_of_truth() {
-                            codes.push(main);
-                        } else {
-                            codes.insert(0, main);
-                        }
+                        codes.insert(0, main);
                         codes.into_iter().fold(None, |max, code| {
                             blaze_util::DetailedExitCode::choose_more_important_with_first_if_tie(
                                 max, code,
@@ -2972,103 +2594,19 @@ impl ExecutionPhase for RuntimeExecutionPhase {
                     if catastrophic {
                         self.build_result.borrow_mut().set_catastrophe();
                     }
-                    analyze_and_execute_threw = true;
                     Some(error)
                 }
                 // Non-catastrophic: the results are shown below, then BuildTool.processRequest
                 // reports it.
                 Err(RethrownException::TestExec(message)) => {
-                    analyze_and_execute_threw = true;
                     test_exec_exception = Some(message);
                     None
                 }
             }
         };
 
-        // BuildView.update, after analyzeAndExecuteTargets returned (it does not return when
-        // processErrors threw): the successful targets are the BuildDriverKeys with a value,
-        // skipped targets included.
-        // Java: com/google/devtools/build/lib/analysis/BuildView.java:440 BuildView.update
-        // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1183 SkyframeBuildView.getSuccessfulConfiguredTargets
-        if request.with_merged_analysis_and_execution_source_of_truth()
-            && (request.keep_going || (execution_error.is_none() && test_exec_exception.is_none()))
-        {
-            let num_targets_to_analyze = label_to_target_map.len();
-            let num_successful = skipped_keys.len()
-                + keys_to_execute
-                    .iter()
-                    // buildDriverCTKeys: the configured-target keys only.
-                    .filter(|key| !key.is_top_level_aspect_driver())
-                    .filter(|key| evaluation.get(*key).is_some())
-                    .count();
-            // PORT: this is the line of BuildView.update for `includeExecutionPhase`.
-            // blaze_sky_top's BuildView.update returns before the execution, so it must not print
-            // it for a merged request (it only knows the targets that were analyzed).
-            if 0 < num_successful && num_successful < num_targets_to_analyze {
-                // includeExecutionPhase ? "Build" : "Analysis"
-                let msg = format!(
-                    "Build succeeded for only {} of {} top-level targets",
-                    num_successful, num_targets_to_analyze
-                );
-                reporter.handle(&Event::info(msg));
-            }
-        }
-
-        // AnalysisAndExecutionPhaseRunner.execute after runAnalysisAndExecutionPhase returned
-        // (it does not when processErrors threw; a delayed --keep_going failure is thrown after
-        // the finally block): reportTargetsWithTests / reportTargets with the targets and tests
-        // of the BuildResultListener.
-        // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:135 AnalysisAndExecutionPhaseRunner.execute
-        if request.with_merged_analysis_and_execution_source_of_truth()
-            && !analyze_and_execute_threw
-        {
-            let analyzed_targets = self.build_result_listener.get_analyzed_targets().len();
-            if request.should_run_tests() {
-                blaze_sky_top::analysis_phase_runner::report_targets_with_tests(
-                    reporter.as_ref(),
-                    analyzed_targets,
-                    analysis_result
-                        .get_targets_to_test()
-                        .expect("NullPointerException: analyzed tests")
-                        .len(),
-                );
-            } else {
-                blaze_sky_top::analysis_phase_runner::report_targets(
-                    reporter.as_ref(),
-                    analyzed_targets,
-                );
-            }
-        }
-
-        // AnalysisAndExecutionPhaseRunner.execute after analyzeAndExecuteTargets returned (it
-        // does not when processErrors threw; a delayed --keep_going failure is thrown after the
-        // finally block): the AbortedEvents of the skipped targets.
-        // PORT: the other path posts them right after its analysis (the build event hooks'
-        // `analysis_complete`, crate::commands::bep).
-        // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:143 AnalysisAndExecutionPhaseRunner.execute
-        if request.with_merged_analysis_and_execution_source_of_truth()
-            && !analyze_and_execute_threw
-            && let Some(bep) = &self.bep
-        {
-            bep.post_aborted_events_for_skipped_targets(
-                &self.build_result_listener.get_skipped_targets(),
-            );
-        }
-
-        // The finally block of BuildTool.buildTargetsWithMergedAnalysisExecution: the convenience
-        // symlinks (result.getBuildConfiguration() is set: the analysis created it), the build
-        // result's targets, then ExecutionTool.nonCatastrophicFinalizations ("Show results").
-        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:664 BuildTool.buildTargetsWithMergedAnalysisExecution
-        let symlinks = match early_symlinks {
-            Some(symlinks) => symlinks,
-            // We still need to do this even in case of an exception.
-            // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:668 BuildTool.buildTargetsWithMergedAnalysisExecution
-            None => self.handle_convenience_symlinks(
-                skyframe_executor,
-                &self.build_result_listener.get_analyzed_targets(),
-                analysis_result.get_configuration(),
-            ),
-        };
+        // ExecutionTool.nonCatastrophicFinalizations ("Show results").
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:534 ExecutionTool.nonCatastrophicFinalizations
         self.results_shown.set(true);
         // buildResultListener.getAnalyzedTargets(): also the targets whose compatibility check
         // failed after they were analyzed, which the analysis result leaves out.
@@ -3155,6 +2693,494 @@ impl ExecutionPhase for RuntimeExecutionPhase {
             reporter.handle(&Event::error(message));
         }
         Ok(())
+    }
+
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:620 BuildTool.buildTargetsWithMergedAnalysisExecution
+    fn merged_analysis_and_execution_args(
+        &self,
+        request: &BuildRequest,
+    ) -> blaze_sky_top::skyframe_build_view::MergedAnalysisAndExecutionArgs<'_> {
+        blaze_sky_top::skyframe_build_view::MergedAnalysisAndExecutionArgs {
+            hooks: self,
+            build_result_listener: self.build_result_listener.clone(),
+            top_level_artifact_context_output_groups: top_level_output_groups(
+                &self.build_request_options,
+                request.should_run_tests(),
+            ),
+            extra_action_top_level_only: self.extra_action_top_level_only,
+            extra_action_filter: self.extra_action_filter.clone(),
+            // new BuildDriverKeyTestContext() { ... }
+            // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:629 BuildTool.buildTargetsWithMergedAnalysisExecution
+            build_driver_key_test_context: BuildDriverKeyTestContext {
+                test_strategy: self.execution_options.test_strategy.clone(),
+                // executionTool.getTestActionContext(): no TestActionContext at the pin
+                // overrides the defaults (false).
+                // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:249 ExecutionTool.getTestActionContext
+                force_exclusive_tests_in_parallel: false,
+                force_exclusive_if_local_tests_in_parallel: false,
+            },
+            skymeld_analysis_overlap_percentage: self
+                .build_request_options
+                .skymeld_analysis_overlap_percentage,
+            tracks_state_for_incrementality: self.tracks_state_for_incrementality,
+        }
+    }
+
+    fn build_result_listener(
+        &self,
+    ) -> Arc<blaze_sky_top::build_result_listener::BuildResultListener> {
+        self.build_result_listener.clone()
+    }
+
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:309 AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.createAndRegisterWithEventBus
+    fn register_top_level_target_analysis_watcher(&self, request: &BuildRequest) {
+        let watcher = Arc::new(TopLevelTargetAnalysisWatcher {
+            remote: self.remote.clone(),
+            output_groups: top_level_output_groups(
+                &self.build_request_options,
+                request.should_run_tests(),
+            ),
+            registered: std::sync::atomic::AtomicBool::new(true),
+        });
+        self.event_bus.register(watcher.clone());
+        *self.top_level_target_analysis_watcher.lock() = Some(watcher);
+    }
+
+    /// PORT: the command's event bus has no `unregister`; the closed watcher ignores the events.
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:351 AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.close
+    fn close_top_level_target_analysis_watcher(&self) {
+        if let Some(watcher) = self.top_level_target_analysis_watcher.lock().take() {
+            watcher
+                .registered
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:343 AnalysisPhaseRunner.postAbortedEventsForSkippedTargets
+    fn post_aborted_events_for_skipped_targets(&self, skipped_targets: &[ConfiguredTarget]) {
+        if let Some(bep) = &self.bep {
+            bep.post_aborted_events_for_skipped_targets(skipped_targets);
+        }
+    }
+
+    /// The `finally` block of `BuildTool.buildTargetsWithMergedAnalysisExecution` and
+    /// `ExecutionTool.nonCatastrophicFinalizations(result, actionCache, /* explanationHandler= */
+    /// null, buildCompleted)`.
+    ///
+    /// PORT: `unconditionalExecutionPhaseFinalizations` (the `ExecutionFinishedEvent` and the
+    /// `ExecutionPhaseCompleteEvent`) is the command's, after `processRequest` returned
+    /// (`ExecutionEventCollector::execution_phase_finish`, the build event stream's timer).
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:664 BuildTool.buildTargetsWithMergedAnalysisExecution
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:534 ExecutionTool.nonCatastrophicFinalizations
+    fn merged_finalizations(
+        &self,
+        _request: &BuildRequest,
+        skyframe_executor: &SkyframeExecutor,
+        build_completed: bool,
+        error: Option<
+            &blaze_sky_top::analysis_and_execution_phase_runner::AnalysisAndExecutionError,
+        >,
+    ) {
+        let state = skyframe_executor
+            .get_execution()
+            .expect("IllegalStateException: the executor was created without execution");
+        let reporter = self.reporter.clone();
+        // BuildTool.processRequest: `if (e.isCatastrophic()) result.setCatastrophe()` for the
+        // BuildFailedException the merged phase threw.
+        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:938 BuildTool.processRequest
+        if let Some(
+            blaze_sky_top::analysis_and_execution_phase_runner::AnalysisAndExecutionError::Execution(
+                RethrownException::BuildFailed {
+                    catastrophic: true, ..
+                },
+            ),
+        ) = error
+        {
+            self.build_result.borrow_mut().set_catastrophe();
+        }
+
+        let analyzed_targets = self.build_result_listener.get_analyzed_targets();
+        let configuration = self
+            .build_result
+            .borrow()
+            .get_build_configuration()
+            .cloned();
+        if let Some(configuration) = &configuration {
+            // We still need to do this even in case of an exception.
+            let symlinks = self.handle_convenience_symlinks(
+                skyframe_executor,
+                &analyzed_targets,
+                configuration,
+            );
+            self.build_result
+                .borrow_mut()
+                .set_convenience_symlinks(symlinks.get_created_symlinks().clone());
+        }
+
+        // For the --noskymeld code path, this is done after the analysis phase.
+        let views = configured_target_views(&analyzed_targets);
+        {
+            let mut build_result = self.build_result.borrow_mut();
+            build_result.set_actual_targets(Some(views.clone()));
+            build_result.set_test_targets(Some(configured_target_views(
+                &self.build_result_listener.get_analyzed_tests(),
+            )));
+        }
+
+        // ExecutionTool.nonCatastrophicFinalizations
+        // PORT: skipped, env.recordLastExecutionTime() (only read by the Google-internal
+        // ExecutionTool logging).
+        self.announce_leaving_dir_if_emacs(&state.config.exec_root);
+        if build_completed {
+            reporter.handle(&Event::progress("Building complete."));
+        }
+        if build_completed {
+            // RemoteOutputService.onExecutionPhaseCompleteEvent → LeaseService
+            // .finalizeExecution (Java: after the save, on the server's in-memory cache).
+            if let Some(remote) = &self.remote {
+                remote.finalize_execution(
+                    state.prepared.action_cache.as_deref(),
+                    skyframe_executor.get_evaluator(),
+                );
+            }
+            state.prepared.save_action_cache(reporter.as_ref());
+        }
+
+        // "Show results"
+        self.results_shown.set(true);
+        let top_level_keys = self.build_result_listener.get_top_level_keys();
+        // determineSuccessfulTargets(analyzedTargets, builtTargets): maintain the ordering.
+        // PORT: Java's builtTargets holds ConfiguredTargetKeys; a top-level target's
+        // BuildDriverKey is found by the label it was requested under.
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:877 ExecutionTool.determineSuccessfulTargets
+        let mut successful_targets: Vec<ConfiguredTargetRef> = Vec::new();
+        for (target, view) in analyzed_targets.iter().zip(views.iter()) {
+            let top_level_label = target.get_original_label();
+            let built = top_level_keys.iter().any(|key| {
+                !key.is_top_level_aspect_driver()
+                    && key.action_lookup_key.get_label().as_ref() == Some(&top_level_label)
+                    && top_level_target_built_in_graph(skyframe_executor.get_evaluator(), key)
+            });
+            if built {
+                successful_targets.push(view.clone());
+            }
+        }
+        let analyzed_aspects = self.build_result_listener.get_analyzed_aspects();
+        // determineSuccessfulAspects(analyzedAspects.keySet(), builtAspects): maintain the
+        // ordering.
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:890 ExecutionTool.determineSuccessfulAspects
+        let successful_aspects: indexmap::IndexSet<ActionLookupKeyRef> = analyzed_aspects
+            .keys()
+            .map(|aspect_key| ActionLookupKeyRef::new(aspect_key.clone()))
+            .filter(|aspect_key| {
+                top_level_aspect_built_in_graph(
+                    skyframe_executor.get_evaluator(),
+                    &top_level_keys,
+                    aspect_key,
+                )
+            })
+            .collect();
+        let skipped_targets =
+            configured_target_views(&self.build_result_listener.get_skipped_targets());
+        let mut build_result = self.build_result.borrow_mut();
+        build_result.set_successful_targets(Some(successful_targets));
+        build_result.set_successful_aspects(Some(successful_aspects));
+        build_result.set_skipped_targets(Some(skipped_targets.clone()));
+        let generating_rule_lookup =
+            |target: &ConfiguredTargetRef| output_file_generating_rule(&analyzed_targets, target);
+        BuildResultPrinter::new(&self.product_name, self.relative_working_directory.clone())
+            .show_build_result(
+                &self.request_view,
+                &build_result,
+                &views,
+                &skipped_targets,
+                &configured_aspect_views(&analyzed_aspects),
+                &generating_rule_lookup,
+            );
+        // PORT: skipped, the output service's finalizeBuild: informedOutputServiceToStartTheBuild
+        // is false without an output service that is told of the build (no remote output
+        // service ported: --experimental_remote_output_service fails loudly).
+    }
+}
+
+/// `AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher`: the modules' hooks for each
+/// top-level entity as the merged phase analyzes it. Only `RemoteModule` implements them at the
+/// pin.
+///
+/// PORT: `handleKnownCoverageArtifacts` (`coverageArtifactsKnown`) is called by the command's
+/// coverage hook (`get_coverage_report_artifacts`), where the event is posted.
+// Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:291 AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher
+// Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:297 AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.<init>
+// PORT: skipped, see above: AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.handleKnownCoverageArtifacts
+struct TopLevelTargetAnalysisWatcher {
+    remote: Option<Arc<build_remote::RemoteSupport>>,
+    /// `request::getTopLevelArtifactContext`'s output groups.
+    output_groups: Vec<String>,
+    registered: std::sync::atomic::AtomicBool,
+}
+
+impl blaze_events::EventBus for TopLevelTargetAnalysisWatcher {
+    fn post(&self, event: Arc<dyn blaze_events::Postable>) {
+        if !self.registered.load(std::sync::atomic::Ordering::SeqCst) {
+            return;
+        }
+        let Some(remote) = &self.remote else {
+            return;
+        };
+        if let Some(e) =
+            blaze_sky_exec::events::downcast_event::<TopLevelTargetAnalyzedEvent>(&event)
+        {
+            // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:318 AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.handleTopLevelTargetAnalysisConcluded
+            remote.after_top_level_target_analysis(&e.configured_target, &self.output_groups);
+        } else if let Some(e) = blaze_sky_exec::events::downcast_event::<TestAnalyzedEvent>(&event)
+        {
+            // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:334 AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.handleTestAnalyzed
+            let view = e
+                .configured_target
+                .as_any()
+                .downcast_ref::<blaze_sky_top::execution_seam::SkyframeConfiguredTargetView>()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "ClassCastException: {:?} is not a ConfiguredTarget",
+                        e.configured_target
+                    )
+                });
+            remote.after_single_test_analysis(view.get_configured_target());
+        } else if blaze_sky_exec::events::downcast_event::<
+            blaze_sky_top::analysis_phase_runner::AspectAnalyzedEvent,
+        >(&event)
+        .is_some()
+        {
+            // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:327 AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.handleAspectAnalyzed
+            remote.after_single_aspect_analysis();
+        }
+    }
+}
+
+/// Whether a top-level target was built, as `BuildResultListener.getBuiltTargets()` records it
+/// from the `TopLevelTargetBuiltEvent`s of `ExecutionProgressReceiver.evaluated`: its
+/// `TARGET_COMPLETION` node succeeded, or its `BUILD_DRIVER` node succeeded with a value that is
+/// not skipped.
+///
+/// PORT: the evaluator has no `EvaluationProgressReceiver`; the same facts are read from the
+/// graph after the evaluation. A merged build's key carries no test type (the function resolves
+/// it), so both `TargetCompletionKey`s it may have requested are read.
+// Java: com/google/devtools/build/lib/buildtool/ExecutionProgressReceiver.java:95 ExecutionProgressReceiver.evaluated
+fn top_level_target_built_in_graph(
+    evaluator: &blaze_skyframe::Evaluator,
+    key: &BuildDriverKey,
+) -> bool {
+    for will_test in [false, true] {
+        let target_completion_key = blaze_skyframe::SkyKey::new(TargetCompletionKey {
+            action_lookup_key: key.action_lookup_key.clone(),
+            output_groups: key.output_groups.clone(),
+            will_test,
+        });
+        if evaluator
+            .get_existing_value(&target_completion_key)
+            .is_some()
+        {
+            return true;
+        }
+    }
+    evaluator
+        .get_existing_value(&blaze_skyframe::SkyKey::new(key.clone()))
+        .and_then(|value| {
+            value
+                .downcast::<blaze_sky_exec::build_driver_function::BuildDriverValue>()
+                .ok()
+        })
+        .is_some_and(|value| !value.skipped)
+}
+
+/// Whether a top-level aspect was built, as `BuildResultListener.getBuiltAspects()` records it
+/// from the `AspectBuiltEvent`s of `ExecutionProgressReceiver.evaluated` (see
+/// [`top_level_target_built_in_graph`]).
+// Java: com/google/devtools/build/lib/buildtool/ExecutionProgressReceiver.java:121 ExecutionProgressReceiver.evaluated
+fn top_level_aspect_built_in_graph(
+    evaluator: &blaze_skyframe::Evaluator,
+    top_level_keys: &[BuildDriverKey],
+    aspect_key: &ActionLookupKeyRef,
+) -> bool {
+    for key in top_level_keys {
+        if !key.is_top_level_aspect_driver() {
+            continue;
+        }
+        // BuildDriverFunction requests the AspectCompletionKey with the driver's output groups.
+        let aspect_completion_key = blaze_skyframe::SkyKey::new(AspectCompletionKey::create(
+            aspect_key.clone(),
+            key.output_groups.clone(),
+        ));
+        if evaluator
+            .get_existing_value(&aspect_completion_key)
+            .is_some()
+        {
+            return true;
+        }
+        if let Some(value) = evaluator
+            .get_existing_value(&blaze_skyframe::SkyKey::new(key.clone()))
+            .and_then(|value| {
+                value
+                    .downcast::<blaze_sky_exec::build_driver_function::BuildDriverValue>()
+                    .ok()
+            })
+            && !value.skipped
+            && let TopLevelSkyValue::TopLevelAspects(aspects) = &value.top_level_sky_value
+            && aspects
+                .iter()
+                .any(|aspect| &aspect.get_aspect_key() == aspect_key)
+        {
+            return true;
+        }
+    }
+    false
+}
+
+/// The callbacks of `SkyframeBuildView.analyzeAndExecuteTargets` (and `BuildView.update`) on a
+/// build with merged analysis and execution.
+impl blaze_sky_top::skyframe_build_view::SkymeldExecutionHooks for RuntimeExecutionPhase {
+    /// `ExecutionTool.prepareForExecution`: the incremental package roots, the action execution
+    /// salt, `announceEnteringDirIfEmacs()`.
+    // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:260 ExecutionTool.prepareForExecution
+    fn prepare_for_execution(
+        &self,
+        skyframe_executor: &SkyframeExecutor,
+    ) -> Result<(), BuildToolError> {
+        self.prepare_incremental_package_roots(skyframe_executor)?;
+        set_salt_and_delete_actions_if_changed(skyframe_executor);
+        // The end of prepareForExecution: announceEnteringDirIfEmacs().
+        // Java: com/google/devtools/build/lib/buildtool/ExecutionTool.java:358 ExecutionTool.prepareForExecution
+        if let Some(state) = skyframe_executor.get_execution() {
+            self.announce_entering_dir_if_emacs(&state.config.exec_root);
+        }
+        Ok(())
+    }
+
+    /// `result::setBuildConfiguration`.
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:627 BuildTool.buildTargetsWithMergedAnalysisExecution
+    fn build_configuration_created(&self, configuration: &Arc<BuildConfigurationValue>) {
+        self.build_result
+            .borrow_mut()
+            .set_build_configuration(configuration.clone());
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3488 SkyframeExecutor.getIsBuildingExclusiveArtifacts
+    fn set_is_building_exclusive_artifacts(&self, value: bool) {
+        self.is_building_exclusive_artifacts
+            .store(value, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// The exclusive tests whose analysis succeeded i.e. those that can be run.
+    ///
+    /// PORT: java-hash-order. `evaluationResult.values()` iterates the HashMap of the result
+    /// (crate::commands::exclusive_test_order).
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1103 SkyframeBuildView.getExclusiveTests
+    fn get_exclusive_tests(
+        &self,
+        main_evaluation_result: &blaze_skyframe::EvaluationResult,
+        root_keys: &[BuildDriverKey],
+    ) -> Vec<BuildDriverKey> {
+        let flags = super::exclusive_test_order::TopLevelArtifactContextFlags {
+            run_tests_exclusively: self.execution_options.test_strategy == "exclusive",
+            expand_filesets: self.expand_filesets,
+            for_run_command: self.is_run_command,
+        };
+        // Every distinct key of the result: the BuildDriverKeys in root order, with their Java
+        // hash code, then the other roots (the workspace status artifacts).
+        let mut seen: std::collections::HashSet<&blaze_skyframe::SkyKey> =
+            std::collections::HashSet::new();
+        let mut evaluated_driver_keys: Vec<(usize, &BuildDriverKey, bool)> = Vec::new();
+        let mut other_entries: Vec<usize> = Vec::new();
+        for (index, (sky_key, value)) in main_evaluation_result.values.iter().enumerate() {
+            if !seen.insert(sky_key) {
+                continue;
+            }
+            let Some(key) = sky_key.downcast::<BuildDriverKey>() else {
+                other_entries.push(index);
+                continue;
+            };
+            let key = root_keys
+                .iter()
+                .find(|k| *k == key)
+                .expect("an evaluated BuildDriverKey is a root");
+            let is_exclusive = value
+                .clone()
+                .downcast::<blaze_sky_exec::build_driver_function::BuildDriverValue>()
+                .is_ok_and(|value| value.exclusive_test);
+            evaluated_driver_keys.push((index, key, is_exclusive));
+        }
+        let mut result_entries: Vec<(usize, Option<i32>)> = Vec::new();
+        let mut exclusive: Vec<(usize, &BuildDriverKey)> = Vec::new();
+        for root in root_keys {
+            let Some(&(index, key, is_exclusive)) =
+                evaluated_driver_keys.iter().find(|(_, k, _)| *k == root)
+            else {
+                // In error: not a value of the result.
+                continue;
+            };
+            let hash_code = super::exclusive_test_order::build_driver_key_hash_code(key, &flags);
+            result_entries.push((index, hash_code));
+            if is_exclusive {
+                assert!(
+                    hash_code.is_some(),
+                    "an exclusive test's key is a ConfiguredTargetKey"
+                );
+                exclusive.push((index, key));
+            }
+        }
+        for index in other_entries {
+            result_entries.push((index, None));
+        }
+        super::exclusive_test_order::evaluation_result_values_order(result_entries)
+            .into_iter()
+            .filter_map(|index| {
+                exclusive
+                    .iter()
+                    .find(|(i, _)| *i == index)
+                    .map(|(_, key)| (*key).clone())
+            })
+            .collect()
+    }
+
+    /// `memoizedGetCoverageArtifactsHelper(configuredTargets, allTargetsToTest, eventHandler,
+    /// eventBus)` and `CoverageArtifactsKnownEvent`, whose only subscriber is
+    /// `RemoteModule.coverageArtifactsKnown`.
+    // Java: com/google/devtools/build/lib/analysis/BuildView.java:941 BuildView.memoizedGetCoverageArtifactsHelper
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1062 RemoteModule.coverageArtifactsKnown
+    fn get_coverage_report_artifacts(
+        &self,
+        skyframe_executor: &SkyframeExecutor,
+        analyzed_targets: &[ConfiguredTarget],
+        analyzed_tests: &[ConfiguredTarget],
+    ) -> Vec<blaze_actions::Artifact> {
+        let (coverage_report_artifacts, actions_wrapper) =
+            blaze_sky_top::build_view::construct_coverage_artifacts(
+                skyframe_executor,
+                Some(&self.coverage_report_action_factory),
+                analyzed_targets,
+                analyzed_tests,
+                self.reporter.as_ref(),
+            );
+        // eventBus.register(new CoverageReportCollector(wrapper))
+        if let (Some(bep), Some(wrapper)) = (&self.bep, &actions_wrapper) {
+            bep.register_coverage_report_collector(
+                blaze_analysis::bazel::coverage::bazel_coverage_report_module::coverage_report_build_tool_log_files(wrapper),
+            );
+        }
+        if let Some(remote) = &self.remote {
+            remote.coverage_artifacts_known(&coverage_report_artifacts);
+        }
+        coverage_report_artifacts
+    }
+
+    /// The watchdog stops (`clearExecutionStatesSkymeld`).
+    /// PORT: the rest of the method (the execution progress receiver, the status reporter, the
+    /// consumed artifacts tracker) belongs to state that Blaze drops with the evaluation.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2520 SkyframeExecutor.clearExecutionStatesSkymeld
+    fn clear_execution_states_skymeld(&self) {
+        if let Some(watchdog) = self.watchdog.lock().take() {
+            watchdog.stop();
+        }
     }
 }
 
@@ -3315,7 +3341,8 @@ impl blaze_events::EventBus for UiTestSummaryCounter {
 }
 
 /// The reporter's `OutputFilter` (`None`: `OutputFilter.OUTPUT_EVERYTHING`, the reporter's
-/// default, left as it is).
+/// default, left as it is), and for `--auto_output_filter` the slot that the target-parsing hook
+/// fills.
 ///
 /// Java's module sets the filter on the reporter at `BuildStartingEvent` (`--output_filter`) or
 /// at `TargetParsingCompleteEvent` (`--auto_output_filter`); the command sets it at
@@ -3323,38 +3350,213 @@ impl blaze_events::EventBus for UiTestSummaryCounter {
 /// `reporter.showOutput` itself before it reports an action's output) takes it when it is
 /// created.
 ///
-/// PORT: the `--auto_output_filter` values that do not depend on the parsed targets (`none`,
-/// `all`) are set at `BuildStartingEvent`, before the target patterns are parsed: the events of
-/// that phase have no tag (only the analysis and execution functions tag their events), so the
-/// filter has no effect on them either way. `packages` and `subpackages` need the labels of the
-/// `TargetParsingCompleteEvent`, which blaze_sky_top's target pattern phase does not post; they
-/// fail loudly.
+/// PORT: for `--auto_output_filter`, the reporter and the executor get an
+/// [`AutoOutputFilterSlot`] at `BuildStartingEvent`: it shows everything (Java's reporter has no
+/// filter yet) until [`OutputFilteringHooks`] sets the filter of the parsed targets in it.
 // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1132 BuildTool.initializeOutputFilter
 // Java: com/google/devtools/build/lib/outputfilter/OutputFilteringModule.java:78 OutputFilteringModule.buildStarting
-// Java: com/google/devtools/build/lib/outputfilter/OutputFilteringModule.java:98 OutputFilteringModule.targetParsingComplete
+#[allow(clippy::type_complexity)]
 fn output_filter(
     options: &OptionsParsingResult,
     request_options: &BuildRequestOptions,
-) -> Option<Arc<dyn blaze_events::OutputFilter>> {
-    use blaze_optdefs::command::auto_output_filter::AutoOutputFilter;
+) -> (
+    Option<Arc<dyn blaze_events::OutputFilter>>,
+    Option<(
+        blaze_optdefs::command::auto_output_filter::AutoOutputFilter,
+        Arc<AutoOutputFilterSlot>,
+    )>,
+) {
     use blaze_optdefs::command::output_filtering_module::OutputFilteringModuleOptions;
     if let Some(output_filter) = &request_options.output_filter {
-        return Some(blaze_events::RegexOutputFilter::for_pattern(
-            output_filter.regex_pattern().clone(),
-        ));
+        return (
+            Some(blaze_events::RegexOutputFilter::for_pattern(
+                output_filter.regex_pattern().clone(),
+            )),
+            None,
+        );
     }
     match options
         .get_options::<OutputFilteringModuleOptions>()
         .map(|o| o.auto_output_filter)
     {
-        // AutoOutputFilter.NONE.getFilter: OutputFilter.OUTPUT_EVERYTHING.
-        None | Some(AutoOutputFilter::NONE) => None,
-        // AutoOutputFilter.ALL.getFilter: OutputFilter.OUTPUT_NOTHING.
-        Some(AutoOutputFilter::ALL) => Some(blaze_events::output_nothing()),
-        Some(AutoOutputFilter::PACKAGES) | Some(AutoOutputFilter::SUBPACKAGES) => {
-            blaze_util::unported!("AutoOutputFilter.getFilter (packages, subpackages)")
+        None => (None, None),
+        Some(auto) => {
+            let slot = Arc::new(AutoOutputFilterSlot::default());
+            (
+                Some(slot.clone() as Arc<dyn blaze_events::OutputFilter>),
+                Some((auto, slot)),
+            )
         }
     }
+}
+
+/// The reporter's filter under `--auto_output_filter`: everything until the target patterns are
+/// parsed, then `AutoOutputFilter.getFilter(labels)`.
+#[derive(Default)]
+struct AutoOutputFilterSlot {
+    filter: std::sync::OnceLock<Arc<dyn blaze_events::OutputFilter>>,
+}
+
+impl blaze_events::OutputFilter for AutoOutputFilterSlot {
+    fn show_output(&self, tag: &str) -> bool {
+        match self.filter.get() {
+            Some(filter) => filter.show_output(tag),
+            // OutputFilter.OUTPUT_EVERYTHING, the reporter's default.
+            None => true,
+        }
+    }
+}
+
+/// `OutputFilteringModule.targetParsingComplete` as a build hook, forwarding every hook to the
+/// build event stream's (if any).
+struct OutputFilteringHooks<'a> {
+    inner: Option<&'a dyn blaze_sky_top::build_tool::BuildEventHooks>,
+    auto_output_filter: blaze_optdefs::command::auto_output_filter::AutoOutputFilter,
+    slot: Arc<AutoOutputFilterSlot>,
+}
+
+impl blaze_sky_top::build_tool::BuildEventHooks for OutputFilteringHooks<'_> {
+    fn build_starting(&self, request: &BuildRequest) {
+        if let Some(inner) = self.inner {
+            inner.build_starting(request);
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/outputfilter/OutputFilteringModule.java:98 OutputFilteringModule.targetParsingComplete
+    fn target_patterns_evaluated(
+        &self,
+        request: &BuildRequest,
+        skyframe_executor: &blaze_sky_top::skyframe_executor::SkyframeExecutor,
+        target_pattern_phase_value: &TargetPatternPhaseValue,
+    ) {
+        if let Some(inner) = self.inner {
+            inner.target_patterns_evaluated(request, skyframe_executor, target_pattern_phase_value);
+        }
+        // `event.getLabels()`: the targets before test suite expansion.
+        let labels: Vec<&blaze_cmdline::Label> = target_pattern_phase_value
+            .get_non_expanded_labels()
+            .iter()
+            .collect();
+        let _ = self.slot.filter.set(auto_output_filter_get_filter(
+            self.auto_output_filter,
+            &labels,
+        ));
+    }
+
+    fn project_evaluated(&self, project_flags_applied: bool) {
+        if let Some(inner) = self.inner {
+            inner.project_evaluated(project_flags_applied);
+        }
+    }
+
+    fn ensure_build_info_posted(&self) {
+        if let Some(inner) = self.inner {
+            inner.ensure_build_info_posted();
+        }
+    }
+
+    fn no_analyze(&self) {
+        if let Some(inner) = self.inner {
+            inner.no_analyze();
+        }
+    }
+
+    fn no_execution(&self) {
+        if let Some(inner) = self.inner {
+            inner.no_execution();
+        }
+    }
+
+    fn analysis_complete(
+        &self,
+        request: &BuildRequest,
+        skyframe_executor: &blaze_sky_top::skyframe_executor::SkyframeExecutor,
+        target_pattern_phase_value: &TargetPatternPhaseValue,
+        analysis_result: &blaze_sky_top::build_view::AnalysisResult,
+    ) {
+        if let Some(inner) = self.inner {
+            inner.analysis_complete(
+                request,
+                skyframe_executor,
+                target_pattern_phase_value,
+                analysis_result,
+            );
+        }
+    }
+}
+
+/// `AutoOutputFilter.getFilter(targets)`.
+// Java: com/google/devtools/build/lib/outputfilter/AutoOutputFilter.java:103 AutoOutputFilter.getFilter
+fn auto_output_filter_get_filter(
+    auto: blaze_optdefs::command::auto_output_filter::AutoOutputFilter,
+    targets: &[&blaze_cmdline::Label],
+) -> Arc<dyn blaze_events::OutputFilter> {
+    use blaze_optdefs::command::auto_output_filter::AutoOutputFilter;
+    // Java: com/google/devtools/build/lib/outputfilter/AutoOutputFilter.java:99 AutoOutputFilter.SYSTEM_ACTION_REGEX
+    let system_action_regex = format!(
+        "(unknown)|{}",
+        blaze_cmdline::Label::parse_canonical_unchecked("@bazel_tools//tools:internal_platform")
+            .get_canonical_form()
+    );
+    let regex = match auto {
+        // Java: com/google/devtools/build/lib/outputfilter/AutoOutputFilter.java:40 AutoOutputFilter.NONE.getFilter
+        AutoOutputFilter::NONE => return blaze_events::output_everything(),
+        // Java: com/google/devtools/build/lib/outputfilter/AutoOutputFilter.java:50 AutoOutputFilter.ALL.getFilter
+        AutoOutputFilter::ALL => return blaze_events::output_nothing(),
+        // Java: com/google/devtools/build/lib/outputfilter/AutoOutputFilter.java:62 AutoOutputFilter.PACKAGES.getFilter
+        AutoOutputFilter::PACKAGES => format!(
+            "{system_action_regex}|^//{}:",
+            auto_output_filter_get_pkg_regex(auto_output_filter_get_packages(targets).iter())
+        ),
+        // Java: com/google/devtools/build/lib/outputfilter/AutoOutputFilter.java:77 AutoOutputFilter.SUBPACKAGES.getFilter
+        AutoOutputFilter::SUBPACKAGES => {
+            let mut packages: Vec<String> = Vec::new();
+            let mut previous: Option<String> = None;
+            for pkg in auto_output_filter_get_packages(targets) {
+                if let Some(previous) = &previous
+                    && pkg.starts_with(&format!("{previous}/"))
+                {
+                    // We already have a super-package in the list, so this package does
+                    // not need to be added.
+                    continue;
+                }
+                packages.push(pkg.clone());
+                previous = Some(pkg);
+            }
+            format!(
+                "{system_action_regex}|^//{}[/:]",
+                auto_output_filter_get_pkg_regex(packages.iter())
+            )
+        }
+    };
+    // `Pattern.compile`: the package names are inserted unquoted, as in Java.
+    match blaze_events::RegexOutputFilter::for_regex(&regex) {
+        Ok(filter) => filter,
+        Err(e) => panic!("PatternSyntaxException: {e}"),
+    }
+}
+
+/// `getPackages(targets)`: the sorted package names; `java/...` and `javatests/...` are one.
+// Java: com/google/devtools/build/lib/outputfilter/AutoOutputFilter.java:110 AutoOutputFilter.getPackages
+fn auto_output_filter_get_packages(
+    targets: &[&blaze_cmdline::Label],
+) -> std::collections::BTreeSet<String> {
+    let mut packages = std::collections::BTreeSet::new();
+    for label in targets {
+        let mut name = label.get_package_name().to_owned();
+        // Treat //java/foo and //javatests/foo as one package
+        if name.starts_with("java/") || name.starts_with("javatests/") {
+            name = format!("java(tests)?{}", &name[name.find('/').unwrap()..]);
+        }
+        packages.insert(name);
+    }
+    packages
+}
+
+/// `getPkgRegex(strings)`: `(a|b|...)`.
+// Java: com/google/devtools/build/lib/outputfilter/AutoOutputFilter.java:127 AutoOutputFilter.getPkgRegex
+fn auto_output_filter_get_pkg_regex<'a>(strings: impl Iterator<Item = &'a String>) -> String {
+    format!("({})", strings.cloned().collect::<Vec<_>>().join("|"))
 }
 
 #[cfg(test)]

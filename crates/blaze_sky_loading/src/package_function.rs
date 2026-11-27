@@ -506,6 +506,47 @@ enum Packageoid {
 // PORT: skipped, the function's parameters are the fields of PackageFunctionConfig: PackageFunction.newBuilder, PackageFunction.setPackageFactory, PackageFunction.setPackageLocator
 // PORT: skipped, the function's parameters are the fields of PackageFunctionConfig: PackageFunction.setShowLoadingProgress, PackageFunction.setNumPackagesSuccessfullyLoaded
 // PORT: skipped, the function's parameters are the fields of PackageFunctionConfig: PackageFunction.setPackageProgress, PackageFunction.setShouldUseRepoDotBazel, PackageFunction.setGlobbingStrategy
+// PORT: skipped, MULTIPLE_GLOB_HYBRID is never selected at the pin (SequencedSkyframeExecutor.Builder.globUnderSingleDep is always true): PackageFunctionWithMultipleGlobDeps.handleGlobDepsAndPropagateFilesystemExceptions
+// PORT: skipped, MULTIPLE_GLOB_HYBRID is never selected at the pin (SequencedSkyframeExecutor.Builder.globUnderSingleDep is always true): SkyframeHybridGlobber.getGlobDepsRequested
+// PORT: skipped, MULTIPLE_GLOB_HYBRID is never selected at the pin (SequencedSkyframeExecutor.Builder.globUnderSingleDep is always true): SkyframeHybridGlobber.getGlobKey
+// PORT: skipped, MULTIPLE_GLOB_HYBRID is never selected at the pin (SequencedSkyframeExecutor.Builder.globUnderSingleDep is always true): SkyframeHybridGlobber.runAsync
+// PORT: skipped, MULTIPLE_GLOB_HYBRID is never selected at the pin (SequencedSkyframeExecutor.Builder.globUnderSingleDep is always true): SkyframeHybridGlobber.fetchUnsorted
+// PORT: skipped, MULTIPLE_GLOB_HYBRID is never selected at the pin (SequencedSkyframeExecutor.Builder.globUnderSingleDep is always true): SkyframeHybridGlobber.onInterrupt
+// PORT: skipped, MULTIPLE_GLOB_HYBRID is never selected at the pin (SequencedSkyframeExecutor.Builder.globUnderSingleDep is always true): SkyframeHybridGlobber.onCompletion
+// PORT: skipped, MULTIPLE_GLOB_HYBRID is never selected at the pin (SequencedSkyframeExecutor.Builder.globUnderSingleDep is always true): HybridToken.resolve
+// PORT: skipped, MULTIPLE_GLOB_HYBRID is never selected at the pin (SequencedSkyframeExecutor.Builder.globUnderSingleDep is always true): HybridToken.getGlobMatches
+// PORT: skipped, MULTIPLE_GLOB_HYBRID is never selected at the pin (SequencedSkyframeExecutor.Builder.globUnderSingleDep is always true): PackageFunctionWithMultipleGlobDeps.makeGlobber
+// PORT: skipped, MULTIPLE_GLOB_HYBRID is never selected at the pin (SequencedSkyframeExecutor.Builder.globUnderSingleDep is always true): PackageFunctionWithMultipleGlobDeps.newLoadedPackage
+// PORT: skipped, NON_SKYFRAME globbing (--notrack_incremental_state); Blaze globs through GLOBS nodes there too: the same packages, only the graph has GLOBS nodes Java has not: PackageFunctionWithoutGlobDeps.handleGlobDepsAndPropagateFilesystemExceptions
+// PORT: skipped, NON_SKYFRAME globbing (--notrack_incremental_state); Blaze globs through GLOBS nodes there too: the same packages, only the graph has GLOBS nodes Java has not: PackageFunctionWithoutGlobDeps.makeGlobber
+// PORT: skipped, NON_SKYFRAME globbing (--notrack_incremental_state); Blaze globs through GLOBS nodes there too: the same packages, only the graph has GLOBS nodes Java has not: PackageFunctionWithoutGlobDeps.newLoadedPackage
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: AbstractPackageLoader.makePreinjectedDiff
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: AbstractPackageLoader.close
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: AbstractPackageLoader.loadPackage
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: LoadingContext.loadPackages
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: LoadingContext.loadModules
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: LoadingContext.getRepositoryMapping
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: LoadingContext.starlarkModuleLoadingExceptionFromErrorInfo
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: AbstractPackageLoader.makeLoadingContext
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: AbstractPackageLoader.getRuleClassProvider
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: AbstractPackageLoader.exceptionFromErrorInfo
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: AbstractPackageLoader.makeFreshEvaluator
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: AbstractPackageLoader.getCrossRepositoryLabelViolationStrategy
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: AbstractPackageLoader.getBuildFilesByPriority
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: AbstractPackageLoader.getActionOnIOExceptionReadingBuildFile
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: AbstractPackageLoader.shouldUseRepoDotBazel
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: AbstractPackageLoader.makeFreshSkyFunctions
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: BazelPackageLoader.builder
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: BazelPackageLoader.getCrossRepositoryLabelViolationStrategy
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: BazelPackageLoader.getBuildFilesByPriority
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: BazelPackageLoader.getActionOnIOExceptionReadingBuildFile
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: BazelPackageLoader.shouldUseRepoDotBazel
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: PackageLoader.loadPackage
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: StarlarkModuleLoadingException.getFailureDetail
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: PackageLoader.makeLoadingContext
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: PackageLoader.close
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Result.getLoadedValues
+// PORT: skipped, the standalone package loader is a library for other tools; the bazel binary does not link it: Result.getEvents
 // Bazel's SkyframeExecutor uses SINGLE_GLOBS_HYBRID (`globUnderSingleDep` is true and nothing sets it
 // false), so the classes of the other strategies never run.
 // PORT: skipped, the MULTIPLE_GLOB_HYBRID strategy, never used at the pin (nothing calls setGlobUnderSingleDep(false)): GlobFunctionWithMultipleRecursiveFunctions.compute, GlobFunctionWithMultipleRecursiveFunctions.processSubdir, GlobFunctionWithMultipleRecursiveFunctions.containsGlobs, GlobFunctionWithMultipleRecursiveFunctions.addToMatches

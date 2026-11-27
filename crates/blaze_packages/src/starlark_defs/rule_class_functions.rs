@@ -780,7 +780,7 @@ pub fn parse_toolchain_types(
     label_converter: &crate::types::LabelConverter,
 ) -> starlark::Result<IndexSet<ToolchainTypeRequirement>> {
     let mut toolchain_types: IndexMap<Label, ToolchainTypeRequirement> = IndexMap::new();
-    let raw = sequence_cast(raw_toolchains, "Object", |_| true, "toolchains")?;
+    let raw = sequence_cast(raw_toolchains, "unknown", |_| true, "toolchains")?;
     for raw_toolchain in raw {
         let mut toolchain_type = parse_toolchain_type(raw_toolchain, label_converter)?;
         let type_label = toolchain_type.toolchain_type.clone();
@@ -1161,7 +1161,7 @@ fn call_rule_function<'v>(
                 ret,
                 "string",
                 |k| k.unpack_str().is_some(),
-                "Object",
+                "unknown",
                 |_| true,
                 "rule's initializer return value",
             )?
@@ -1339,25 +1339,51 @@ fn export_rule_function(
     subrules: &[Value],
     parent_subrules: &[Value],
 ) -> starlark::Result<()> {
+    // PORT: Java reports these errors as events at the rule() call and continues; Blaze fails
+    // the export (the assignment) with the first message.
+    match export_rule_function_errors(
+        state,
+        starlark_label,
+        rule_class_name,
+        subrules,
+        parent_subrules,
+    )
+    .into_iter()
+    .next()
+    {
+        Some(first) => Err(errorf(first)),
+        None => Ok(()),
+    }
+}
+
+/// The export body of `StarlarkRuleFunction.export`, returning the messages of the ERROR events
+/// Java reports through `errorf(handler, ...)`, in order (empty on success).
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:1911 StarlarkRuleFunction.export
+fn export_rule_function_errors(
+    state: &RuleFunctionState,
+    starlark_label: &Label,
+    rule_class_name: &str,
+    subrules: &[Value],
+    parent_subrules: &[Value],
+) -> Vec<String> {
     let mut guard = state.builder.lock();
     let Some(mut builder) = guard.take() else {
-        return Ok(());
+        return Vec::new();
     };
     drop(guard);
     let _ = state
         .exported
         .set((starlark_label.clone(), rule_class_name.to_owned()));
-    // PORT: Java reports these errors as events at the rule() call and continues; Blaze fails
-    // the export (the assignment) with the same message.
-    let errorf_at = |msg: String| errorf(msg);
+    let mut errors = Vec::new();
 
     if (builder.get_type() == RuleClassType::Test)
         != base_rule_classes::is_test_rule_name(rule_class_name)
     {
-        return Err(errorf_at(format!(
+        errors.push(format!(
             "Invalid rule class name '{rule_class_name}', test rule class names must end with \
              '_test' and other rule classes must not"
-        )));
+        ));
+        return errors;
     }
 
     // lift the subrule attributes to the rule class as if they were declared there, this lets
@@ -1371,30 +1397,37 @@ fn export_rule_function(
                 .any(|p| subrule::subrule_equals(*s, *p))
         })
         .collect();
-    let subrule_attributes = subrule::discover_attributes(&subrules_not_in_parents)
-        .map_err(|e| errorf_at(e.to_string()))?;
+    let subrule_attributes = match subrule::discover_attributes(&subrules_not_in_parents) {
+        Ok(attributes) => attributes,
+        Err(e) => {
+            errors.push(e.to_string());
+            return errors;
+        }
+    };
     for (name, descriptor) in subrule_attributes {
         let attr = descriptor.build(&name);
-        catch_illegal_state(|| {
+        // TODO(bazel-team): stop using unchecked exceptions in this way.
+        if let Err(m) = catch_illegal_state(|| {
             builder.add_attribute(attr);
-        })
-        .map_err(|m| errorf_at(format!("cannot add attribute: {m}")))?;
+        }) {
+            errors.push(format!("cannot add attribute: {m}"));
+        }
     }
 
     builder.set_subrule_attribute_names(subrule::subrule_attribute_names(subrules));
 
-    let rule_class =
-        catch_illegal_state(|| builder.build_starlark(rule_class_name, starlark_label.clone()))
-            .map_err(errorf_at)?;
-    let _ = state.rule_class.set(Arc::new(rule_class));
-    Ok(())
+    match catch_illegal_state(|| builder.build_starlark(rule_class_name, starlark_label.clone())) {
+        Ok(rule_class) => {
+            let _ = state.rule_class.set(Arc::new(rule_class));
+        }
+        Err(msg) => errors.push(msg),
+    }
+    errors
 }
 
 /// The body of `testing.analysis_test` after the BUILD-thread check: defines a rule class and
 /// instantiates a *single* target of it.
 ///
-/// PORT: Java's export accumulates every error event into one "Errors in exporting" message;
-/// [`export_rule_function`] stops at its first error, so the message carries that one.
 // Java: com/google/devtools/build/lib/rules/test/StarlarkTestingModule.java:62 StarlarkTestingModule.analysisTest
 pub fn analysis_test<'v>(
     eval: &mut Evaluator<'v, '_, '_>,
@@ -1420,7 +1453,7 @@ pub fn analysis_test<'v>(
         attr_values_api,
         "string",
         |k| k.unpack_str().is_some(),
-        "any",
+        "unknown",
         |_| true,
         "attr_values",
     )?;
@@ -1505,10 +1538,13 @@ pub fn analysis_test<'v>(
     // records ends at the caller of analysis_test.
     {
         let mut callstack = call_stack(eval);
-        while callstack
-            .last()
-            .is_some_and(|entry| entry.location.is_none())
-        {
+        // A builtin frame's location is BUILTIN (`<builtin>`) or absent.
+        while callstack.last().is_some_and(|entry| {
+            entry
+                .location
+                .as_ref()
+                .is_none_or(|l| *l == blaze_starlark::Location::builtin())
+        }) {
             callstack.pop();
         }
         if let Some(builder) = state.builder.lock().as_mut() {
@@ -1516,11 +1552,11 @@ pub fn analysis_test<'v>(
         }
     }
     let rule_name = format!("{name}_test");
-    if let Err(e) = export_rule_function(&state, &build_file_label, &rule_name, &[], &[]) {
-        return Err(errorf(format!(
-            "Errors in exporting {name}: \n{}",
-            e.without_diagnostic()
-        )));
+    let errors = export_rule_function_errors(&state, &build_file_label, &rule_name, &[], &[]);
+    if !errors.is_empty() {
+        // Accumulate the ERROR events into a single EvalException.
+        let errors: String = errors.iter().map(|e| format!("\n{e}")).collect();
+        return Err(errorf(format!("Errors in exporting {name}: {errors}")));
     }
 
     // Instantiate the target

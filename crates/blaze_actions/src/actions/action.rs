@@ -211,6 +211,14 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
     /// For downcasting to the concrete action class (Java `instanceof` on classes).
     fn as_any(&self) -> &dyn Any;
 
+    /// `getClass().getName()`: the binary name of the action's Java class, which messages print
+    /// (`ActionConflictException`: `class <name>`). `None` for the classes of `blaze_actions`
+    /// whose callers name them by type.
+    // Java: java/lang/Object.java Object.getClass
+    fn java_class_name(&self) -> Option<&'static str> {
+        None
+    }
+
     /// Returns the mnemonic for this action.
     // Java: com/google/devtools/build/lib/actions/AbstractAction.java:324 AbstractAction.getMnemonic
     // Java: com/google/devtools/build/lib/actions/ActionAnalysisMetadata.java:58 ActionAnalysisMetadata.getMnemonic
@@ -628,6 +636,14 @@ pub trait Action: Send + Sync + fmt::Debug + Any {
     // Java: com/google/devtools/build/lib/actions/ActionExecutionMetadata.java:115 ActionExecutionMetadata.mayInsensitivelyPropagateInputs
     fn may_insensitively_propagate_inputs(&self) -> bool {
         false
+    }
+
+    /// `action instanceof IncludeScannable ? ((IncludeScannable) action).getDiscoveredModules()
+    /// : null`: the modules a C++ compile found it needs (`None` for an action that is not
+    /// `IncludeScannable`).
+    // Java: com/google/devtools/build/lib/rules/cpp/IncludeScannable.java:92 IncludeScannable.getDiscoveredModules
+    fn include_scannable_discovered_modules(&self) -> Option<NestedSet<Artifact>> {
+        None
     }
 
     // ---------------------------------------------------------------------------------------

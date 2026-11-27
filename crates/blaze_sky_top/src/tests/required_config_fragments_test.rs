@@ -155,26 +155,44 @@ simple_rule(name = "simple")
     assert_eq!(strings(required.defines()), vec!["required_var".to_owned()]);
 }
 
-/// Not a Java test (review query-2 round 2, P63-1 and P63-2): `ctx.var` passed whole to a native
-/// records every key, as Java's `Dict.cast` and `json.encode` read `entrySet()`/`keySet()`; and
-/// `{...} == ctx.var` reads `ctx.var.get(k)` for the keys of the mutable left side.
+/// Not a Java test (review query-2 rounds 2 and 3, P63-1 and P63-2): `ctx.var` passed whole to a
+/// native records every key, as Java's `Dict.cast`, `Type.DictType.convert` and `json.encode`
+/// read `entrySet()`/`keySet()`; and `{...} == ctx.var` reads `ctx.var.get(k)` for the keys of
+/// the mutable left side.
 #[test]
 fn starlark_ctx_var_read_whole_by_natives() {
-    let cases: &[(&str, &str, &[&str])] = &[
+    // (name, module-level code, implementation body, the --define keys required)
+    let cases: &[(&str, &str, &str, &[&str])] = &[
         (
             "env",
+            "",
             r#"    out = ctx.actions.declare_file(ctx.label.name + ".out")
     ctx.actions.run_shell(outputs = [out], command = "touch " + out.path, env = ctx.var)"#,
             &["a", "b"],
         ),
-        ("json", "    x = json.encode(ctx.var)", &["a", "b"]),
+        ("json", "", "    x = json.encode(ctx.var)", &["a", "b"]),
         (
             "eq",
+            "",
             "    x = {\"b\": \"2\", \"zz\": \"0\"} == ctx.var",
             &[],
         ),
+        // Round 3: Type.STRING_DICT.convert(makeVariables) (StarlarkRuleContext.resolveCommand).
+        (
+            "resolve_command",
+            "",
+            "    x = ctx.resolve_command(command = \"echo x\", make_variables = ctx.var)",
+            &["a", "b"],
+        ),
+        // Round 3: Dict.cast of the result of a provider's init (StarlarkProvider.fastcall).
+        (
+            "provider_init",
+            "def _init(v):\n    return v\n\nP, _new_p = provider(init = _init)\n",
+            "    x = P(ctx.var)",
+            &["a", "b"],
+        ),
     ];
-    for (name, body, want) in cases {
+    for (name, prelude, body, want) in cases {
         let mut t = BuildViewTestCase::new();
         t.use_configuration(&[
             "--include_config_fragments_provider=direct",
@@ -184,7 +202,7 @@ fn starlark_ctx_var_read_whole_by_natives() {
         t.scratch.file(
             "a/defs.bzl",
             &[&format!(
-                "def _impl(ctx):\n{body}\n    return []\n\nsimple_rule = rule(implementation = _impl)\n"
+                "{prelude}def _impl(ctx):\n{body}\n    return []\n\nsimple_rule = rule(implementation = _impl)\n"
             )],
         );
         t.scratch.file(

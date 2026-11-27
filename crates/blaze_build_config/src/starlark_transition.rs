@@ -747,11 +747,14 @@ fn validate_build_setting_keys(
             match Label::parse_with_package_context(option_key, package_context) {
                 Ok(label) => {
                     if !label.get_repository().is_visible() {
-                        blaze_util::unported!(
-                            "ConfigGlobalLibrary.validateBuildSettingKeys",
-                            "invisible repo in transition setting {}",
-                            label
-                        );
+                        // Java: com/google/devtools/build/lib/rules/config/ConfigGlobalLibrary.java:143 ConfigGlobalLibrary.validateBuildSettingKeys
+                        return Err(format!(
+                            "invalid transition {} '{}': no repo visible as @{} from {}",
+                            singular_error_descriptor,
+                            label,
+                            label.get_repository().get_name(),
+                            label.get_repository().get_context_repo_display_string()
+                        ));
                     }
                 }
                 Err(e) => {
@@ -1264,6 +1267,8 @@ impl fmt::Debug for StarlarkDefinedConfigTransition {
 }
 
 /// `StarlarkDefinedConfigTransition.ValidationException`.
+// Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:780 ValidationException.<init>
+// Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:785 ValidationException.format
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
 pub struct ValidationException(pub String);
@@ -1326,11 +1331,15 @@ impl StarlarkDefinedConfigTransition {
     }
 
     // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:126 StarlarkDefinedConfigTransition.isExecTransition
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:339 AnalysisTestTransition.isExecTransition
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:408 RegularTransition.isExecTransition
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:773 ExecTransition.isExecTransition
     pub fn is_exec_transition(&self) -> bool {
         self.data.kind == TransitionKind::Exec
     }
 
     // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:192 StarlarkDefinedConfigTransition.isForAnalysisTesting
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:403 RegularTransition.isForAnalysisTesting
     pub fn is_for_analysis_testing(&self) -> bool {
         // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:334 AnalysisTestTransition.isForAnalysisTesting
         self.data.kind == TransitionKind::AnalysisTest
@@ -1346,6 +1355,7 @@ impl StarlarkDefinedConfigTransition {
             .collect()
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:202 StarlarkDefinedConfigTransition.getInputsCanonicalizedToGiven
     pub fn get_inputs_canonicalized_to_given(&self) -> &[(Label, String)] {
         &self.data.inputs_canonicalized_to_given
     }
@@ -1360,6 +1370,7 @@ impl StarlarkDefinedConfigTransition {
             .collect()
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:214 StarlarkDefinedConfigTransition.getOutputsCanonicalizedToGiven
     pub fn get_outputs_canonicalized_to_given(&self) -> &[(Label, String)] {
         &self.data.outputs_canonicalized_to_given
     }
@@ -1445,6 +1456,7 @@ impl StarlarkDefinedConfigTransition {
     /// Given a map of a subset of the "previous" build settings, returns the changed build
     /// settings as a result of applying this transition. Returns `None` if errors were reported
     /// to the handler.
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:265 StarlarkDefinedConfigTransition.evaluate
     pub fn evaluate(
         &self,
         previous_settings: &IndexMap<String, JavaObject>,
@@ -1489,6 +1501,8 @@ impl StarlarkDefinedConfigTransition {
             result.insert(PATCH_TRANSITION_KEY.to_string(), changed);
             return Some(result);
         }
+        // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:436 RegularTransition.createBuildSettingsDict
+        // Java: com/google/devtools/build/lib/analysis/config/StarlarkDefinedConfigTransition.java:414 RegularTransition.UnreadableInputSettingException.<init>
         // createBuildSettingsDict: values Starlark#fromJava can't read are converted first.
         let mut settings: Vec<(String, JavaObject, bool)> = Vec::new();
         for (key, value) in previous_settings {

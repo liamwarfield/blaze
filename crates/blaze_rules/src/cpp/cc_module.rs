@@ -33,6 +33,7 @@ use super::variables::{eval_error, expansion_error};
 
 /// Java `BazelCcModule` (`cc_common`).
 // Java: com/google/devtools/build/lib/bazel/rules/cpp/BazelCcModule.java:22 BazelCcModule
+// PORT: skipped, no caller at the pin (private helpers of removed methods): CcModule.convertFromNoneable, CcModule.isStarlarkCcCommonCalledFromBuiltins
 // Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:49 CcModule
 #[derive(Debug, ProvidesStaticType, NoSerialize, Allocative)]
 pub struct BazelCcModule;
@@ -54,12 +55,19 @@ impl<'v> StarlarkValue<'v> for BazelCcModule {
     }
 
     // Java: com/google/devtools/build/lib/starlarkbuildapi/cpp/CcModuleApi.java:62 CcModuleApi.getCcToolchainProvider
+    // Java: com/google/devtools/build/lib/bazel/rules/cpp/BazelCcModule.java:23 BazelCcModule.getCcToolchainProvider
+    // Java: com/google/devtools/build/lib/rules/cpp/CcModule.java:58 CcModule.getCcToolchainProvider
     fn get_attr(&self, attribute: &str, _heap: Heap<'v>) -> Option<Value<'v>> {
         if attribute == "CcToolchainInfo" {
             // Java returns `CcToolchainProvider.BAZEL_PROVIDER`, a StarlarkProviderWrapper keyed
             // by `@rules_cc+//cc/private/rules_impl:cc_toolchain_info.bzl`; Blaze has no native
             // value standing for a Starlark provider key.
-            blaze_util::unported!("CcModule.getCcToolchainProvider");
+            // Not reached at the pin: rules_cc 0.2.17 and the builtins read
+            // `CcToolchainInfo` from their own Starlark cc_common, not from this native object.
+            blaze_util::unported!(
+                "CcModule.getCcToolchainProvider",
+                "a native value for the Starlark provider key of CcToolchainInfo"
+            );
         }
         None
     }

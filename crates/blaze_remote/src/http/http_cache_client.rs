@@ -28,6 +28,40 @@
 //! (`tokio::task::block_in_place`); the response is read with the downloader's HTTP stack
 //! (`blaze_repo_fetch::downloader::socket_transport`). The idle timeout (`IdleTimeoutHandler`:
 //! no read or write for `--remote_timeout`) is the socket's read and write timeout.
+//!
+//! Where the Netty plumbing went:
+//! - `acquireUploadChannel` / `acquireDownloadChannel`: [`ConnectionPool::acquire`] then
+//!   `connect`; `releaseUploadChannel` / `releaseDownloadChannel`: [`ConnectionPool::release`]
+//!   (a connection is kept only after a complete keep-alive response).
+//! - `HttpUploadHandler.buildRequest` / `HttpDownloadHandler.buildRequest`: the request heads of
+//!   `upload` and `download`; `HttpUploadHandler.buildBody`: the body loop of `exchange_upload`.
+//! - `HttpDownloadHandler.succeedAndReset`, `failAndClose`, `failAndReset` and
+//!   `HttpUploadHandler.failAndClose`: the outcome of `exchange_download` / `exchange_upload`
+//!   with the connection kept or dropped; their `exceptionCaught` (the timeout exceptions) is the
+//!   error mapping there.
+//! - `uploadAfterCredentialRefresh`: the second `upload` in `upload_async`.
+//! - `DownloadCommand` and `UploadCommand` are the parameters of `download` / `upload`.
+//
+// Java: com/google/devtools/build/lib/remote/http/HttpCacheClient.java:304 HttpCacheClient.acquireUploadChannel
+// Java: com/google/devtools/build/lib/remote/http/HttpCacheClient.java:359 HttpCacheClient.releaseUploadChannel
+// Java: com/google/devtools/build/lib/remote/http/HttpCacheClient.java:379 HttpCacheClient.acquireDownloadChannel
+// Java: com/google/devtools/build/lib/remote/http/HttpCacheClient.java:427 HttpCacheClient.releaseDownloadChannel
+// Java: com/google/devtools/build/lib/remote/http/HttpCacheClient.java:695 HttpCacheClient.uploadAfterCredentialRefresh
+// Java: com/google/devtools/build/lib/remote/http/HttpUploadHandler.java:124 HttpUploadHandler.exceptionCaught
+// Java: com/google/devtools/build/lib/remote/http/HttpUploadHandler.java:136 HttpUploadHandler.buildRequest
+// Java: com/google/devtools/build/lib/remote/http/HttpUploadHandler.java:145 HttpUploadHandler.buildBody
+// Java: com/google/devtools/build/lib/remote/http/HttpUploadHandler.java:149 HttpUploadHandler.failAndClose
+// Java: com/google/devtools/build/lib/remote/http/HttpDownloadHandler.java:175 HttpDownloadHandler.exceptionCaught
+// Java: com/google/devtools/build/lib/remote/http/HttpDownloadHandler.java:184 HttpDownloadHandler.buildRequest
+// Java: com/google/devtools/build/lib/remote/http/HttpDownloadHandler.java:194 HttpDownloadHandler.succeedAndReset
+// Java: com/google/devtools/build/lib/remote/http/HttpDownloadHandler.java:208 HttpDownloadHandler.failAndClose
+// Java: com/google/devtools/build/lib/remote/http/HttpDownloadHandler.java:219 HttpDownloadHandler.failAndReset
+// Java: com/google/devtools/build/lib/remote/http/AbstractHttpHandler.java:55 AbstractHttpHandler.failAndResetUserPromise
+// Java: com/google/devtools/build/lib/remote/http/AbstractHttpHandler.java:114 AbstractHttpHandler.exceptionCaught
+// Java: com/google/devtools/build/lib/remote/http/IdleTimeoutHandler.java:38 IdleTimeoutHandler.channelIdle
+// PORT: skipped, Netty channel plumbing with no counterpart on a blocking connection (each forwards the event and fails the pending promise with ClosedChannelException, which the outcome of the exchange is here): AbstractHttpHandler.bind, AbstractHttpHandler.connect, AbstractHttpHandler.disconnect, AbstractHttpHandler.close, AbstractHttpHandler.deregister, AbstractHttpHandler.read, AbstractHttpHandler.flush, AbstractHttpHandler.channelInactive, AbstractHttpHandler.handlerRemoved, AbstractHttpHandler.channelUnregistered, HttpCacheClient.isChannelPipelineEmpty
+// PORT: skipped, handler and command objects: the client's fields and the method parameters hold their state: AbstractHttpHandler.<init>, HttpUploadHandler.<init>, HttpDownloadHandler.<init>, IdleTimeoutHandler.<init>, DownloadCommand.<init>, DownloadCommand.uri, DownloadCommand.casDownload, DownloadCommand.digest, DownloadCommand.out, DownloadCommand.offset, UploadCommand.<init>, UploadCommand.uri, UploadCommand.casUpload, UploadCommand.hash, UploadCommand.data, UploadCommand.contentLength
+// PORT: skipped, the response is kept as its status and headers on the exception (`HttpException.status`, `headers`): HttpException.response
 
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
@@ -620,6 +654,9 @@ impl HttpCacheClient {
             None => Box::new(&mut raw),
             Some(ContentDecoder::Gzip) => Box::new(flate2::read::MultiGzDecoder::new(&mut raw)),
             Some(ContentDecoder::Deflate) => Box::new(zlib_or_none(&mut raw)),
+            Some(ContentDecoder::Snappy) => {
+                Box::new(super::snappy::SnappyFrameDecoder::new(&mut raw))
+            }
             Some(ContentDecoder::Zstd) => match zstd::stream::read::Decoder::new(&mut raw) {
                 Ok(decoder) => Box::new(decoder),
                 Err(e) => return close(e),
@@ -634,7 +671,19 @@ impl HttpCacheClient {
                 Ok(0) => break Ok(()),
                 Ok(n) => n,
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
-                Err(e) => break Err(e),
+                Err(e) => {
+                    // Netty's `DecompressionException` (of the snappy decoder) is a
+                    // `RuntimeException`: it fails the download's future unchecked, and Bazel
+                    // crashes with it ("FATAL: bazel crashed due to an internal error"; the
+                    // oracle on a reserved unskippable snappy chunk, review round 8 S3).
+                    if let Some(java) = errors::downcast_ref::<errors::JavaException>(&e)
+                        && java.class_name
+                            == "io.netty.handler.codec.compression.DecompressionException"
+                    {
+                        panic!("{}: {}", java.class_name, java.message);
+                    }
+                    break Err(e);
+                }
             };
             let mut chunk = &buf[..n];
             if skip_bytes > 0 {
@@ -729,7 +778,14 @@ impl HttpCacheClient {
                 }
             },
         };
-        match Self::exchange_upload(connection, &request, blob, &path, length, self.idle_timeout()) {
+        match Self::exchange_upload(
+            connection,
+            &request,
+            blob,
+            &path,
+            length,
+            self.idle_timeout(),
+        ) {
             Ok((kept, result)) => {
                 self.pool.release(kept);
                 result
@@ -763,8 +819,9 @@ impl HttpCacheClient {
         // Content-Length, so the encoder adds no chunk framing). The response is read as soon as
         // the server sends one, whatever has been written (see `write_watching`).
         let stream = connection.get_mut();
-        let mut answered_early =
-            write_watching(stream, request, idle_timeout).map_err(write_error)? == Written::Answered;
+        let mut answered_early = write_watching(stream, request, idle_timeout)
+            .map_err(write_error)?
+            == Written::Answered;
         if !answered_early {
             let mut data = blob.get()?;
             let mut buf = vec![0u8; 8192];
@@ -993,6 +1050,7 @@ impl Read for RawBody<'_> {
 enum ContentDecoder {
     Gzip,
     Deflate,
+    Snappy,
     Zstd,
 }
 
@@ -1011,10 +1069,8 @@ fn content_decoder(head: &ResponseHead) -> io::Result<Option<ContentDecoder>> {
     } else if encoding.eq_ignore_ascii_case("zstd") {
         Ok(Some(ContentDecoder::Zstd))
     } else if encoding.eq_ignore_ascii_case("snappy") {
-        blaze_util::unported!(
-            "HttpContentDecompressor.newContentDecoder",
-            "a response with Content-Encoding: snappy (Netty's SnappyFrameDecoder)"
-        )
+        // `new SnappyFrameDecoder()`: checksums are not validated.
+        Ok(Some(ContentDecoder::Snappy))
     } else {
         // `br` needs Brotli4j, which the oracle does not bundle; any other coding is left as is.
         Ok(None)
@@ -1243,10 +1299,7 @@ fn write_watching_tls<S: Read + Write + std::os::fd::AsRawFd>(
                 match tls.conn.read_tls(&mut tls.sock) {
                     Ok(0) => return Ok(Written::Answered),
                     Ok(_) => {
-                        let state = tls
-                            .conn
-                            .process_new_packets()
-                            .map_err(io::Error::other)?;
+                        let state = tls.conn.process_new_packets().map_err(io::Error::other)?;
                         if state.plaintext_bytes_to_read() > 0 || state.peer_has_closed() {
                             return Ok(Written::Answered);
                         }
@@ -1406,11 +1459,13 @@ impl<T> std::future::Future for AbortOnDrop<T> {
         mut self: std::pin::Pin<&mut Self>,
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<T> {
-        std::pin::Pin::new(&mut self.0).poll(cx).map(|result| match result {
-            Ok(value) => value,
-            Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
-            Err(e) => panic!("upload task cancelled: {e}"),
-        })
+        std::pin::Pin::new(&mut self.0)
+            .poll(cx)
+            .map(|result| match result {
+                Ok(value) => value,
+                Err(e) if e.is_panic() => std::panic::resume_unwind(e.into_panic()),
+                Err(e) => panic!("upload task cancelled: {e}"),
+            })
     }
 }
 
@@ -1455,9 +1510,8 @@ impl RemoteCacheClient for HttpCacheClient {
         digest: Digest,
         blob: Arc<dyn Blob>,
     ) -> futures::future::BoxFuture<'static, io::Result<()>> {
-        let task = crate::runtime::runtime().spawn(async move {
-            self.upload_blob_impl(&context, &digest, &*blob).await
-        });
+        let task = crate::runtime::runtime()
+            .spawn(async move { self.upload_blob_impl(&context, &digest, &*blob).await });
         Box::pin(AbortOnDrop(task))
     }
 

@@ -87,10 +87,43 @@ pub fn get_context<T: Send + Sync + 'static>(
 // PORT: skipped, used only by withOverriddenRunfilesPath: ActionExecutionContext.OverriddenPathRunfilesTree.getArtifactsAtCanonicalLocationsForLogging ActionExecutionContext.OverriddenPathRunfilesTree.getEmptyFilenamesForLogging ActionExecutionContext.OverriddenPathRunfilesTree.getSymlinksForLogging ActionExecutionContext.OverriddenPathRunfilesTree.getRootSymlinksForLogging ActionExecutionContext.OverriddenPathRunfilesTree.getRepoMappingManifestForLogging ActionExecutionContext.OverriddenPathRunfilesTree.isMappingCached ActionExecutionContext.OverriddenPathRunfilesTree.fingerprint
 // PORT: skipped, used only by withOverriddenRunfilesPath: ActionExecutionContext.OverriddenRunfilesPathInputMetadataProvider.<init> ActionExecutionContext.OverriddenRunfilesPathInputMetadataProvider.getInputMetadataChecked ActionExecutionContext.OverriddenRunfilesPathInputMetadataProvider.getTreeMetadata ActionExecutionContext.OverriddenRunfilesPathInputMetadataProvider.getEnclosingTreeMetadata ActionExecutionContext.OverriddenRunfilesPathInputMetadataProvider.getInput
 // PORT: skipped, used only by withOverriddenRunfilesPath: ActionExecutionContext.OverriddenRunfilesPathInputMetadataProvider.getFileset ActionExecutionContext.OverriddenRunfilesPathInputMetadataProvider.getFilesets ActionExecutionContext.OverriddenRunfilesPathInputMetadataProvider.getRunfilesMetadata ActionExecutionContext.OverriddenRunfilesPathInputMetadataProvider.getRunfilesTrees
-// PORT: skipped, C++ header modules and include scanning only (CppCompileAction.findUsedModules and the include scanner stop with unported! in blaze_rules): ActionExecutionContext.getEnvironmentForDiscoveringInputs ActionExecutionContext.getDiscoveredModulesPruner ActionExecutionContext.getThreadStateReceiverForMetrics
+// PORT: skipped, the include scanner runs in the action's thread, so there is no thread state to record: ActionExecutionContext.getThreadStateReceiverForMetrics
 // PORT: skipped, the syscall cache of actions is not ported; its one reader, SymlinkAction.maybeVerifyTargetIsExecutable, stats the file directly (same answer, the cache only saves a stat): ActionExecutionContext.getSyscallCache
+/// The Skyframe reads input discovery makes through `getEnvironmentForDiscoveringInputs()`
+/// (`env.getValuesAndExceptions(keys)` and `env.valuesMissing()`), by what they read.
+///
+/// PORT: Java hands the action the `SkyFunction.Environment`; the keys and values of the
+/// execution layer's Skyframe functions are not visible to the crates that define actions, so the
+/// two reads they make are methods. `None` is Java's missing value (`valuesMissing()`): the caller
+/// returns null and the node restarts.
+// Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:516 ActionExecutionContext.getEnvironmentForDiscoveringInputs
+pub trait DiscoveryEnvironment {
+    /// The `TreeArtifactValue`s of `trees` (`env.getValuesAndExceptions(trees)`), in order.
+    fn get_tree_artifact_values(
+        &mut self,
+        trees: &[blaze_actions::Artifact],
+    ) -> Option<Vec<Arc<crate::actions::TreeArtifactValue>>>;
+
+    /// `ActionExecutionValue.getDiscoveredModules()` of the values of `modules`' generating
+    /// actions (`env.getValuesAndExceptions(generatingActionKeys)`), in order.
+    fn get_discovered_modules(
+        &mut self,
+        modules: &[blaze_actions::Artifact],
+    ) -> Option<Vec<blaze_collect::NestedSet<blaze_actions::Artifact>>>;
+}
+
 // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:64 ActionExecutionContext
 pub trait ActionExecutionContext: ActionContextRegistry {
+    /// `getEnvironmentForDiscoveringInputs()`: runs `f` with the Skyframe environment of the
+    /// node that discovers the action's inputs. Only a context made for input discovery has one.
+    // Java: com/google/devtools/build/lib/actions/ActionExecutionContext.java:516 ActionExecutionContext.getEnvironmentForDiscoveringInputs
+    fn with_environment_for_discovering_inputs(
+        &self,
+        _f: &mut dyn FnMut(&mut dyn DiscoveryEnvironment),
+    ) {
+        panic!("IllegalStateException: getEnvironmentForDiscoveringInputs outside input discovery")
+    }
+
     /// `getExecRoot()`.
     fn get_exec_root(&self) -> &Path;
 

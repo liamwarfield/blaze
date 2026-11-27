@@ -705,6 +705,10 @@ impl fmt::Debug for TestRunnerAction {
 }
 
 impl Action for TestRunnerAction {
+    fn java_class_name(&self) -> Option<&'static str> {
+        Some("com.google.devtools.build.lib.analysis.test.TestRunnerAction")
+    }
+
     fn abstract_action(&self) -> &AbstractAction {
         &self.abstract_action
     }

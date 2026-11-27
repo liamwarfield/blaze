@@ -811,11 +811,14 @@ impl ActionExecutionFunction {
                     action.as_ref(),
                     &state.input_artifact_data,
                 );
-            return Ok(Some(ActionExecutionValue::create_with_rich_metadata(
-                output_metadata_store.get_all_artifact_data(),
-                output_metadata_store.get_all_tree_artifact_data(),
-                reconstructed_rich_artifact_data,
-            )));
+            return Ok(Some(
+                ActionExecutionValue::create_with_rich_metadata(
+                    output_metadata_store.get_all_artifact_data(),
+                    output_metadata_store.get_all_tree_artifact_data(),
+                    reconstructed_rich_artifact_data,
+                )
+                .with_discovered_modules(action.include_scannable_discovered_modules()),
+            ));
         };
 
         output_metadata_store.prepare_for_action_execution();
@@ -838,7 +841,7 @@ impl ActionExecutionFunction {
                     // the store, and so the file system, again (see create_action_file_system).
                     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionFunction.java:740 ActionExecutionFunction.checkCacheAndExecuteIfNeeded
                     executor.discover_inputs(
-                        env.listener(),
+                        env,
                         action,
                         state.input_artifact_data.clone(),
                         output_metadata_store.get_action_file_system().cloned(),

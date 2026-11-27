@@ -60,6 +60,7 @@ use crate::starlark_defs::util::errorf;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ProvidesStaticType)]
 pub struct BuiltinProviderId {
     pub name: &'static str,
+    // Java: com/google/devtools/build/lib/packages/BuiltinProvider.java:50 BuiltinProvider.getValueClass
     pub value_class: &'static str,
 }
 
@@ -113,6 +114,9 @@ pub struct BuiltinProviderData {
 }
 
 impl BuiltinProviderData {
+    // Java: com/google/devtools/build/lib/packages/BuiltinProvider.java:44 BuiltinProvider.BuiltinProvider
+    // PORT: skipped, a builtin provider has no location (`StarlarkValue::callable_location` is none, Location.BUILTIN): BuiltinProvider.getLocation
+    // PORT: skipped, no provider of the Bazel binary implements it: BuiltinProvider.WithLegacyStarlarkName.getStarlarkName
     pub const fn new(
         name: &'static str,
         value_class: &'static str,
@@ -151,11 +155,14 @@ impl BuiltinProviderData {
 
     /// Java `BuiltinProvider.hashCode` (the class) and `checkHashable` (always hashable).
     // Java: com/google/devtools/build/lib/packages/BuiltinProvider.java:63 BuiltinProvider.hashCode
+    // Java: com/google/devtools/build/lib/packages/BuiltinProvider.java:68 BuiltinProvider.checkHashable
     pub fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
         self.id.value_class.hash(hasher);
         Ok(())
     }
 
+    // Java: com/google/devtools/build/lib/packages/BuiltinProvider.java:88 BuiltinProvider.getPrintableName
+    // Java: com/google/devtools/build/lib/packages/BuiltinProvider.java:73 BuiltinProvider.isExported
     pub fn provide<'v>(&self, demand: &mut Demand<'_, 'v>) {
         demand.provide_value(self.id);
         demand.provide_value(ProviderInfo {

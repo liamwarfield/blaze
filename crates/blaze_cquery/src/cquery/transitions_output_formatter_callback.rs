@@ -38,7 +38,9 @@ use crate::post_analysis_query_environment::NamedThreadSafeOutputFormatterCallba
 
 /// ResolvedTransition represents a single edge in the dependency graph, between some target and a
 /// target it depends on, reachable via a single attribute.
-// Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:72 CqueryTransitionResolver.ResolvedTransition
+// Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:70 CqueryTransitionResolver.ResolvedTransition
+// Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:74 CqueryTransitionResolver.ResolvedTransition.create
+// PORT: skipped, the AutoValue's create and accessors are the struct's literal and fields: CqueryTransitionResolver.ResolvedTransition.label, CqueryTransitionResolver.ResolvedTransition.options, CqueryTransitionResolver.ResolvedTransition.attributeName, CqueryTransitionResolver.ResolvedTransition.transitionName
 #[derive(Clone, PartialEq, Eq)]
 struct ResolvedTransition {
     /// The label of the target being depended on.
@@ -56,6 +58,8 @@ struct ResolvedTransition {
 /// What `CqueryTransitionResolver.dependencies` throws.
 enum DependenciesError {
     /// `EvaluateException` (its message).
+    // Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:219 CqueryTransitionResolver.EvaluateException
+    // Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:220 CqueryTransitionResolver.EvaluateException.<init>
     Evaluate(String),
     /// `IncompatibleTargetChecker.IncompatibleTargetException`.
     IncompatibleTarget,
@@ -88,6 +92,17 @@ impl<'a> TransitionsOutputFormatterCallback<'a> {
             label_printer,
             resolved_any: std::cell::Cell::new(false),
         }
+    }
+
+    /// Marks for deletion the nodes one resolver evaluation computed and the resolver's nodes:
+    /// Java's `DependencyResolver.evaluate` over a lookup environment computes none of them.
+    fn delete_computed_nodes(evaluator: &blaze_skyframe::Evaluator, computed_keys: Vec<SkyKey>) {
+        let computed_keys: std::collections::HashSet<SkyKey> = computed_keys.into_iter().collect();
+        evaluator.delete(|key, _| {
+            computed_keys.contains(key)
+                || key.function_name()
+                    == <CqueryTransitionResolverKey as blaze_skyframe::Key>::FUNCTION
+        });
     }
 
     /// Removes the CQUERY_TRANSITION_RESOLVER nodes from the graph once the output is done.
@@ -147,6 +162,10 @@ impl<'a> TransitionsOutputFormatterCallback<'a> {
     /// Return the set of dependencies of a ConfiguredTarget, including information about the
     /// configuration transitions applied to the dependencies.
     // Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:130 CqueryTransitionResolver.dependencies
+    // Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:110 CqueryTransitionResolver.<init>
+    // PORT: Java makes a resolver per target from the formatter's event handler, accessor, rule
+    // class provider and transition cache; here `dependencies` is a method of the formatter,
+    // which holds them.
     fn dependencies(
         &self,
         configured_target: &CqueryNode,
@@ -169,18 +188,34 @@ impl<'a> TransitionsOutputFormatterCallback<'a> {
         // instead, so a node computed besides the resolver's own one is that case.
         let evaluator = self.skyframe_executor.get_evaluator();
         let computed_before = evaluator.computed_count();
-        let result = match self.skyframe_executor.evaluate(
+        // Java computes nothing in Skyframe here: what this evaluation computes is taken out of
+        // the command's evaluation statistics (restored below), and the nodes it computed
+        // besides the resolver's are deleted when the evaluation did not complete in Java's
+        // sense (the resolver's own nodes are deleted at `close`).
+        let stats_before = evaluator.evaluation_stats_snapshot();
+        evaluator.start_recording_computed_keys();
+        // Set before evaluating, so that an interrupted evaluation's nodes are deleted too.
+        self.resolved_any.set(true);
+        let evaluated = self.skyframe_executor.evaluate(
             &[SkyKey::new(key.clone())],
             /* keep_going= */ false,
             DEFAULT_THREAD_COUNT,
             self.base.event_handler.clone(),
-        ) {
+        );
+        let computed_keys = evaluator.take_recorded_computed_keys();
+        evaluator.restore_evaluation_stats(stats_before);
+        let result = match evaluated {
             Ok(result) => result,
-            Err(blaze_skyframe::Interrupted) => return Err(DependenciesError::Interrupted),
+            Err(blaze_skyframe::Interrupted) => {
+                // Marked now and removed by the next evaluation (`close`'s or a later command's):
+                // an interrupted Java resolver leaves nothing behind either.
+                Self::delete_computed_nodes(&evaluator, computed_keys);
+                return Err(DependenciesError::Interrupted);
+            }
         };
-        self.resolved_any.set(true);
         if evaluator.computed_count() - computed_before > 1 {
-            // Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:130 CqueryTransitionResolver.dependencies
+            Self::delete_computed_nodes(&evaluator, computed_keys);
+            // Java: com/google/devtools/build/lib/query2/cquery/CqueryTransitionResolver.java:157 CqueryTransitionResolver.dependencies
             return Err(DependenciesError::Evaluate(
                 "DependencyResolver.evaluate did not complete".to_owned(),
             ));

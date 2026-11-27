@@ -21,7 +21,8 @@ use indexmap::IndexMap;
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:434 ActionExecutionValue.SingleTree.<init>
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:466 ActionExecutionValue.MultiTree.<init>
 // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:223 ActionExecutionValue.toString
-// PORT: skipped, C++ modules (discovered modules) stop with unported! in blaze_rules (CppCompileAction.findUsedModules), so a value never has them: ActionExecutionValue.getDiscoveredModules ActionExecutionValue.ModuleDiscovering.<init> ActionExecutionValue.ModuleDiscovering.getDiscoveredModules
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:399 ActionExecutionValue.ModuleDiscovering.<init>
+// Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:406 ActionExecutionValue.ModuleDiscovering.getDiscoveredModules
 // PORT: skipped, values are compared (keys.rs values_equal), never hashed: ActionExecutionValue.hashCode
 // PORT: skipped, the transform failure is the Err(String) of transform_for_shared_action: ActionExecutionValue.ActionTransformException.<init>
 #[derive(Clone, Debug, Default)]
@@ -32,6 +33,10 @@ pub struct ActionExecutionValue {
     /// `RunfilesArtifactValue.getMetadata()` of `rich_artifact_data` (Java computes it in the
     /// value's constructor from the producing action's input metadata).
     rich_artifact_metadata: Option<FileArtifactValue>,
+    /// `discoveredModules` of a `ModuleDiscovering` value; `None` is Java's empty set.
+    ///
+    /// PORT: Java's subclass `ModuleDiscovering` is this field.
+    discovered_modules: Option<blaze_collect::NestedSet<Artifact>>,
 }
 
 /// `TreeArtifactValue.MISSING_TREE_ARTIFACT`: a value that represents a missing tree artifact.
@@ -129,6 +134,7 @@ impl ActionExecutionValue {
             tree_artifact_data,
             rich_artifact_data,
             rich_artifact_metadata: None,
+            discovered_modules: None,
         }
     }
 
@@ -163,7 +169,48 @@ impl ActionExecutionValue {
             tree_artifact_data,
             rich_artifact_data,
             rich_artifact_metadata,
+            discovered_modules: None,
         }
+    }
+
+    /// The `discoveredModules` argument of `create(..., discoveredModules)`:
+    /// `action instanceof IncludeScannable ? getDiscoveredModules() : emptySet` (Java checks it
+    /// with the other arguments).
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:145 ActionExecutionValue.create
+    pub fn with_discovered_modules(
+        mut self,
+        discovered_modules: Option<blaze_collect::NestedSet<Artifact>>,
+    ) -> ActionExecutionValue {
+        let Some(discovered_modules) = discovered_modules.filter(|m| !m.is_empty()) else {
+            return self;
+        };
+        if self.rich_artifact_data.is_some() {
+            blaze_util::check_argument!(
+                false,
+                "actions with rich artifact data do not discover modules: {}",
+                discovered_modules
+            );
+        }
+        blaze_util::check_argument!(
+            self.artifact_data.len() == 1,
+            "Module-discovering actions should have a single output file (the .pcm file): {:?}",
+            self.artifact_data
+        );
+        blaze_util::check_argument!(
+            self.tree_artifact_data.is_empty(),
+            "Module-discovering actions do not output tree artifacts: {:?}",
+            self.tree_artifact_data
+        );
+        self.discovered_modules = Some(discovered_modules);
+        self
+    }
+
+    /// `getDiscoveredModules()`: empty unless the value is a `ModuleDiscovering` one.
+    // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:219 ActionExecutionValue.getDiscoveredModules
+    pub fn get_discovered_modules(&self) -> blaze_collect::NestedSet<Artifact> {
+        self.discovered_modules.clone().unwrap_or_else(|| {
+            blaze_collect::NestedSetBuilder::empty_set(blaze_collect::Order::STABLE_ORDER)
+        })
     }
 
     /// Returns metadata for a given artifact, if that metadata is cached in this value.
@@ -262,6 +309,7 @@ impl ActionExecutionValue {
             )?,
             rich_artifact_data: self.rich_artifact_data.clone(),
             rich_artifact_metadata: self.rich_artifact_metadata.clone(),
+            discovered_modules: self.discovered_modules.clone(),
         })
     }
 

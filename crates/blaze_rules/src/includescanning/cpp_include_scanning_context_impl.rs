@@ -152,19 +152,48 @@ impl CppIncludeScanningContextImpl {
     /// Returns a list of artifacts with all tree artifacts replaced by their expansion or `None`
     /// if we are missing a Skyframe dependency.
     ///
-    /// PORT: the expansion asks Skyframe for the trees' values
-    /// (`getEnvironmentForDiscoveringInputs()`), which the execution context does not give;
-    /// a tree among the scanned sources is `unported!`.
+    /// We take an ad-hoc approach, which consults Skyframe to retrieve the tree expansions. This
+    /// is necessary because include scanning may include tree artifacts which are not inputs of
+    /// the original action.
     // Java: com/google/devtools/build/lib/includescanning/CppIncludeScanningContextImpl.java:98 CppIncludeScanningContextImpl.expandTreeArtifacts
-    fn expand_tree_artifacts(artifacts: Vec<Artifact>) -> Option<Vec<Artifact>> {
-        if !artifacts.iter().any(|a| a.is_tree_artifact()) {
+    fn expand_tree_artifacts(
+        artifacts: Vec<Artifact>,
+        env: &dyn ActionExecutionContext,
+    ) -> Option<Vec<Artifact>> {
+        let trees: Vec<Artifact> = artifacts
+            .iter()
+            .filter(|a| a.is_tree_artifact())
+            .cloned()
+            .collect();
+        if trees.is_empty() {
             return Some(artifacts);
         }
-        blaze_util::unported!(
-            "CppIncludeScanningContextImpl.expandTreeArtifacts",
-            "a tree artifact among the include scanning sources needs \
-             ActionExecutionContext.getEnvironmentForDiscoveringInputs"
-        )
+
+        let mut expansions = None;
+        env.with_environment_for_discovering_inputs(&mut |env| {
+            expansions = env.get_tree_artifact_values(&trees);
+        });
+        let expansions = expansions?;
+        let mut expansions = expansions.into_iter();
+        let mut expanded = Vec::new();
+        for artifact in artifacts {
+            if !artifact.is_tree_artifact() {
+                expanded.push(artifact);
+                continue;
+            }
+
+            let tree_artifact_value = expansions.next()?;
+            for child in tree_artifact_value.get_children() {
+                expanded.push(
+                    blaze_exec::actions::action_adapters::as_blaze_artifact(&child)
+                        .unwrap_or_else(|| {
+                            panic!("ClassCastException: {child:?} is not a TreeFileArtifact")
+                        })
+                        .clone(),
+                );
+            }
+        }
+        Some(expanded)
     }
 
     // Java: com/google/devtools/build/lib/includescanning/CppIncludeScanningContextImpl.java:174 CppIncludeScanningContextImpl.collect
@@ -259,8 +288,10 @@ impl CppIncludeScanningContext for CppIncludeScanningContextImpl {
         );
 
         let main_source = action.get_main_include_scanner_source();
-        let Some(sources) = Self::expand_tree_artifacts(action.get_include_scanner_sources())
-        else {
+        let Some(sources) = Self::expand_tree_artifacts(
+            action.get_include_scanner_sources(),
+            action_execution_context,
+        ) else {
             return Ok(None);
         };
 
@@ -290,7 +321,11 @@ impl CppIncludeScanningContext for CppIncludeScanningContextImpl {
                 ));
             }
             Err(IncludeScanningError::Exec(e)) => return Err(e),
-            Err(IncludeScanningError::Interrupted) => return Err(ExecException::Interrupted),
+            // InterruptedException propagates out of findAdditionalInputs; like Java's, its
+            // message is not reported.
+            Err(IncludeScanningError::Interrupted(_message)) => {
+                return Err(ExecException::Interrupted);
+            }
         }
         // actionExecutionContext.getEnvironmentForDiscoveringInputs().valuesMissing(): the
         // scanner requests no Skyframe values here (see Hints).

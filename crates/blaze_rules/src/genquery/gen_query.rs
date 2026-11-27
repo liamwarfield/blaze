@@ -504,6 +504,10 @@ impl fmt::Debug for QueryResultAction {
 }
 
 impl Action for QueryResultAction {
+    fn java_class_name(&self) -> Option<&'static str> {
+        Some("com.google.devtools.build.lib.rules.genquery.GenQuery$QueryResultAction")
+    }
+
     fn abstract_action(&self) -> &AbstractAction {
         &self.base
     }

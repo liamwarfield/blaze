@@ -20,6 +20,7 @@ use blaze_packages::target::Target;
 use blaze_protos::build_event_stream::build_metrics::BuildGraphMetrics;
 use blaze_sky_analysis::platform::platform_function::PlatformFunction;
 use blaze_sky_analysis::producers::errors::configuration_id_of_key;
+use blaze_sky_exec::keys::BuildDriverKey;
 use blaze_sky_loading::package_function::{PackageKey, PackageValue};
 use blaze_skyframe::{
     EvaluationResult, Evaluator, Interrupted, Key, SkyKey, SkyValue, WalkableGraph,
@@ -49,6 +50,13 @@ pub struct SkyframeAnalysisResult {
     targets_with_configuration: Vec<TargetAndConfiguration>,
     /// The `AnalysisGraphStatsEvent` posted by the conflict check (`None` when not checked).
     build_graph_metrics: Option<BuildGraphMetrics>,
+    /// `SkyframeAnalysisAndExecutionResult.getRepresentativeExecutionExitCode()`: the most important
+    /// execution exit code of a `--keep_going` build with merged analysis and execution.
+    execution_detailed_exit_code: Option<blaze_util::DetailedExitCode>,
+    /// The counters of the `AnalysisPhaseCompleteEvent` that
+    /// `analysisFinishedCallback` posted (merged analysis and execution; `None` when the
+    /// analysis of the top-level keys did not conclude).
+    analysis_phase_complete_stats: Option<AnalysisPhaseCompleteStats>,
 }
 
 impl SkyframeAnalysisResult {
@@ -57,6 +65,16 @@ impl SkyframeAnalysisResult {
     // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:454 SkyframeBuildView.configureTargets
     pub fn get_build_graph_metrics(&self) -> Option<&BuildGraphMetrics> {
         self.build_graph_metrics.as_ref()
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeAnalysisAndExecutionResult.java:55 SkyframeAnalysisAndExecutionResult.getRepresentativeExecutionExitCode
+    pub fn get_execution_detailed_exit_code(&self) -> Option<&blaze_util::DetailedExitCode> {
+        self.execution_detailed_exit_code.as_ref()
+    }
+
+    /// See the field.
+    pub fn get_analysis_phase_complete_stats(&self) -> Option<&AnalysisPhaseCompleteStats> {
+        self.analysis_phase_complete_stats.as_ref()
     }
 
     // Java: com/google/devtools/build/lib/skyframe/SkyframeAnalysisResult.java:63 SkyframeAnalysisResult.hasLoadingError
@@ -135,6 +153,8 @@ impl SkyframeAnalysisResult {
             walkable_graph: self.walkable_graph,
             targets_with_configuration: self.targets_with_configuration,
             build_graph_metrics: self.build_graph_metrics,
+            execution_detailed_exit_code: self.execution_detailed_exit_code,
+            analysis_phase_complete_stats: self.analysis_phase_complete_stats,
         }
     }
 }
@@ -263,6 +283,8 @@ pub fn configure_targets(
             walkable_graph: skyframe_executor.get_walkable_graph(),
             targets_with_configuration: result.targets_with_configuration,
             build_graph_metrics,
+            execution_detailed_exit_code: None,
+            analysis_phase_complete_stats: None,
         });
     }
 
@@ -467,6 +489,8 @@ pub fn configure_targets(
         walkable_graph: skyframe_executor.get_walkable_graph(),
         targets_with_configuration: result.targets_with_configuration,
         build_graph_metrics,
+        execution_detailed_exit_code: None,
+        analysis_phase_complete_stats: None,
     })
 }
 
@@ -919,6 +943,982 @@ impl EvaluatedCounts {
                 .collect(),
         }
     }
+}
+
+// -------------------------------------------------------------------------------------------
+// Merged analysis and execution (Skymeld)
+
+/// What `SkyframeBuildView.analyzeAndExecuteTargets` (and `BuildView.update` before it) reach
+/// through the command: Java's callbacks (`ExecutionSetup`, `BuildConfigurationsCreated`,
+/// `CoverageReportActionsWrapperSupplier`) and the parts of `SkyframeExecutor` that belong to the
+/// execution tool here (the watchdog, `isBuildingExclusiveArtifacts`, the order of the exclusive
+/// tests).
+pub trait SkymeldExecutionHooks {
+    /// `executionSetupCallback.prepareForExecution()` (`ExecutionTool.prepareForExecution`).
+    // Java: com/google/devtools/build/lib/analysis/BuildView.java:391 BuildView.update
+    fn prepare_for_execution(
+        &self,
+        skyframe_executor: &SkyframeExecutor,
+    ) -> Result<(), crate::build_tool::BuildToolError>;
+
+    /// `buildConfigurationCreatedCallback.run(topLevelConfig)` (`result::setBuildConfiguration`).
+    // Java: com/google/devtools/build/lib/analysis/BuildView.java:347 BuildView.update
+    fn build_configuration_created(
+        &self,
+        configuration: &Arc<blaze_build_config::build_configuration_value::BuildConfigurationValue>,
+    );
+
+    /// `skyframeExecutor.getIsBuildingExclusiveArtifacts().set(value)`.
+    fn set_is_building_exclusive_artifacts(&self, value: bool);
+
+    /// `getExclusiveTests(mainEvaluationResult)`: the keys of the
+    /// `ExclusiveTestBuildDriverValue`s of the result, in the order Java iterates the result's
+    /// values. `root_keys` are the evaluated `BuildDriverKey`s.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1103 SkyframeBuildView.getExclusiveTests
+    fn get_exclusive_tests(
+        &self,
+        main_evaluation_result: &EvaluationResult,
+        root_keys: &[BuildDriverKey],
+    ) -> Vec<BuildDriverKey>;
+
+    /// `coverageReportActionsWrapperSupplier.getCoverageReportArtifacts(analyzedTargets,
+    /// analyzedTests)`, then `eventBus.post(CoverageArtifactsKnownEvent.create(artifacts))`.
+    fn get_coverage_report_artifacts(
+        &self,
+        skyframe_executor: &SkyframeExecutor,
+        analyzed_targets: &[ConfiguredTarget],
+        analyzed_tests: &[ConfiguredTarget],
+    ) -> Vec<blaze_actions::Artifact>;
+
+    /// `skyframeExecutor.clearExecutionStatesSkymeld(eventHandler)`: no more action execution
+    /// beyond this point.
+    fn clear_execution_states_skymeld(&self);
+}
+
+/// The arguments of `BuildView.update` that only a build with merged analysis and execution
+/// reads.
+pub struct MergedAnalysisAndExecutionArgs<'a> {
+    pub hooks: &'a dyn SkymeldExecutionHooks,
+    /// `env.getBuildResultListener()`.
+    pub build_result_listener: Arc<crate::build_result_listener::BuildResultListener>,
+    /// `topLevelOptions`: `request.getTopLevelArtifactContext()`'s output groups.
+    pub top_level_artifact_context_output_groups: Vec<String>,
+    /// `viewOptions.extraActionTopLevelOnly`.
+    pub extra_action_top_level_only: bool,
+    /// `viewOptions.extraActionFilter`.
+    pub extra_action_filter: Option<blaze_optdefs::common::regex_filter::RegexFilter>,
+    pub build_driver_key_test_context: crate::execution_seam::BuildDriverKeyTestContext,
+    /// `request.getBuildOptions().skymeldAnalysisOverlapPercentage`.
+    pub skymeld_analysis_overlap_percentage: i32,
+    /// `skyframeExecutor.tracksStateForIncrementality()` (the command's
+    /// `decideKeepIncrementalState`).
+    pub tracks_state_for_incrementality: bool,
+}
+
+/// What `analyzeAndExecuteTargets` throws.
+#[derive(Debug, Clone)]
+pub enum AnalyzeAndExecuteError {
+    Interrupted,
+    ViewCreationFailed(ViewCreationFailedException),
+    /// `BuildFailedException` / `TestExecException`.
+    Execution(skyframe_error_processor::RethrownException),
+}
+
+impl From<Interrupted> for AnalyzeAndExecuteError {
+    fn from(_: Interrupted) -> Self {
+        AnalyzeAndExecuteError::Interrupted
+    }
+}
+
+impl From<ViewCreationFailedException> for AnalyzeAndExecuteError {
+    fn from(e: ViewCreationFailedException) -> Self {
+        AnalyzeAndExecuteError::ViewCreationFailed(e)
+    }
+}
+
+impl From<skyframe_error_processor::ProcessErrorsException> for AnalyzeAndExecuteError {
+    fn from(e: skyframe_error_processor::ProcessErrorsException) -> Self {
+        match e {
+            skyframe_error_processor::ProcessErrorsException::ViewCreationFailed(e) => {
+                AnalyzeAndExecuteError::ViewCreationFailed(e)
+            }
+            skyframe_error_processor::ProcessErrorsException::Rethrown(e) => {
+                AnalyzeAndExecuteError::Execution(e)
+            }
+        }
+    }
+}
+
+/// The live evaluator threads of the merged evaluation.
+///
+/// PORT: Blaze only. Java runs the analysis on a CPU-heavy pool and the execution on its own
+/// pool of the same evaluation; Blaze's blocking engine has one pool, whose threads must have
+/// the analysis' stack ([`blaze_starlark::eval::EVAL_STACK_SIZE`]: rule implementations and
+/// `.bzl` files are evaluated on them). Spawns fork the server, and a fork fails with ENOMEM
+/// once the writable private mappings of the server (each thread's reserved stack among them)
+/// exceed what the kernel's heuristic overcommit allows (on this 30 GiB machine, between 120 and
+/// 400 threads of 256 MiB): the number of threads is capped.
+const MERGED_EVALUATION_MAX_THREADS: usize = 64;
+
+/// Evaluates the given collections of CT/Aspect BuildDriverKeys.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2477 SkyframeExecutor.evaluateBuildDriverKeys
+fn evaluate_build_driver_keys(
+    skyframe_executor: &SkyframeExecutor,
+    event_handler: Arc<dyn ExtendedEventHandler>,
+    build_driver_ct_keys: &[BuildDriverKey],
+    build_driver_aspect_keys: &[BuildDriverKey],
+    workspace_status_artifacts: &[blaze_actions::Artifact],
+    keep_going: bool,
+) -> Result<EvaluationResult, Interrupted> {
+    let execution = skyframe_executor
+        .get_execution()
+        .expect("IllegalStateException: the executor was created without execution");
+    // buildDriverFunction.setShouldCheckForConflictWithTraversal(...): the seam reads the mode
+    // (execution_seam::conflict_checking_mode_in_this_build).
+    if crate::execution_seam::conflict_checking_mode_in_this_build()
+        != crate::execution_seam::ConflictCheckingMode::NONE
+    {
+        crate::execution_seam::initialize_skymeld_conflict_finding_states(
+            skyframe_executor
+                .get_action_key_context()
+                .expect("IllegalStateException: the command does not configure targets")
+                .clone(),
+            skyframe_executor.get_walkable_graph(),
+        );
+    }
+    event_handler.post(Arc::new(
+        blaze_buildtool::buildtool::buildevent::ConfigurationPhaseStartedEvent::new(Arc::new(
+            crate::skyframe_progress_receiver::AnalysisProgressReceiverView(
+                &blaze_sky_analysis::analysis_progress_receiver::ANALYSIS_PROGRESS,
+            ),
+        )),
+    ));
+    // For the workspace status actions.
+    event_handler.post(Arc::new(
+        blaze_sky_exec::events::SomeExecutionStartedEvent::not_counted_in_execution_time(),
+    ));
+    // Iterables.concat(buildDriverCTKeys, buildDriverAspectKeys, Artifact.keys(workspaceStatusArtifacts))
+    let mut roots: Vec<SkyKey> = build_driver_ct_keys
+        .iter()
+        .chain(build_driver_aspect_keys)
+        .cloned()
+        .map(SkyKey::new)
+        .collect();
+    roots.extend(
+        workspace_status_artifacts
+            .iter()
+            .map(blaze_sky_exec::keys::artifact_key),
+    );
+    // PORT: setMergingSkyframeAnalysisExecutionPhases(true) selects Java's pools; see
+    // MERGED_EVALUATION_MAX_THREADS.
+    let ctx = blaze_skyframe::EvaluationContext {
+        keep_going,
+        parallelism: execution.config.jobs,
+        event_handler,
+        thread_stack_size: blaze_starlark::eval::EVAL_STACK_SIZE,
+        max_threads: MERGED_EVALUATION_MAX_THREADS,
+        ..blaze_skyframe::EvaluationContext::default()
+    };
+    skyframe_executor.get_evaluator().evaluate(&roots, &ctx)
+}
+
+/// `shouldCheckForConflicts(checkForActionConflicts, newKeys)` of `analyzeAndExecuteTargets`.
+fn should_check_for_conflicts_skymeld(
+    skyframe_executor: &SkyframeExecutor,
+    check_for_action_conflicts: bool,
+    new_keys_count: usize,
+) -> bool {
+    should_check_for_conflicts(
+        check_for_action_conflicts,
+        new_keys_count,
+        skyframe_executor.get_evaluator(),
+    )
+}
+
+/// Performs analysis & execution of the CTs and aspects with Skyframe.
+///
+/// In case of error: --nokeep_going will eventually throw a ViewCreationFailedException, whereas
+/// --keep_going will return a SkyframeAnalysisAndExecutionResult which contains the failure
+/// details.
+///
+/// PORT: `topLevelArtifactContext` is its output groups; `bugReporter`, `resourceManager` and
+/// `executors` have no port (`resourceManager.resetResourceUsage()`: Blaze's resource manager
+/// holds nothing between evaluations); `shouldClearSyscallCache` has no port (no syscall cache).
+// Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:618 SkyframeBuildView.analyzeAndExecuteTargets
+#[allow(clippy::too_many_arguments)]
+pub fn analyze_and_execute_targets(
+    skyframe_executor: &SkyframeExecutor,
+    event_handler: Arc<dyn ExtendedEventHandler>,
+    ct_keys: &[ConfiguredTargetKey],
+    top_level_aspects_keys: &[TopLevelAspectsKey],
+    tests_to_run: Option<&IndexSet<Label>>,
+    label_target_map: &IndexMap<Label, Target>,
+    explicit_target_patterns: &IndexSet<Label>,
+    keep_going: bool,
+    skip_incompatible_explicit_targets: bool,
+    check_for_action_conflicts: bool,
+    args: &MergedAnalysisAndExecutionArgs<'_>,
+) -> Result<SkyframeAnalysisResult, AnalyzeAndExecuteError> {
+    use crate::execution_seam::{self, ConflictCheckingMode};
+
+    let analysis_work_timer = std::time::Instant::now();
+    let hooks = args.hooks;
+    let top_level_artifact_context = &args.top_level_artifact_context_output_groups;
+
+    // ImmutableSet<ActionLookupKey> newKeys = ctKeys ∪ topLevelAspectsKeys
+    let new_keys_count = ct_keys
+        .iter()
+        .map(|k| ActionLookupKeyRef::new(k.clone()))
+        .chain(
+            top_level_aspects_keys
+                .iter()
+                .map(|k| ActionLookupKeyRef::new(k.clone())),
+        )
+        .collect::<IndexSet<_>>()
+        .len();
+
+    let workspace_status_artifacts =
+        skyframe_executor.get_workspace_status_artifacts(event_handler.clone())?;
+
+    {
+        let tests_to_run = tests_to_run.cloned();
+        let label_target_map = label_target_map.clone();
+        let build_driver_key_test_context = args.build_driver_key_test_context.clone();
+        execution_seam::set_test_type_resolver(Some(Arc::new(
+            move |label: &Label, event_handler: &dyn ExtendedEventHandler| {
+                execution_seam::determine_test_type_impl(
+                    tests_to_run.as_ref(),
+                    &label_target_map,
+                    label,
+                    &build_driver_key_test_context,
+                    event_handler,
+                )
+            },
+        )));
+    }
+
+    let build_driver_ct_keys: Vec<BuildDriverKey> = ct_keys
+        .iter()
+        .map(|ct_key| {
+            BuildDriverKey::of_configured_target(
+                ActionLookupKeyRef::new(ct_key.clone()),
+                top_level_artifact_context.clone(),
+                /* explicitly_requested= */
+                explicit_target_patterns.contains(ct_key.get_label()),
+                skip_incompatible_explicit_targets,
+                args.extra_action_top_level_only,
+                keep_going,
+            )
+        })
+        .collect::<IndexSet<_>>()
+        .into_iter()
+        .collect();
+
+    let build_driver_aspect_keys: Vec<BuildDriverKey> = top_level_aspects_keys
+        .iter()
+        .map(|k| {
+            BuildDriverKey::of_top_level_aspect(
+                ActionLookupKeyRef::new(k.clone()),
+                top_level_artifact_context.clone(),
+                /* explicitly_requested= */ explicit_target_patterns.contains(k.get_label()),
+                skip_incompatible_explicit_targets,
+                args.extra_action_top_level_only,
+                keep_going,
+            )
+        })
+        .collect::<IndexSet<_>>()
+        .into_iter()
+        .collect();
+    args.build_result_listener.set_top_level_keys(
+        build_driver_ct_keys
+            .iter()
+            .chain(&build_driver_aspect_keys)
+            .cloned()
+            .collect(),
+    );
+    let mut detailed_exit_codes: Vec<Option<blaze_util::DetailedExitCode>> = Vec::new();
+    // Sets.union(buildDriverCTKeys, buildDriverAspectKeys)
+    let top_level_keys: std::collections::HashSet<BuildDriverKey> = build_driver_ct_keys
+        .iter()
+        .chain(&build_driver_aspect_keys)
+        .cloned()
+        .collect();
+
+    let should_check_for_conflicts = should_check_for_conflicts_skymeld(
+        skyframe_executor,
+        check_for_action_conflicts,
+        new_keys_count,
+    );
+    let conflict_checking_mode = if should_check_for_conflicts {
+        if args.tracks_state_for_incrementality {
+            ConflictCheckingMode::WITH_TRAVERSAL
+        } else {
+            ConflictCheckingMode::UPON_CONFIGURED_OBJECT_CREATION
+        }
+    } else {
+        ConflictCheckingMode::NONE
+    };
+    if conflict_checking_mode == ConflictCheckingMode::UPON_CONFIGURED_OBJECT_CREATION {
+        // The conflict check as each action is registered
+        // (IncrementalArtifactConflictFinder.conflictCheckPerAction from the analysis).
+        blaze_util::unported!(
+            "SkyframeBuildView.analyzeAndExecuteTargets",
+            "ConflictCheckingMode.UPON_CONFIGURED_OBJECT_CREATION (no incrementality tracking)"
+        );
+    }
+    execution_seam::set_conflict_checking_mode_in_this_build(conflict_checking_mode);
+
+    // The execution tasks wait for the go-ahead of the watcher (MultiThreadPoolsQuiescingExecutor
+    // .launchQueuedUpExecutionPhaseTasks).
+    // PORT: with 100 (the default) Java's gate opens when the first top-level key concludes its
+    // analysis; the blocking engine runs execution work (the workspace status action, a root
+    // of the evaluation) as soon as it is requested. A smaller overlap delays the execution
+    // work of the analyzed keys, which the blocking engine cannot queue.
+    if args.skymeld_analysis_overlap_percentage != 100 {
+        blaze_util::unported!(
+            "MultiExecutorQueueVisitor.execute",
+            "--experimental_skymeld_analysis_overlap_percentage={} (execution tasks stalled until the go-ahead)",
+            args.skymeld_analysis_overlap_percentage
+        );
+    }
+
+    let analysis_phase_complete_stats: Arc<parking_lot::Mutex<Option<AnalysisPhaseCompleteStats>>> =
+        Arc::new(parking_lot::Mutex::new(None));
+    let build_graph_metrics: Arc<parking_lot::Mutex<Option<BuildGraphMetrics>>> =
+        Arc::new(parking_lot::Mutex::new(None));
+    let finisher: crate::analysis_operation_watcher::AnalysisOperationWatcherFinisher = {
+        let event_handler = event_handler.clone();
+        let build_result_listener = args.build_result_listener.clone();
+        let walkable_graph = skyframe_executor.get_walkable_graph();
+        let ct_keys = ct_keys.to_vec();
+        let evaluated_counts = skyframe_executor.evaluated_counts_supplier();
+        let analysis_phase_complete_stats = analysis_phase_complete_stats.clone();
+        let build_graph_metrics = build_graph_metrics.clone();
+        Box::new(move || {
+            analysis_finished_callback(
+                event_handler.as_ref(),
+                &build_result_listener,
+                walkable_graph.as_ref(),
+                &ct_keys,
+                /* measured_analysis_time= */
+                analysis_work_timer.elapsed().as_millis() as i64,
+                conflict_checking_mode,
+                evaluated_counts.as_ref(),
+                &analysis_phase_complete_stats,
+                &build_graph_metrics,
+            )
+        })
+    };
+    let lower_threshold_to_signal_for_execution = (top_level_keys.len() as f64
+        * args.skymeld_analysis_overlap_percentage as f64
+        / 100.0) as f32;
+    let auto_closeable_watcher =
+        crate::analysis_operation_watcher::AnalysisOperationWatcher::create_and_register_with_event_bus(
+            top_level_keys,
+            event_handler.clone(),
+            lower_threshold_to_signal_for_execution,
+            finisher,
+            /* execution_go_ahead_callback= */ Box::new(|| {}),
+        );
+    let watched_event_handler: Arc<dyn ExtendedEventHandler> = auto_closeable_watcher;
+
+    // try { ... } finally { clearExecutionStatesSkymeld }
+    let executed = (|| -> Result<(EvaluationResult, bool), AnalyzeAndExecuteError> {
+        hooks.set_is_building_exclusive_artifacts(false);
+        let main_evaluation_result = {
+            let _c = blaze_util::profiler::Profiler::instance()
+                .profile_info("skyframeExecutor.evaluateBuildDriverKeys");
+            // PORT: skipped, enableAnalysis(true): incremental bookkeeping of analysis nodes.
+            let evaluated = evaluate_build_driver_keys(
+                skyframe_executor,
+                watched_event_handler.clone(),
+                &build_driver_ct_keys,
+                &build_driver_aspect_keys,
+                &workspace_status_artifacts,
+                keep_going,
+            );
+            // finally:
+            // Required for incremental correctness.
+            // We unconditionally reset the states here instead of in #analysisFinishedCallback
+            // since in case of --nokeep_going & analysis error, the analysis phase is never
+            // finished.
+            execution_seam::clear_incremental_artifact_conflict_finding_states();
+            blaze_sky_exec::build_driver_function::BuildDriverFunction::reset_states();
+            execution_seam::set_test_type_resolver(None);
+            // PORT: skipped, largestTopLevelKeySetCheckedForConflicts and
+            // someActionLookupValueEvaluated: `should_check_for_conflicts` reads the graph.
+            evaluated?
+        };
+
+        // The exclusive tests whose analysis succeeded i.e. those that can be run.
+        let root_keys: Vec<BuildDriverKey> = build_driver_ct_keys
+            .iter()
+            .chain(&build_driver_aspect_keys)
+            .cloned()
+            .collect();
+        let exclusive_tests_to_run = hooks.get_exclusive_tests(&main_evaluation_result, &root_keys);
+        let continue_with_exclusive_tests = !main_evaluation_result.has_error() || keep_going;
+        let mut has_exclusive_tests_error = false;
+
+        if continue_with_exclusive_tests && !exclusive_tests_to_run.is_empty() {
+            hooks.set_is_building_exclusive_artifacts(true);
+            let execution = skyframe_executor
+                .get_execution()
+                .expect("IllegalStateException: the executor was created without execution");
+            // Run exclusive tests sequentially.
+            // TestCompletionValue.keys(exclusiveTestsToRun, topLevelArtifactContext,
+            // /* exclusiveTesting= */ true)
+            for key in &exclusive_tests_to_run {
+                let test_completion_key = blaze_sky_exec::keys::TestCompletionKey {
+                    configured_target_key: key.action_lookup_key.clone(),
+                    output_groups: key.output_groups.clone(),
+                    exclusive_testing: true,
+                };
+                let test_run_result =
+                    blaze_buildtool::buildtool::execution_tool::run_exclusive_test_skymeld(
+                        skyframe_executor.get_evaluator(),
+                        &test_completion_key,
+                        &execution.config,
+                        event_handler.clone(),
+                    )?;
+                if test_run_result.has_error() {
+                    has_exclusive_tests_error = true;
+                    detailed_exit_codes.push(
+                        skyframe_error_processor::process_errors_with_execution(
+                            &test_run_result,
+                            skyframe_executor.get_cycles_reporter(),
+                            &event_handler,
+                            keep_going,
+                        )?
+                        .execution_detailed_exit_code()
+                        .cloned(),
+                    );
+                }
+            }
+        }
+
+        // Coverage report generation should only be requested after all tests have executed.
+        // When --nokeep_going and there's an earlier error, we should skip this and fail fast.
+        if (!main_evaluation_result.has_error() && !has_exclusive_tests_error) || keep_going {
+            let coverage_report_artifacts = hooks.get_coverage_report_artifacts(
+                skyframe_executor,
+                &args.build_result_listener.get_analyzed_targets(),
+                &args.build_result_listener.get_analyzed_tests(),
+            );
+            let execution = skyframe_executor
+                .get_execution()
+                .expect("IllegalStateException: the executor was created without execution");
+            let additional_artifacts_result =
+                blaze_buildtool::buildtool::execution_tool::evaluate_artifacts(
+                    skyframe_executor.get_evaluator(),
+                    &coverage_report_artifacts,
+                    &execution.config,
+                    crate::skyframe_executor::DEFAULT_THREAD_COUNT,
+                    event_handler.clone(),
+                )?;
+            if additional_artifacts_result.has_error() {
+                detailed_exit_codes.push(
+                    skyframe_error_processor::process_errors_with_execution(
+                        &additional_artifacts_result,
+                        skyframe_executor.get_cycles_reporter(),
+                        &event_handler,
+                        keep_going,
+                    )?
+                    .execution_detailed_exit_code()
+                    .cloned(),
+                );
+            }
+        }
+        Ok((main_evaluation_result, has_exclusive_tests_error))
+    })();
+    // finally: No more action execution beyond this point.
+    hooks.clear_execution_states_skymeld();
+    let (main_evaluation_result, _) = executed?;
+
+    let graph = skyframe_executor.get_walkable_graph();
+    let analysis_phase_complete_stats = analysis_phase_complete_stats.lock().clone();
+    let build_graph_metrics = build_graph_metrics.lock().clone();
+    if !main_evaluation_result.has_error() && detailed_exit_codes.is_empty() {
+        let successful_aspects = get_successful_aspect_map(
+            graph.as_ref(),
+            &main_evaluation_result,
+            &build_driver_aspect_keys,
+            /* top_level_action_conflict_report= */ None,
+        );
+        let mut targets_with_configuration: Vec<TargetAndConfiguration> = Vec::new();
+        let successful_configured_targets = get_successful_configured_targets(
+            graph.as_ref(),
+            &main_evaluation_result,
+            &build_driver_ct_keys,
+            label_target_map,
+            &mut targets_with_configuration,
+            /* top_level_action_conflict_report= */ None,
+        );
+
+        // SkyframeAnalysisAndExecutionResult.success
+        return Ok(SkyframeAnalysisResult {
+            has_loading_error: false,
+            has_analysis_error: false,
+            has_action_conflicts: false,
+            configured_targets: successful_configured_targets,
+            aspects: successful_aspects,
+            configured_targets_with_action_conflicts: Vec::new(),
+            walkable_graph: graph,
+            targets_with_configuration,
+            build_graph_metrics,
+            execution_detailed_exit_code: None,
+            analysis_phase_complete_stats,
+        });
+    }
+
+    let error_processing_result = skyframe_error_processor::process_errors_with_execution(
+        &main_evaluation_result,
+        skyframe_executor.get_cycles_reporter(),
+        &event_handler,
+        keep_going,
+    )?;
+    detailed_exit_codes.push(
+        error_processing_result
+            .execution_detailed_exit_code()
+            .cloned(),
+    );
+
+    let found_action_conflict_in_latest_check =
+        !error_processing_result.action_conflicts().is_empty();
+    let top_level_action_conflict_report = if found_action_conflict_in_latest_check {
+        Some(handle_action_conflicts(
+            skyframe_executor,
+            event_handler.clone(),
+            graph.as_ref(),
+            ct_keys,
+            top_level_aspects_keys,
+            top_level_artifact_context,
+            keep_going,
+            &error_processing_result,
+        )?)
+    } else {
+        None
+    };
+    let successful_aspects = get_successful_aspect_map(
+        graph.as_ref(),
+        &main_evaluation_result,
+        &build_driver_aspect_keys,
+        top_level_action_conflict_report.as_ref(),
+    );
+    let mut targets_with_configuration: Vec<TargetAndConfiguration> = Vec::new();
+    let successful_configured_targets = get_successful_configured_targets(
+        graph.as_ref(),
+        &main_evaluation_result,
+        &build_driver_ct_keys,
+        label_target_map,
+        &mut targets_with_configuration,
+        top_level_action_conflict_report.as_ref(),
+    );
+
+    // Collections.max(detailedExitCodes, DetailedExitCodeComparator.INSTANCE): the first of the
+    // most important.
+    let execution_detailed_exit_code = detailed_exit_codes.into_iter().fold(None, |max, code| {
+        blaze_util::DetailedExitCode::choose_more_important_with_first_if_tie(max, code)
+    });
+    // SkyframeAnalysisAndExecutionResult.withErrors
+    Ok(SkyframeAnalysisResult {
+        has_loading_error: error_processing_result.has_loading_error(),
+        // legacy behavior: action conflicts are considered analysis errors.
+        has_analysis_error: error_processing_result.has_analysis_error()
+            || found_action_conflict_in_latest_check,
+        has_action_conflicts: found_action_conflict_in_latest_check,
+        configured_targets: successful_configured_targets,
+        aspects: successful_aspects,
+        configured_targets_with_action_conflicts: Vec::new(),
+        walkable_graph: graph,
+        targets_with_configuration,
+        build_graph_metrics,
+        execution_detailed_exit_code,
+        analysis_phase_complete_stats,
+    })
+}
+
+/// The counters of the `AnalysisPhaseCompleteEvent` and the metrics of the
+/// `AnalysisGraphStatsEvent` that `analysisFinishedCallback` posts, for their one subscriber
+/// (the metrics collector).
+///
+/// PORT: Blaze's `AnalysisPhaseCompleteEvent` (blaze_buildtool) carries only the number of
+/// analyzed targets (the UI's); the two Java events' other contents travel in this one.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:957 SkyframeBuildView.analysisFinishedCallback
+#[derive(Clone, Debug)]
+pub struct AnalysisPhaseCompleteStatsEvent {
+    pub stats: AnalysisPhaseCompleteStats,
+    pub build_graph_metrics: Option<BuildGraphMetrics>,
+}
+
+impl blaze_events::Postable for AnalysisPhaseCompleteStatsEvent {}
+
+/// Handles the required steps after all analysis work in this build is done.
+///
+/// PORT: `AnalysisGraphStatsEvent` and the counters of `AnalysisPhaseCompleteEvent` reach their
+/// one subscriber (the metrics collector) through the analysis result
+/// (`build_graph_metrics`, `analysis_phase_complete_stats`); the `AnalysisPhaseCompleteEvent`
+/// itself (the UI's) is posted here. `shouldDiscardAnalysisCache` (`clearAnalysisCache`: a heap
+/// optimization) is the incremental module's, at the end of the command
+/// (crate::incremental); `clearSyscallCache` and `enableAnalysis(false)` have no port.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:910 SkyframeBuildView.analysisFinishedCallback
+#[allow(clippy::too_many_arguments)]
+fn analysis_finished_callback(
+    event_bus: &dyn ExtendedEventHandler,
+    build_result_listener: &crate::build_result_listener::BuildResultListener,
+    walkable_graph: &dyn WalkableGraph,
+    configured_target_keys: &[ConfiguredTargetKey],
+    measured_analysis_time: i64,
+    conflict_checking_mode: crate::execution_seam::ConflictCheckingMode,
+    evaluated_counts: &(dyn Fn(i64) -> AnalysisPhaseCompleteStats + Send + Sync),
+    analysis_phase_complete_stats: &parking_lot::Mutex<Option<AnalysisPhaseCompleteStats>>,
+    build_graph_metrics: &parking_lot::Mutex<Option<BuildGraphMetrics>>,
+) {
+    if conflict_checking_mode != crate::execution_seam::ConflictCheckingMode::NONE {
+        // Now that we have the full picture, it's time to collect the metrics of the whole
+        // graph.
+        let aspect_keys: Vec<AspectKey> = build_result_listener
+            .get_analyzed_aspects()
+            .keys()
+            .cloned()
+            .collect();
+        let mut build_graph_metrics_builder = collect_action_lookup_values_in_build(
+            walkable_graph,
+            configured_target_keys,
+            &aspect_keys,
+        )
+        .get_metrics();
+        if let Some(incremental_artifact_conflict_finder) =
+            crate::execution_seam::get_checker_for_conflict_checking_mode(conflict_checking_mode)
+        {
+            build_graph_metrics_builder.output_artifact_count =
+                incremental_artifact_conflict_finder.get_output_artifact_count();
+        }
+        // eventBus.post(new AnalysisGraphStatsEvent(buildGraphMetricsBuilder.build()))
+        *build_graph_metrics.lock() = Some(build_graph_metrics_builder);
+    }
+
+    // At this point, it's safe to clear objects related to action conflict checking.
+    // Clearing the states here is a performance optimization (reduce peak heap size) and isn't
+    // required for correctness.
+    crate::execution_seam::clear_incremental_artifact_conflict_finding_states();
+
+    // eventBus.post(new AnalysisPhaseCompleteEvent(buildResultListener.getAnalyzedTargets(),
+    // getEvaluatedCounts(), ..., measuredAnalysisTime, ...))
+    let stats = evaluated_counts(measured_analysis_time);
+    *analysis_phase_complete_stats.lock() = Some(stats.clone());
+    event_bus.post(Arc::new(AnalysisPhaseCompleteStatsEvent {
+        stats,
+        build_graph_metrics: build_graph_metrics.lock().clone(),
+    }));
+    event_bus.post(Arc::new(
+        blaze_buildtool::buildtool::buildevent::AnalysisPhaseCompleteEvent::new(
+            build_result_listener.get_analyzed_targets().len(),
+        ),
+    ));
+}
+
+/// Report the appropriate conflicts and return a TopLevelActionConflictReport.
+///
+/// The TopLevelActionConflictReport is used to determine the set of top level targets that
+/// depend on conflicted actions.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:970 SkyframeBuildView.handleActionConflicts
+#[allow(clippy::too_many_arguments)]
+fn handle_action_conflicts(
+    skyframe_executor: &SkyframeExecutor,
+    event_handler: Arc<dyn ExtendedEventHandler>,
+    graph: &dyn WalkableGraph,
+    ct_keys: &[ConfiguredTargetKey],
+    top_level_aspects_keys: &[TopLevelAspectsKey],
+    top_level_artifact_context_for_conflict_pruning: &[String],
+    keep_going: bool,
+    error_processing_result: &skyframe_error_processor::ErrorProcessingResult,
+) -> Result<crate::skyframe_executor::TopLevelActionConflictReport, AnalyzeAndExecuteError> {
+    // TODO(b/332898055) Unify with the noskymeld code path.
+    let handled = (|| -> Result<crate::skyframe_executor::TopLevelActionConflictReport, AnalyzeAndExecuteError> {
+        // Here we already have the <TopLevelAspectKey, error> mapping, but what we need to fit
+        // into the existing AnalysisFailureEvent is <AspectKey, error>. An extra Skyframe
+        // evaluation is required.
+        // If the conflict is intra-Aspect, the TopLevelAspectValue would be null and the
+        // AspectKey isn't retrievable. It must be supplied via the ErrorProcessingResult.
+        let mut effective_top_level_keys_for_conflict_reporting: IndexSet<ActionLookupKeyRef> =
+            IndexSet::new();
+        effective_top_level_keys_for_conflict_reporting
+            .extend(ct_keys.iter().map(|k| ActionLookupKeyRef::new(k.clone())));
+        effective_top_level_keys_for_conflict_reporting.extend(
+            get_derived_aspect_keys_for_conflict_reporting(graph, top_level_aspects_keys)
+                .into_iter()
+                .map(ActionLookupKeyRef::new),
+        );
+        effective_top_level_keys_for_conflict_reporting.extend(
+            error_processing_result
+                .aspect_keys_for_conflict_reporting()
+                .iter()
+                .cloned(),
+        );
+        let effective_top_level_keys_for_conflict_reporting: Vec<ActionLookupKeyRef> =
+            effective_top_level_keys_for_conflict_reporting
+                .into_iter()
+                .collect();
+        // In order to determine the set of configured targets transitively error free from
+        // action conflict issues, we run a post-processing update() that uses the bad action
+        // map.
+        // PORT: skipped, enableAnalysis(true/false) (incremental bookkeeping).
+        let top_level_action_conflict_report = skyframe_executor
+            .filter_action_conflicts_for_configured_targets_and_aspects(
+                event_handler.clone(),
+                &effective_top_level_keys_for_conflict_reporting,
+                error_processing_result.action_conflicts(),
+                top_level_artifact_context_for_conflict_pruning,
+            )?;
+        report_action_conflict_errors(
+            &top_level_action_conflict_report,
+            graph,
+            &effective_top_level_keys_for_conflict_reporting,
+            error_processing_result.action_conflicts(),
+            event_handler.as_ref(),
+            keep_going,
+        )?;
+        Ok(top_level_action_conflict_report)
+    })();
+    // finally
+    skyframe_executor.reset_action_conflicts_stored_in_skyframe();
+    handled
+}
+
+/// From the `top_level_action_conflict_report`, report the action conflict errors.
+///
+/// Throw a ViewCreationFailedException in case of --nokeep_going.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1022 SkyframeBuildView.reportActionConflictErrors
+fn report_action_conflict_errors(
+    top_level_action_conflict_report: &crate::skyframe_executor::TopLevelActionConflictReport,
+    graph: &dyn WalkableGraph,
+    effective_top_level_keys_for_conflict_reporting: &[ActionLookupKeyRef],
+    action_conflicts: &ActionConflicts,
+    event_handler: &dyn ExtendedEventHandler,
+    keep_going: bool,
+) -> Result<(), AnalyzeAndExecuteError> {
+    // ArtifactPrefixConflictExceptions come in pairs, and only one should be reported.
+    let mut reported_action_conflict_exceptions: HashSet<String> = HashSet::new();
+
+    // Sometimes a conflicting action can't be traced to a top level target via
+    // TopLevelActionConflictReport. We therefore need to print the errors from the conflicts
+    // themselves. See SkyframeIntegrationTest#topLevelAspectsAndExtraActionsWithConflict.
+    for (_, e) in action_conflicts.entries() {
+        if reported_action_conflict_exceptions.insert(e.get_message().to_owned()) {
+            e.report_to(event_handler);
+            if keep_going {
+                event_handler.handle(&Event::warn(format!(
+                    "errors encountered while analyzing target '{}': it will not be built",
+                    e.get_artifact()
+                        .get_owner_label()
+                        .map(|l| l.to_string())
+                        .unwrap_or_else(|| "null".to_owned())
+                )));
+            }
+        }
+    }
+    // Report an AnalysisFailureEvent to BEP for the top-level targets with discoverable action
+    // conflicts, then finally throw.
+    for action_lookup_key in effective_top_level_keys_for_conflict_reporting {
+        if top_level_action_conflict_report.is_error_free(action_lookup_key) {
+            continue;
+        }
+        let Some(conflict_exception) =
+            top_level_action_conflict_report.get_conflict_exception(action_lookup_key)
+        else {
+            continue;
+        };
+
+        let failed_cause = make_artifact_conflict_analysis_failed_cause(&conflict_exception);
+        let failed_cause_failure_detail = conflict_exception.get_failure_detail();
+        let mut target_configured = true;
+        let mut action_lookup_key = action_lookup_key.clone();
+        // Attempt to promote any ConfiguredTargetKey to the one embedded in the ConfiguredTarget
+        // to reflect any transitions or trimming.
+        if let Some(ct_key) = action_lookup_key
+            .as_any()
+            .downcast_ref::<ConfiguredTargetKey>()
+        {
+            // This is a graph lookup instead of an EvaluationResult lookup because Skymeld's
+            // EvaluationResult does not contain ConfiguredTargetKey.
+            match graph
+                .get_value(&SkyKey::new(ct_key.clone()))
+                .and_then(|v| v.downcast::<ConfiguredTargetValue>().ok())
+            {
+                None => target_configured = false,
+                // It's possible that the ConfiguredTarget has been cleared.
+                Some(value) => {
+                    action_lookup_key = value.get_configured_target().get_lookup_key().clone();
+                }
+            }
+        }
+        if !target_configured {
+            let ct_key = action_lookup_key
+                .as_any()
+                .downcast_ref::<ConfiguredTargetKey>()
+                .unwrap_or_else(|| {
+                    panic!("ClassCastException: {action_lookup_key} is not a ConfiguredTargetKey")
+                })
+                .clone();
+            event_handler.post(Arc::new(AnalysisFailureEvent::while_analyzing_target(
+                ct_key,
+                vec![failed_cause],
+            )));
+        } else {
+            event_handler.post(Arc::new(AnalysisFailureEvent::action_conflict(
+                &action_lookup_key,
+                vec![failed_cause],
+            )));
+        }
+
+        if !keep_going {
+            return Err(AnalyzeAndExecuteError::ViewCreationFailed(
+                ViewCreationFailedException::of_cause(
+                    failed_cause_failure_detail,
+                    conflict_exception.get_message(),
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The derived aspect keys of the top-level aspects keys whose analysis completed: the keys of
+/// each `TopLevelAspectsValue`'s map.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1162 SkyframeBuildView.getDerivedAspectKeysForConflictReporting
+fn get_derived_aspect_keys_for_conflict_reporting(
+    graph: &dyn WalkableGraph,
+    top_level_aspects_keys: &[TopLevelAspectsKey],
+) -> Vec<AspectKey> {
+    let mut aspect_keys_builder: IndexSet<AspectKey> = IndexSet::new();
+    for top_level_aspects_key in top_level_aspects_keys {
+        // skyframeExecutor.getDoneSkyValueForIntrospection(topLevelAspectsKey)
+        match graph
+            .get_value(&SkyKey::new(top_level_aspects_key.clone()))
+            .and_then(|v| v.downcast::<TopLevelAspectsValue>().ok())
+        {
+            Some(top_level_aspects_value) => aspect_keys_builder.extend(
+                top_level_aspects_value
+                    .get_top_level_aspects_map()
+                    .keys()
+                    .cloned(),
+            ),
+            // It could happen that the analysis of TopLevelAspectKey wasn't complete: either its
+            // own analysis failed, or another error was raise in --nokeep_going mode. In that
+            // case, it couldn't be involved in the conflict exception anyway, and we just move
+            // on.
+            None => {}
+        }
+    }
+    aspect_keys_builder.into_iter().collect()
+}
+
+/// The configured targets of the `BuildDriverKey`s with a value (also the skipped ones), and
+/// their targets with configuration.
+///
+/// PORT: the configured target is read from the graph at the key's `ActionLookupKey` (Java reads
+/// it from the `BuildDriverValue`, which wraps that value).
+// Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1183 SkyframeBuildView.getSuccessfulConfiguredTargets
+fn get_successful_configured_targets(
+    graph: &dyn WalkableGraph,
+    evaluation_result: &EvaluationResult,
+    build_driver_ct_keys: &[BuildDriverKey],
+    label_to_target_map: &IndexMap<Label, Target>,
+    targets_with_configuration: &mut Vec<TargetAndConfiguration>,
+    top_level_action_conflict_report: Option<
+        &crate::skyframe_executor::TopLevelActionConflictReport,
+    >,
+) -> Vec<ConfiguredTarget> {
+    let mut cts: Vec<ConfiguredTarget> = Vec::new();
+    for bd_ct_key in build_driver_ct_keys {
+        if let Some(report) = top_level_action_conflict_report
+            && !report.is_error_free(&bd_ct_key.action_lookup_key)
+        {
+            continue;
+        }
+        if evaluation_result.get(bd_ct_key).is_none() {
+            continue;
+        }
+        let ct_value = graph
+            .get_value(&crate::execution_seam::action_lookup_sky_key(
+                &bd_ct_key.action_lookup_key,
+            ))
+            .and_then(|v| v.downcast::<ConfiguredTargetValue>().ok())
+            .unwrap_or_else(|| {
+                panic!(
+                    "ClassCastException: the value of {} is not a ConfiguredTargetValue",
+                    bd_ct_key.action_lookup_key
+                )
+            });
+        let configured_target = ct_value.get_configured_target().clone();
+        // ImmutableSet.Builder: configured targets are deduplicated.
+        if !cts
+            .iter()
+            .any(|ct| same_configured_target(ct, &configured_target))
+        {
+            cts.push(configured_target.clone());
+        }
+
+        let configuration = crate::skyframe_executor::get_configuration_from_graph(
+            graph,
+            configured_target.get_configuration_key().as_ref(),
+        );
+        let label = bd_ct_key
+            .action_lookup_key
+            .get_label()
+            .expect("the label of a top-level ConfiguredTargetKey");
+        targets_with_configuration.push(TargetAndConfiguration::new(
+            label_to_target_map
+                .get(&label)
+                .unwrap_or_else(|| panic!("NullPointerException: target of {label}"))
+                .clone(),
+            configuration,
+        ));
+    }
+    cts
+}
+
+// Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:1222 SkyframeBuildView.getSuccessfulAspectMap
+fn get_successful_aspect_map(
+    graph: &dyn WalkableGraph,
+    evaluation_result: &EvaluationResult,
+    build_driver_aspect_keys: &[BuildDriverKey],
+    top_level_action_conflict_report: Option<
+        &crate::skyframe_executor::TopLevelActionConflictReport,
+    >,
+) -> IndexMap<AspectKey, Arc<AspectValue>> {
+    // There can't be duplicate Aspects after resolving --aspects, so this is safe.
+    let mut aspects: IndexMap<AspectKey, Arc<AspectValue>> = IndexMap::new();
+    for bd_aspect_key in build_driver_aspect_keys {
+        if let Some(report) = top_level_action_conflict_report
+            && !report.is_error_free(&bd_aspect_key.action_lookup_key)
+        {
+            continue;
+        }
+        if evaluation_result.get(bd_aspect_key).is_none() {
+            // Skip aspects that couldn't be applied to targets.
+            continue;
+        }
+        let top_level_aspects_value = graph
+            .get_value(&crate::execution_seam::action_lookup_sky_key(
+                &bd_aspect_key.action_lookup_key,
+            ))
+            .and_then(|v| v.downcast::<TopLevelAspectsValue>().ok())
+            .unwrap_or_else(|| {
+                panic!(
+                    "ClassCastException: the value of {} is not a TopLevelAspectsValue",
+                    bd_aspect_key.action_lookup_key
+                )
+            });
+        for (k, v) in top_level_aspects_value.get_top_level_aspects_map() {
+            // ImmutableMap.Builder.buildOrThrow
+            if aspects.insert(k.clone(), v.clone()).is_some() {
+                panic!("IllegalArgumentException: Multiple entries with same key: {k:?}");
+            }
+        }
+    }
+    aspects
 }
 
 #[cfg(test)]

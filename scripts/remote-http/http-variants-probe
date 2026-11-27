@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# Round-8 probes of the HTTP cache (review 2026-11-19 round 8, "unchecked by the reviewer").
+#
+# usage: scripts/remote-http/http-variants-probe <oracle|BINARY> <side-name> <unix|tls|coverage|interrupt|disk-blake3|missing-cas>
+#        scripts/remote-http/http-variants-probe help
+#
+# unix:      --remote_cache=http://localhost --remote_proxy=unix:<socket>: build, clean, build
+#            (the second build downloads); the output's sha256 and the server's request log.
+# tls:       --remote_cache=https://localhost:PORT with --tls_certificate (the JDK-cert fixtures'
+#            ca.pem; the server presents v3_issued_san, SAN localhost): build, clean, build.
+# coverage:  `coverage --remote_cache=http://...` of an sh_test (rules_shell from the pinned
+#            lockfile), twice with a clean between.
+# interrupt: a server that reads an upload's body at 64 KiB/s; the build of a 4 MiB output gets
+#            SIGINT 3 s after it starts; exit code, elapsed time and the end of the output.
+# disk-blake3: startup --digest_function=blake3, build //:small //:big with --disk_cache (no
+#            server); the disk cache's entries (relative paths, sorted) are listed. (The pinned
+#            remote worker refuses BLAKE3, so a remote cache cannot be compared.)
+# missing-cas: the BUILD of remote_execution_http_test's
+#            test_remote_http_cache_with_missing_cas_referenced_by_ac (bar, and foo tagged local),
+#            one build of //a:foo against the store; the requests show what is uploaded.
+# EXTRA_FLAGS (whitespace-separated) are added to every build; WITH_TEST_TMPDIR=1 exports
+# TEST_TMPDIR=<side>/tmp.
+# One workspace and one output user root per side:
+#   ~/.cache/blaze/work/remote-7/http-variants/<side-name>/{ws,ur,log}
+# Writes log/<mode>.out and log/<mode>.server.log, prints the lines worth comparing. Runs under
+# systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0, Blaze with
+# BLAZE_SERVER_MODE=daemon, startup --max_idle_secs=60, --jobs=4; the output base is expunged
+# and the server shut down at the end.
+set -uo pipefail
+if [[ $# -lt 3 || "$1" == "help" ]]; then
+  sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'
+  [[ "${1:-}" == "help" ]] && exit 0
+  exit 2
+fi
+CACHE="$HOME/.cache/blaze"
+SRC="$CACHE/src/bazel-9.3.2"
+if [[ "$1" == "oracle" ]]; then BIN="$CACHE/oracle/bazel-9.3.2-linux-x86_64"; else BIN="$(realpath "$1")"; fi
+SIDE="$2"; MODE="$3"
+BASE="$CACHE/work/remote-7/http-variants/$SIDE"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+REPO="$(cd "$HERE/../.." && pwd)"
+if [[ "${HTTP_VARIANTS_IN_UNIT:-}" != "1" ]]; then
+  mkdir -p "$BASE"
+  exec systemd-run --user --collect --wait --quiet --pipe -p MemoryMax=12G -p MemorySwapMax=0 \
+    --setenv=HOME="$HOME" --setenv=PATH=/usr/bin:/bin --setenv=HTTP_VARIANTS_IN_UNIT=1 \
+    --setenv=BLAZE_SERVER_MODE=daemon --setenv=EXTRA_FLAGS="${EXTRA_FLAGS:-}" \
+    --setenv=WITH_TEST_TMPDIR="${WITH_TEST_TMPDIR:-}" "$(realpath "$0")" "$@"
+fi
+WS="$BASE/ws"; UR="$BASE/ur"; LOG="$BASE/log"
+# WITH_TEST_TMPDIR=1 exports TEST_TMPDIR (as the test framework does: "some defaults will be
+# overridden").
+if [[ -n "${WITH_TEST_TMPDIR:-}" ]]; then export TEST_TMPDIR="$BASE/tmp"; mkdir -p "$TEST_TMPDIR"; fi
+rm -rf "$WS"; mkdir -p "$WS" "$UR" "$LOG"
+cd "$WS"
+LOCKFILE="$SRC/src/test/tools/bzlmod/MODULE.bazel.lock"
+version=$(sed -n "s|.*modules/rules_shell/\([^/]*\)/source\.json.*|\1|p" "$LOCKFILE" | head -1)
+cat > MODULE.bazel <<EOF
+module(name = 'test')
+bazel_dep(name = "rules_shell", version = "$version")
+EOF
+cp "$LOCKFILE" MODULE.bazel.lock
+cat > BUILD <<'B'
+load("@rules_shell//shell:sh_test.bzl", "sh_test")
+genrule(name = "small", outs = ["small.txt"], cmd = "echo hello > $@")
+genrule(name = "big", outs = ["big.bin"], cmd = "head -c 4194304 /dev/urandom > $@")
+sh_test(name = "t", srcs = ["t.sh"])
+B
+printf '#!/bin/sh\necho test-ran\n' > t.sh; chmod +x t.sh
+: > "$LOG/$MODE.server.log"
+FIX="$REPO/crates/blaze_remote/tests/data/jdk_cert_fixtures"
+server_args=()
+case "$MODE" in
+  unix) sock="$BASE/cache.sock"; addr="unix:$sock"; cache=http://localhost; extra=(--remote_proxy="unix:$sock"); smode=store ;;
+  tls)
+    port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1])')
+    python3 -c "import ssl,sys; open(sys.argv[2],'w').write(ssl.DER_cert_to_PEM_cert(open(sys.argv[1],'rb').read()))" \
+      "$FIX/v3_issued_san.der" "$BASE/server.pem"
+    addr=$port; cache=https://localhost:$port; extra=(--tls_certificate="$FIX/ca.pem"); smode=store
+    server_args=("$BASE/server.pem" "$FIX/keys/ee.key") ;;
+  disk-blake3) addr=""; cache=""; extra=(); smode=none ;;
+  coverage|interrupt|missing-cas)
+    port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1])')
+    addr=$port; cache=http://127.0.0.1:$port; extra=()
+    smode=store; [[ "$MODE" == interrupt ]] && smode=slow ;;
+esac
+SERVER=
+if [[ "$smode" != none ]]; then
+  python3 "$HERE/early-answer-server.py" "$addr" "$smode" "$LOG/$MODE.server.log" "${server_args[@]}" &
+  SERVER=$!
+fi
+sleep 1
+if [[ -n "${WITH_TEST_TMPDIR:-}" ]]; then mkdir -p "$BASE/home"; export HOME="$BASE/home"; fi
+bazel() { "$BIN" --output_user_root="$UR" --max_idle_secs=60 "$@"; }
+common=(--jobs=4 --remote_cache="$cache" --remote_timeout=10 "${extra[@]}" ${EXTRA_FLAGS:-})
+out="$LOG/$MODE.out"; : > "$out"
+case "$MODE" in
+  unix|tls)
+    bazel build "${common[@]}" //:small >> "$out" 2>&1; echo "first exit $?" >> "$out"
+    bazel clean >> "$out" 2>&1
+    bazel build "${common[@]}" --remote_download_all //:small >> "$out" 2>&1; echo "second exit $?" >> "$out"
+    echo "output $(cat bazel-bin/small.txt 2>/dev/null)" >> "$out" ;;
+  coverage)
+    bazel coverage "${common[@]}" //:t >> "$out" 2>&1; echo "first exit $?" >> "$out"
+    bazel clean >> "$out" 2>&1
+    bazel coverage "${common[@]}" //:t >> "$out" 2>&1; echo "second exit $?" >> "$out" ;;
+  missing-cas)
+    # As the test's workspace: an empty MODULE.bazel (the pinned lockfile stays).
+    : > MODULE.bazel
+    rm -f BUILD t.sh
+    mkdir -p a
+    cat > a/BUILD <<'A'
+genrule(
+  name = 'bar',
+  outs = ["bar.txt"],
+  cmd = "echo \"bar\" > $@",
+)
+genrule(
+  name = 'foo',
+  srcs = [":bar"],
+  outs = ["foo.txt"],
+  cmd = "echo \"foo\" > $@",
+  tags = ["local"],
+)
+A
+    bazel build "${common[@]}" //a:foo >> "$out" 2>&1; echo "exit $?" >> "$out"
+    sed 's/^/request /' "$LOG/$MODE.server.log" >> "$out" ;;
+  disk-blake3)
+    rm -rf "$BASE/dc"
+    bazel() { "$BIN" --output_user_root="$UR" --max_idle_secs=60 --digest_function=blake3 "$@"; }
+    bazel build --jobs=4 --disk_cache="$BASE/dc" //:small >> "$out" 2>&1; echo "exit $?" >> "$out"
+    (cd "$BASE/dc" && find . -type f | grep -v '/tmp/' | sort) | sed 's/^/entry /' >> "$out"
+    rm -rf "$BASE/dc" ;;
+  interrupt)
+    start=$(date +%s.%N)
+    bazel build "${common[@]}" //:big >> "$out" 2>&1 &
+    client=$!
+    sleep 3
+    kill -INT "$client"
+    wait "$client"; code=$?
+    end=$(date +%s.%N)
+    echo "exit $code after $(python3 -c "print(round($end - $start, 1))") s" >> "$out" ;;
+esac
+bazel clean --expunge > /dev/null 2>&1
+bazel shutdown > /dev/null 2>&1
+[[ -n "$SERVER" ]] && { kill "$SERVER" 2>/dev/null; wait "$SERVER" 2>/dev/null; }
+grep -E "WARNING|ERROR|FATAL|exit|^output|^entry|^request|From |processes|PASSED|FAILED|interrupt" "$out" | grep -v "auth_enabled"

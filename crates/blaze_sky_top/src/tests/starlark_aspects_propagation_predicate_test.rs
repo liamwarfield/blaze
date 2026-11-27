@@ -111,6 +111,8 @@ fn view_error_kind(e: &BuildViewError) -> &'static str {
         BuildViewError::ViewCreationFailed { .. } => "ViewCreationFailedException",
         BuildViewError::InvalidConfiguration(_) => "InvalidConfigurationException",
         BuildViewError::Interrupted => "InterruptedException",
+        BuildViewError::Execution(_) => "BuildFailedException",
+        BuildViewError::BuildTool(_) => "AbruptExitException",
     }
 }
 

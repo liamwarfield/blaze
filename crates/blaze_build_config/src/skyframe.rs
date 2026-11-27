@@ -72,7 +72,11 @@ impl fmt::Debug for BaselineOptionsKey {
             f,
             "BaselineOptionsValue.Key{{afterExecTransition={}, newPlatform={}}}",
             self.after_exec_transition,
-            Label::print(self.new_platform.as_ref())
+            // String concatenation: `null` for no platform (checked against the oracle's
+            // `dump --skyframe=deps`).
+            self.new_platform
+                .as_ref()
+                .map_or_else(|| "null".to_owned(), |l| l.to_string())
         )
     }
 }
@@ -415,11 +419,24 @@ fn compute_platform_mapping(
         }) {
             Ok(bytes) => bytes,
             // Java: catch (IOException e) { throw new PlatformMappingFunctionException(e); }
-            // (Transience.TRANSIENT). The message is the toString() of the Java IOException,
-            // which has no counterpart here.
+            // (Transience.TRANSIENT). The message is the toString() of the Java IOException:
+            // the native file system's FileAccessException for EACCES (recorded from the
+            // oracle: "com.google.devtools.build.lib.vfs.FileAccessException: <path> (Permission
+            // denied)").
+            // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:357 PlatformMappingFunction.PlatformMappingFunctionException.<init>
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                return Err(SkyFunctionException::new(
+                    ConfigurationError::PlatformMapping(format!(
+                        "com.google.devtools.build.lib.vfs.FileAccessException: {path} (Permission denied)"
+                    )),
+                    Transience::Transient,
+                )
+                .into());
+            }
             Err(e) => blaze_util::unported!(
                 "PlatformMappingFunction.PlatformMappingFunctionException.<init>",
-                "IOException reading the platform mappings file {}: {}",
+                "IOException ({:?}) reading the platform mappings file {}: {}",
+                e.kind(),
                 path,
                 e
             ),

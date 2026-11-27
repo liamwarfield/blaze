@@ -2,15 +2,33 @@
 """Checks that a persistent Blaze server reuses its graph for a no-op rebuild.
 
 usage: scripts/incremental/reuse-check help
-       scripts/incremental/reuse-check run [--blaze B] [--disk-cache] [--keep]
+       scripts/incremental/reuse-check run [--blaze B] [--scenario basic|cc-test|all]
+                                           [--disk-cache] [--keep]
 
-Writes a small workspace (a genrule that runs in the sandbox, a filegroup) under
-~/.cache/blaze/work/i3/reuse/ws and runs `build //...` three times on one daemon server
-(BLAZE_SERVER_MODE=daemon, BLAZE_INCREMENTAL_DEBUG=1, --max_idle_secs=60, --jobs=4). The second
-and third builds must print what Bazel prints for a no-op rebuild on a warm server:
-"INFO: Analyzed 2 targets (0 packages loaded, 0 targets configured)." and
-"INFO: 1 process: 1 internal.", and the server's debug output must contain no line saying the
-kept graph was discarded or not kept. Exit 1 otherwise (the failing lines are printed).
+Runs each scenario (default: all) on one daemon server per scenario (BLAZE_SERVER_MODE=daemon,
+BLAZE_INCREMENTAL_DEBUG=1, --max_idle_secs=60, --jobs=4), in a workspace under
+~/.cache/blaze/work/i3/reuse/<scenario>/. Every command after the first must print what Bazel
+prints for a no-op command on a warm server (expectations taken from the oracle), and the
+server's debug output must contain no line saying the kept graph was discarded, not kept or
+still referenced (a debug build of Blaze also panics after a command whose kept graph has a
+second holder: the command then fails). Exit 1 if anything fails (the failing lines are
+printed), 0 otherwise.
+
+Scenarios:
+  basic    a genrule that runs in the sandbox and a filegroup; `build //...` three times:
+           "INFO: Analyzed 2 targets (0 packages loaded, 0 targets configured)." and
+           "INFO: 1 process: 1 internal." on the second and third.
+  cc-test  a cc_binary (rules_cc 0.2.17, compile and link actions with discovered headers), a
+           genrule that runs it, and a Starlark test rule whose runfiles hold both;
+           `build //...`, `test //...`, `build //...`, `test //...`: every command after the
+           first analyzes nothing new ("Analyzed 4 targets (0 packages loaded, 0 targets
+           configured)"); the first test runs the test ("2 processes: 1 internal, 2
+           linux-sandbox"), the build after it runs nothing ("1 process: 1 internal."), the
+           second test is "(cached) PASSED" ("1 process: 1 action cache hit, 1 internal.").
+           Module resolution reads the registry hashes of brotli's lockfile (no network).
+
+A rewound action without a remote cache is not covered: rewinding needs lost inputs, which only
+remote or build-without-the-bytes outputs give (scripts/incremental/seq-probe has those).
 
 With --disk-cache every build also gets --disk_cache=<dir> and the server runs with
 BLAZE_INCREMENTAL_REMOTE_FAILSAFE=off (the kept graph is used with a cache), which checks the
@@ -30,58 +48,109 @@ import sys
 HOME = os.path.expanduser("~")
 ROOT = os.path.join(HOME, ".cache/blaze/work/i3/reuse")
 REPO_CACHE = os.path.join(HOME, ".cache/blaze/repo-cache")
+BROTLI_LOCK = os.path.join(HOME, ".cache/blaze/corpus/brotli/MODULE.bazel.lock")
+
+TEST_RULE = """def _t_impl(ctx):
+    out = ctx.actions.declare_file(ctx.label.name + ".sh")
+    ctx.actions.write(out, "#!/bin/sh\\ntest -e %s\\n" % ctx.file.data.short_path,
+                      is_executable = True)
+    return [DefaultInfo(executable = out, runfiles = ctx.runfiles(files = [ctx.file.data]))]
+
+t_test = rule(_t_impl, test = True, attrs = {"data": attr.label(allow_single_file = True)})
+"""
+
+# name: (files, [(command, args, lines its output must contain)]); expectations from the oracle.
+SCENARIOS = {
+    "basic": (
+        {
+            "MODULE.bazel": "",
+            "pkg/BUILD": 'genrule(name = "g", srcs = ["in.txt"], outs = ["out.txt"], cmd = "cp $< $@")\n'
+                         'filegroup(name = "fg", srcs = [":g"])\n',
+            "pkg/in.txt": "x\n",
+        },
+        [("build", ["//..."], [])] + [
+            ("build", ["//..."], ["INFO: Analyzed 2 targets (0 packages loaded, 0 targets configured).",
+                                  "INFO: 1 process: 1 internal."])] * 2,
+    ),
+    "cc-test": (
+        {
+            "MODULE.bazel": 'bazel_dep(name = "rules_cc", version = "0.2.17")\n'
+                            'bazel_dep(name = "platforms", version = "1.0.0")\n',
+            "pkg/BUILD": 'load("@rules_cc//cc:defs.bzl", "cc_binary", "cc_library")\n'
+                         'load(":t.bzl", "t_test")\n'
+                         'cc_library(name = "lib", srcs = ["lib.cc"], hdrs = ["lib.h"])\n'
+                         'cc_binary(name = "bin", srcs = ["main.cc"], deps = [":lib"])\n'
+                         'genrule(name = "run", outs = ["run.out"], tools = [":bin"], '
+                         'cmd = "$(location :bin) > $@")\n'
+                         't_test(name = "t", data = ":run")\n',
+            "pkg/t.bzl": TEST_RULE,
+            "pkg/lib.h": "int lib();\n",
+            "pkg/lib.cc": '#include "pkg/lib.h"\nint lib() { return 42; }\n',
+            "pkg/main.cc": '#include <cstdio>\n#include "pkg/lib.h"\n'
+                           'int main() { std::printf("%d\\n", lib()); return 0; }\n',
+        },
+        [("build", ["//..."], []),
+         ("test", ["//..."], ["INFO: Analyzed 4 targets (0 packages loaded, 0 targets configured).",
+                              "INFO: 2 processes: 1 internal, 2 linux-sandbox."]),
+         ("build", ["//..."], ["INFO: Analyzed 4 targets (0 packages loaded, 0 targets configured).",
+                               "INFO: 1 process: 1 internal."]),
+         ("test", ["//..."], ["INFO: Analyzed 4 targets (0 packages loaded, 0 targets configured).",
+                              "INFO: 1 process: 1 action cache hit, 1 internal.",
+                              "(cached) PASSED"])],
+    ),
+}
 
 
-def main():
-    if len(sys.argv) < 2 or sys.argv[1] in ("help", "-h", "--help"):
-        print(__doc__)
-        return 0
-    if sys.argv[1] != "run":
-        print(__doc__)
-        return 2
-    args = sys.argv[2:]
-    blaze = os.path.join(HOME, ".cache/blaze/work/i3/bin/blaze")
-    keep = "--keep" in args
-    if "--blaze" in args:
-        blaze = args[args.index("--blaze") + 1]
-    if os.path.isdir(ROOT):
-        subprocess.run(["chmod", "-R", "u+w", ROOT], capture_output=True)
-        shutil.rmtree(ROOT)
-    ws = os.path.join(ROOT, "ws")
-    out_root = os.path.join(ROOT, "ur")
-    os.makedirs(os.path.join(ws, "pkg"))
-    open(os.path.join(ws, "MODULE.bazel"), "w").close()
-    with open(os.path.join(ws, "pkg", "BUILD"), "w") as f:
-        f.write('genrule(name = "g", srcs = ["in.txt"], outs = ["out.txt"], cmd = "cp $< $@")\n'
-                'filegroup(name = "fg", srcs = [":g"])\n')
-    with open(os.path.join(ws, "pkg", "in.txt"), "w") as f:
-        f.write("x\n")
+def write(path, text):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(text)
+
+
+def remove(path):
+    if os.path.isdir(path):
+        subprocess.run(["chmod", "-R", "u+w", path], capture_output=True)
+        shutil.rmtree(path)
+
+
+def run_scenario(name, blaze, disk_cache):
+    files, commands = SCENARIOS[name]
+    root = os.path.join(ROOT, name)
+    remove(root)
+    ws = os.path.join(root, "ws")
+    out_root = os.path.join(root, "ur")
+    for rel, text in files.items():
+        write(os.path.join(ws, rel), text)
+    if name == "cc-test" and os.path.exists(BROTLI_LOCK):
+        shutil.copyfile(BROTLI_LOCK, os.path.join(ws, "MODULE.bazel.lock"))
     env = {"HOME": HOME, "PATH": "/usr/bin:/bin", "BLAZE_SERVER_MODE": "daemon",
            "BLAZE_INCREMENTAL_DEBUG": "1"}
     extra = []
-    if "--disk-cache" in args:
+    if disk_cache:
         env["BLAZE_INCREMENTAL_REMOTE_FAILSAFE"] = "off"
-        extra = ["--disk_cache=" + os.path.join(ROOT, "disk-cache")]
+        extra = ["--disk_cache=" + os.path.join(root, "disk-cache")]
     startup = [blaze, "--output_user_root=" + out_root, "--max_idle_secs=60", "--nohome_rc",
                "--nosystem_rc"]
     failures = []
     try:
-        for i in range(3):
-            p = subprocess.run(startup + ["build", "--jobs=4", "--color=no", "--curses=no",
-                                          "--repository_cache=" + REPO_CACHE] + extra
-                               + ["//..."],
+        for i, (command, args, expected) in enumerate(commands):
+            p = subprocess.run(startup + [command, "--jobs=4", "--color=no", "--curses=no",
+                                          "--repository_cache=" + REPO_CACHE] + extra + args,
                                cwd=ws, env=env, capture_output=True, timeout=900)
             err = p.stderr.decode("utf-8", "replace")
+            out = p.stdout.decode("utf-8", "replace")
             lines = [l for l in err.splitlines() if l.startswith("INFO: Analyzed")
                      or l.startswith("INFO:") and "process" in l]
-            print("build %d: exit %d: %s" % (i + 1, p.returncode, " | ".join(lines)))
+            print("%s %d %s: exit %d: %s" % (name, i + 1, command, p.returncode, " | ".join(lines)))
             if p.returncode != 0:
-                failures.append("build %d exited %d" % (i + 1, p.returncode))
-            if i > 0:
-                if "INFO: Analyzed 2 targets (0 packages loaded, 0 targets configured)." not in err:
-                    failures.append("build %d analyzed again" % (i + 1))
-                if "INFO: 1 process: 1 internal." not in err:
-                    failures.append("build %d executed again" % (i + 1))
+                failures.append("%s command %d (%s) exited %d: %s" % (
+                    name, i + 1, command, p.returncode,
+                    " / ".join(l for l in err.splitlines()
+                               if l.startswith(("ERROR", "FATAL")) or "panicked" in l)[:2000]))
+            for e in expected:
+                if e not in err and e not in out:
+                    failures.append("%s command %d (%s): no line with %r" % (
+                        name, i + 1, command, e))
     finally:
         subprocess.run(startup + ["shutdown"], cwd=ws, env=env, capture_output=True,
                        timeout=120)
@@ -96,12 +165,37 @@ def main():
         if os.path.exists(jvm_out):
             for line in open(jvm_out, errors="replace"):
                 if "discarded" in line or "not kept" in line or "still referenced" in line:
-                    failures.append("server: " + line.strip())
+                    failures.append("%s server: %s" % (name, line.strip()))
+    return failures
+
+
+def main():
+    if len(sys.argv) < 2 or sys.argv[1] in ("help", "-h", "--help"):
+        print(__doc__)
+        return 0
+    if sys.argv[1] != "run":
+        print(__doc__)
+        return 2
+    args = sys.argv[2:]
+    blaze = os.path.join(HOME, ".cache/blaze/work/i3/bin/blaze")
+    if "--blaze" in args:
+        blaze = args[args.index("--blaze") + 1]
+    scenario = args[args.index("--scenario") + 1] if "--scenario" in args else "all"
+    if scenario != "all" and scenario not in SCENARIOS:
+        print("unknown scenario %r" % scenario)
+        return 2
+    names = list(SCENARIOS) if scenario == "all" else [scenario]
+    failures = []
+    for name in names:
+        try:
+            failures += run_scenario(name, blaze, "--disk-cache" in args)
+        except Exception as e:  # a tool failure is a failure, never a pass
+            failures.append("%s: %s: %s" % (name, type(e).__name__, e))
     for f in failures:
         print("FAIL " + f)
-    if not keep and os.path.isdir(ROOT):
-        subprocess.run(["chmod", "-R", "u+w", ROOT], capture_output=True)
-        shutil.rmtree(ROOT)
+    if "--keep" not in args:
+        for name in names:
+            remove(os.path.join(ROOT, name))
     print("reuse-check: %s" % ("FAILED" if failures else "ok"))
     return 1 if failures else 0
 

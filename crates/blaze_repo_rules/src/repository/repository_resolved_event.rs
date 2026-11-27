@@ -3,22 +3,27 @@
 //!
 //! Java: com/google/devtools/build/lib/bazel/repository/RepositoryResolvedEvent.java.
 
-use blaze_bzlmod_model::AttributeValue;
 use indexmap::IndexMap;
 use starlark::environment::Module;
 
 use super::repo_definition::RepoDefinition;
 use crate::attr_values::attr_value_to_attribute_value;
 use crate::attr_values::attribute_value_to_starlark;
+use crate::starlark::repo_metadata::ReproducibilityValue;
 
-/// Java `Starlark.repr(value)` of a stored attribute value.
-fn starlark_repr(value: &AttributeValue) -> String {
-    Module::with_temp_heap(|module| attribute_value_to_starlark(value, module.heap()).to_repr())
+/// Java `Starlark.repr(value)` of a stored value.
+fn starlark_repr(value: &ReproducibilityValue) -> String {
+    match value {
+        ReproducibilityValue::Attribute(value) => Module::with_temp_heap(|module| {
+            attribute_value_to_starlark(value, module.heap()).to_repr()
+        }),
+        ReproducibilityValue::Other(repr) => repr.clone(),
+    }
 }
 
 /// The outcome of comparing one attribute (Java's `Optional<Object>` map values): `None` means
 /// dropped, `Some(v)` modified to the non-default value `v`.
-type Modification = Option<AttributeValue>;
+type Modification = Option<ReproducibilityValue>;
 
 /// Event indicating that a repository rule was executed, together with the return value of the
 /// rule.
@@ -37,7 +42,7 @@ impl RepositoryResolvedEvent {
     // Java: com/google/devtools/build/lib/bazel/repository/RepositoryResolvedEvent.java:33 RepositoryResolvedEvent.<init>
     pub fn new(
         repo_definition: &RepoDefinition,
-        result: &IndexMap<String, AttributeValue>,
+        result: &IndexMap<String, ReproducibilityValue>,
     ) -> Self {
         if result.is_empty() {
             // Repo claims to be already reproducible, so wants to be called as is.
@@ -63,11 +68,12 @@ impl RepositoryResolvedEvent {
             let repo_rule = &repo_definition.repo_rule;
             let attribute = &repo_rule.attributes[repo_rule.attribute_indices[&name]];
             // Label attributes report a default of null rather than None.
-            let default_value =
-                attr_value_to_attribute_value(attribute.get_default_value_unchecked());
+            let default_value = ReproducibilityValue::Attribute(attr_value_to_attribute_value(
+                attribute.get_default_value_unchecked(),
+            ));
             // Java: repoDefinition.getValue(name) for a declared attribute.
             let current_value = match repo_definition.attr_values.get(&name) {
-                Some(v) => v.clone(),
+                Some(v) => ReproducibilityValue::Attribute(v.clone()),
                 None => default_value.clone(),
             };
             let new_value = result.get(&name).unwrap_or(&default_value);
@@ -88,7 +94,7 @@ impl RepositoryResolvedEvent {
                 message: format!("Repo '{}' finished fetching.", repo_definition.name),
             };
         }
-        let modified_to_non_default: Vec<(String, AttributeValue)> = modified_attributes
+        let modified_to_non_default: Vec<(String, ReproducibilityValue)> = modified_attributes
             .iter()
             .filter_map(|(k, v)| v.as_ref().map(|v| (k.clone(), v.clone())))
             .collect();
@@ -159,7 +165,7 @@ impl RepositoryResolvedEvent {
     }
 
     // Java: com/google/devtools/build/lib/bazel/repository/RepositoryResolvedEvent.java:136 RepositoryResolvedEvent.representModifications
-    pub(crate) fn represent_modifications(changes: &[(String, AttributeValue)]) -> String {
+    pub(crate) fn represent_modifications(changes: &[(String, ReproducibilityValue)]) -> String {
         changes
             .iter()
             .map(|(k, v)| format!("{} = {}", k, starlark_repr(v)))

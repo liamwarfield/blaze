@@ -45,7 +45,7 @@ pub enum KnownFileHashesMode {
 // Java: com/google/devtools/build/lib/bazel/bzlmod/IndexRegistry.java:263 IndexRegistry.BazelRegistryJson
 #[derive(Debug, Clone, Default)]
 struct BazelRegistryJson {
-    mirrors: Option<Vec<String>>,
+    mirrors: Option<Vec<Option<String>>>,
     module_base_path: Option<String>,
 }
 
@@ -146,22 +146,22 @@ fn json_bool(url: &str, obj: &JsonValue, field: &str) -> Result<bool, RegistryEx
     }
 }
 
+/// A `Map<String, String>` field. Gson keeps a JSON `null` value as a Java `null` (`None`); the
+/// consumer fails where Java's does (`null_value_in_entry`).
 fn json_string_map(
     url: &str,
     obj: &JsonValue,
     field: &str,
-) -> Result<Option<IndexMap<String, String>>, RegistryException> {
+) -> Result<Option<IndexMap<String, Option<String>>>, RegistryException> {
     match json_field(obj, field) {
         None => Ok(None),
         Some(JsonValue::Object(members)) => {
             let mut m = IndexMap::new();
             for (k, v) in members {
                 let s = match v {
-                    JsonValue::String(s) | JsonValue::Number(s) => s.clone(),
-                    JsonValue::Bool(b) => b.to_string(),
-                    JsonValue::Null => {
-                        blaze_util::unported!("IndexRegistry.parseJson", "null map value in {url}")
-                    }
+                    JsonValue::String(s) | JsonValue::Number(s) => Some(s.clone()),
+                    JsonValue::Bool(b) => Some(b.to_string()),
+                    JsonValue::Null => None,
                     other => return Err(type_error(url, "a string", other, field)),
                 };
                 m.insert(k.clone(), s);
@@ -172,22 +172,22 @@ fn json_string_map(
     }
 }
 
+/// A `String[]` or `List<String>` field. Gson keeps a JSON `null` item as a Java `null` (`None`);
+/// the consumer fails where Java's does.
 fn json_string_list(
     url: &str,
     obj: &JsonValue,
     field: &str,
-) -> Result<Option<Vec<String>>, RegistryException> {
+) -> Result<Option<Vec<Option<String>>>, RegistryException> {
     match json_field(obj, field) {
         None => Ok(None),
         Some(JsonValue::Array(items)) => {
             let mut out = Vec::new();
             for v in items {
                 match v {
-                    JsonValue::String(s) | JsonValue::Number(s) => out.push(s.clone()),
-                    JsonValue::Bool(b) => out.push(b.to_string()),
-                    JsonValue::Null => {
-                        blaze_util::unported!("IndexRegistry.parseJson", "null list item in {url}")
-                    }
+                    JsonValue::String(s) | JsonValue::Number(s) => out.push(Some(s.clone())),
+                    JsonValue::Bool(b) => out.push(Some(b.to_string())),
+                    JsonValue::Null => out.push(None),
                     other => return Err(type_error(url, "a string", other, field)),
                 }
             }
@@ -495,25 +495,25 @@ impl IndexRegistry {
     fn remote_patches(
         &self,
         key: &ModuleKey,
-        patches: Option<IndexMap<String, String>>,
+        patches: Option<IndexMap<String, Option<String>>>,
     ) -> IndexMap<String, String> {
         let mut remote_patches = IndexMap::new();
         if let Some(patches) = patches {
             for (name, integrity) in patches {
-                // ImmutableMap.Builder.buildKeepingLast
-                remote_patches.insert(
-                    construct_url(
-                        &self.get_url(),
-                        &[
-                            "modules",
-                            key.name(),
-                            &key.version().to_string(),
-                            "patches",
-                            &name,
-                        ],
-                    ),
-                    integrity,
+                let url = construct_url(
+                    &self.get_url(),
+                    &[
+                        "modules",
+                        key.name(),
+                        &key.version().to_string(),
+                        "patches",
+                        &name,
+                    ],
                 );
+                // ImmutableMap.Builder.put: a null value fails at once.
+                let integrity = integrity.unwrap_or_else(|| null_value_in_entry(&url));
+                // ImmutableMap.Builder.buildKeepingLast
+                remote_patches.insert(url, integrity);
             }
         }
         remote_patches
@@ -559,7 +559,12 @@ impl IndexRegistry {
         let mut all_mirrors: IndexSet<String> =
             self.module_mirrors.iter().map(|u| u.to_string()).collect();
         if let Some(mirrors) = bazel_registry_json.and_then(|j| j.mirrors) {
-            all_mirrors.extend(mirrors);
+            // Stream.concat(...).collect(toImmutableSet()): ImmutableSet.Builder.add(null).
+            all_mirrors.extend(
+                mirrors
+                    .into_iter()
+                    .map(|m| m.unwrap_or_else(|| panic!("NullPointerException"))),
+            );
         }
         let mut urls = Vec::new();
         // For each mirror, add a URL that's the mirror URL concatenated with the source URL.
@@ -582,12 +587,23 @@ impl IndexRegistry {
         urls.push(source_url.to_string());
         // Add mirror_urls from source.json as backups after the primary url.
         if let Some(m) = mirror_urls {
-            urls.extend(m);
+            // ImmutableList.Builder.addAll: Guava's checkElementNotNull ("at index i").
+            for (i, url) in m.into_iter().enumerate() {
+                urls.push(url.unwrap_or_else(|| panic!("NullPointerException: at index {i}")));
+            }
         }
 
         let remote_patches = self.remote_patches(key, patches);
-        let overlay: IndexMap<String, RemoteFile> = overlay
+        // ImmutableMap.copyOf(sourceJson.overlay): a null value fails before any entry is used.
+        let overlay: IndexMap<String, String> = overlay
             .unwrap_or_default()
+            .into_iter()
+            .map(|(name, integrity)| {
+                let integrity = integrity.unwrap_or_else(|| null_value_in_entry(&name));
+                (name, integrity)
+            })
+            .collect();
+        let overlay: IndexMap<String, RemoteFile> = overlay
             .into_iter()
             .map(|(name, integrity)| {
                 let remote_url = construct_url(
@@ -760,6 +776,8 @@ impl Registry for IndexRegistry {
                         e.get_message()
                     ))
                 })?;
+                // ImmutableMap.Builder.put: a null value fails at once.
+                let info = info.unwrap_or_else(|| null_value_in_entry(&v.to_string()));
                 // ImmutableMap.Builder.buildOrThrow: distinct strings may normalize equally.
                 if yanked_versions.insert(v.clone(), info).is_some() {
                     panic!("IllegalArgumentException: Multiple entries with same key: {v}");
@@ -932,4 +950,12 @@ mod tests {
         assert!(!java_is_blank("\u{a0}"));
         assert!(java_is_blank(""));
     }
+}
+
+/// Guava's `CollectPreconditions.checkEntryNotNull` for a JSON `null` value Gson kept as a Java
+/// `null`: Java crashes with this `NullPointerException` (checked against the oracle with
+/// `yanked_versions`: "null value in entry: 1.0=null").
+// Java: com/google/common/collect/CollectPreconditions.java:32 CollectPreconditions.checkEntryNotNull
+fn null_value_in_entry(key: &str) -> ! {
+    panic!("NullPointerException: null value in entry: {key}=null")
 }

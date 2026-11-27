@@ -20,6 +20,7 @@ pub mod path_fragment;
 pub mod root;
 pub mod rooted_path;
 pub mod symlinks;
+pub mod testing;
 pub mod unix_file_system;
 
 pub use detailed_io_exception::DetailedIOException;

@@ -265,6 +265,8 @@ pub struct Evaluator {
     waits: Mutex<WaitGraph>,
     client: Arc<dyn Any + Send + Sync>,
     computed: AtomicU64,
+    /// The keys computed while [`Evaluator::start_recording_computed_keys`] is on.
+    recorded_computed_keys: Mutex<Option<Vec<SkyKey>>>,
     evaluating: AtomicBool,
     interrupted: Arc<AtomicBool>,
     /// Java: `AbstractQueueVisitor.jobs`: the threads running a function, with the number of
@@ -415,6 +417,7 @@ impl EvaluatorBuilder {
             waits: Mutex::new(WaitGraph::default()),
             client: self.client,
             computed: AtomicU64::new(0),
+            recorded_computed_keys: Mutex::new(None),
             evaluating: AtomicBool::new(false),
             interrupted: Arc::new(AtomicBool::new(false)),
             jobs: Mutex::new(HashMap::new()),
@@ -495,6 +498,7 @@ impl EvaluatorBuilder {
             waits: Mutex::new(WaitGraph::default()),
             client: self.client,
             computed: AtomicU64::new(0),
+            recorded_computed_keys: Mutex::new(None),
             evaluating: AtomicBool::new(false),
             interrupted: Arc::new(AtomicBool::new(false)),
             jobs: Mutex::new(HashMap::new()),
@@ -539,6 +543,41 @@ impl Evaluator {
     /// per-function statistics are Java's.
     pub fn remove_evaluation_stats_of(&self, function: crate::SkyFunctionName) {
         self.evaluation_stats.remove_function(function);
+    }
+
+    /// Starts recording the keys of the functions computed from now on (each `compute` call),
+    /// replacing an earlier recording.
+    ///
+    /// PORT: not a Bazel method, like [`Evaluator::remove_evaluation_stats_of`]: cquery's
+    /// CQUERY_TRANSITION_RESOLVER removes what its evaluation computed that Java computes outside
+    /// Skyframe.
+    pub fn start_recording_computed_keys(&self) {
+        *self.recorded_computed_keys.lock() = Some(Vec::new());
+    }
+
+    /// Stops recording and returns the keys computed since
+    /// [`Evaluator::start_recording_computed_keys`], in order, a key once per `compute` call.
+    pub fn take_recorded_computed_keys(&self) -> Vec<SkyKey> {
+        self.recorded_computed_keys
+            .lock()
+            .take()
+            .unwrap_or_default()
+    }
+
+    /// A copy of the evaluation statistics gathered since the last
+    /// [`Evaluator::post_logging_stats`], for [`Evaluator::restore_evaluation_stats`].
+    ///
+    /// PORT: not a Bazel method (see [`Evaluator::start_recording_computed_keys`]).
+    pub fn evaluation_stats_snapshot(&self) -> crate::evaluation_stats::EvaluationStatsSnapshot {
+        self.evaluation_stats.snapshot()
+    }
+
+    /// Puts back the evaluation statistics of `snapshot`, forgetting what was counted since.
+    pub fn restore_evaluation_stats(
+        &self,
+        snapshot: crate::evaluation_stats::EvaluationStatsSnapshot,
+    ) {
+        self.evaluation_stats.restore(snapshot);
     }
 
     pub fn computed_count(&self) -> u64 {
@@ -1898,6 +1937,9 @@ impl<'e> Run<'e> {
             }
         };
         self.ev.computed.fetch_add(1, Ordering::Relaxed);
+        if let Some(recorded) = &mut *self.ev.recorded_computed_keys.lock() {
+            recorded.push(key.clone());
+        }
         let r = {
             // Java: com/google/devtools/build/skyframe/AbstractParallelEvaluator.java:466 Evaluate.run
             let _s = Profiler::instance().profile(ProfilerTask::SKYFUNCTION, key.function_name().0);

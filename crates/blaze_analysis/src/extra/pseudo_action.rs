@@ -136,6 +136,10 @@ pub fn name_uuid_from_bytes(name: &[u8]) -> (i64, i64) {
 }
 
 impl Action for PseudoAction {
+    fn java_class_name(&self) -> Option<&'static str> {
+        Some("com.google.devtools.build.lib.analysis.PseudoAction")
+    }
+
     fn abstract_action(&self) -> &AbstractAction {
         &self.base
     }

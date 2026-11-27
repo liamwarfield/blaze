@@ -201,8 +201,18 @@ unsafe impl<'v> Coerce<StarlarkInfoGen<Value<'v>>> for StarlarkInfoGen<FrozenVal
 impl<'v> StarlarkInfo<'v> {
     /// Java: StarlarkInfoNoSchema(provider, values) — fields sorted by name. Later duplicates
     /// replace earlier ones (callers pass maps).
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoNoSchema.java:58 StarlarkInfoNoSchema.StarlarkInfoNoSchema
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoNoSchema.java:78 StarlarkInfoNoSchema.createSchemaless
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoWithSchema.java:50 StarlarkInfoWithSchema.StarlarkInfoWithSchema
+    // PORT: a schemaful instance keeps its set fields sorted by name like a schemaless one: the
+    // schema is sorted (StarlarkProvider.java:238 `sortedCopyOf`), so its table order is this order.
+    // PORT: skipped, the table indexed by the schema is not kept: StarlarkInfoWithSchema.getTable
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoNoSchema.java:87 StarlarkInfoNoSchema.toTable
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoNoSchema.java:154 StarlarkInfoNoSchema.sortPairs
+    // PORT: skipped, a sort of the Rust pairs takes the place of the in-place quicksort: StarlarkInfoNoSchema.swap
     pub fn new(provider: Value<'v>, mut fields: Vec<(String, Value<'v>)>) -> Self {
-        fields.sort_by(|a, b| a.0.cmp(&b.0));
+        // Java sorts by `String.compareTo` (UTF-16 code units).
+        fields.sort_by(|a, b| java_string_compare(&a.0, &b.0));
         fields.dedup_by(|later, earlier| {
             if later.0 == earlier.0 {
                 earlier.1 = later.1;
@@ -235,19 +245,25 @@ impl<'v> StarlarkInfo<'v> {
 }
 
 impl<'v, V: ValueLike<'v>> StarlarkInfoGen<V> {
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoNoSchema.java:64 StarlarkInfoNoSchema.getProvider
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoWithSchema.java:57 StarlarkInfoWithSchema.getProvider
     pub fn provider(&self) -> Value<'v> {
         self.provider.to_value()
     }
 
     /// Field names, sorted (Java `getFieldNames`).
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoNoSchema.java:188 StarlarkInfoNoSchema.getFieldNames
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoWithSchema.java:129 StarlarkInfoWithSchema.getFieldNames
     pub fn field_names(&self) -> impl Iterator<Item = &str> {
         self.fields.iter().map(|(k, _)| k.as_str())
     }
 
     /// Java `getValue(name)`.
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoNoSchema.java:210 StarlarkInfoNoSchema.getValue
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoWithSchema.java:157 StarlarkInfoWithSchema.getValue
     pub fn get_field(&self, name: &str) -> Option<Value<'v>> {
         self.fields
-            .binary_search_by(|(k, _)| k.as_str().cmp(name))
+            .binary_search_by(|(k, _)| java_string_compare(k, name))
             .ok()
             .map(|i| self.fields[i].1.to_value())
     }
@@ -263,6 +279,8 @@ impl<'v, V: ValueLike<'v>> StarlarkInfoGen<V> {
     }
 
     /// Java: StarlarkInfoNoSchema.isImmutable
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoNoSchema.java:196 StarlarkInfoNoSchema.isImmutable
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoWithSchema.java:141 StarlarkInfoWithSchema.isImmutable
     pub fn is_immutable(&self) -> bool {
         let exported = provider_info(self.provider.to_value()).is_none_or(|p| p.exported);
         exported && self.fields.iter().all(|(_, v)| is_immutable(v.to_value()))
@@ -346,6 +364,7 @@ where
     }
 
     // Java: StructImpl.equals
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoWithSchema.java:214 StarlarkInfoWithSchema.equals
     fn equals(&self, other: Value<'v>) -> starlark::Result<bool> {
         let Some(other) = StarlarkInfo::from_value(other) else {
             return Ok(false);
@@ -366,6 +385,7 @@ where
 
     // Java: StructImpl.hashCode (provider, then sorted field names and values). The provider's
     // own hash is not used, so unhashable provider values do not make instances unhashable.
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoWithSchema.java:228 StarlarkInfoWithSchema.hashCode
     fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
         // Java: net/starlark/java/eval/StarlarkValue.java:104 StarlarkValue.checkHashable, which
         // StarlarkInfo inherits: a struct is hashable iff it is immutable (an exported provider
@@ -391,7 +411,8 @@ where
         )))
     }
 
-    // Java: StarlarkInfoNoSchema.binaryOp(PLUS)
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoNoSchema.java:221 StarlarkInfoNoSchema.binaryOp
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoWithSchema.java:165 StarlarkInfoWithSchema.binaryOp
     fn add(&self, rhs: Value<'v>, heap: Heap<'v>) -> Option<starlark::Result<Value<'v>>> {
         let other = StarlarkInfo::from_value(rhs)?;
         Some(plus(self, other, heap))
@@ -402,6 +423,11 @@ where
     }
 }
 
+// Java: com/google/devtools/build/lib/packages/StarlarkInfoNoSchema.java:239 StarlarkInfoNoSchema.plus
+// Java: com/google/devtools/build/lib/packages/StarlarkInfoNoSchema.java:52 StarlarkInfoNoSchema.StarlarkInfoNoSchema
+// Java: com/google/devtools/build/lib/packages/StarlarkInfoWithSchema.java:184 StarlarkInfoWithSchema.plus
+// PORT: skipped, values are not re-laid-out in memory: StarlarkInfoWithSchema.unsafeOptimizeMemoryLayout
+// PORT: skipped, values are not re-laid-out in memory (no ImmutableStarlarkList duplicates to merge): StarlarkInfoNoSchema.unsafeOptimizeMemoryLayout
 fn plus<'v, V: ValueLike<'v>>(
     x: &StarlarkInfoGen<V>,
     y: &StarlarkInfo<'v>,
@@ -419,7 +445,7 @@ fn plus<'v, V: ValueLike<'v>>(
     while xi < x.fields.len() && yi < y.fields.len() {
         let (xk, xv) = (&x.fields[xi].0, x.fields[xi].1.to_value());
         let (yk, yv) = (&y.fields[yi].0, y.fields[yi].1);
-        match xk.cmp(yk) {
+        match java_string_compare(xk, yk) {
             Ordering::Less => {
                 z.push((xk.clone(), xv));
                 xi += 1;
@@ -484,4 +510,9 @@ fn java_hash_code(v: Value, hasher: &mut StarlarkHasher) -> starlark::Result<()>
         return Ok(());
     }
     v.write_hash(hasher)
+}
+
+/// Java `String.compareTo`: UTF-16 code units, the order of a struct's field table.
+fn java_string_compare(a: &str, b: &str) -> Ordering {
+    a.encode_utf16().cmp(b.encode_utf16())
 }

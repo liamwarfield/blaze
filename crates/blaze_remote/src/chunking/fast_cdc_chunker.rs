@@ -64,7 +64,7 @@ const GEAR_LS: [u64; 256] = compute_gear_ls();
 ///
 /// PORT: Java's `long` arithmetic wraps; the hash here uses `wrapping_add` and shifts that drop
 /// the high bits, the same values.
-// Java: com/google/devtools/build/lib/remote/chunking/FastCdcChunker.java:32 FastCdcChunker
+// Java: com/google/devtools/build/lib/remote/chunking/FastCdcChunker.java:31 FastCdcChunker
 pub struct FastCdcChunker {
     min_size: i32,
     max_size: i32,
@@ -79,12 +79,12 @@ pub struct FastCdcChunker {
 }
 
 impl FastCdcChunker {
-    // Java: com/google/devtools/build/lib/remote/chunking/FastCdcChunker.java:96 FastCdcChunker.<init>
+    // Java: com/google/devtools/build/lib/remote/chunking/FastCdcChunker.java:95 FastCdcChunker.<init>
     pub fn new(digest_util: DigestUtil) -> FastCdcChunker {
         Self::from_config(&FastCdcChunkingConfig::defaults(), digest_util)
     }
 
-    // Java: com/google/devtools/build/lib/remote/chunking/FastCdcChunker.java:100 FastCdcChunker.<init>
+    // Java: com/google/devtools/build/lib/remote/chunking/FastCdcChunker.java:99 FastCdcChunker.<init>
     pub fn from_config(config: &FastCdcChunkingConfig, digest_util: DigestUtil) -> FastCdcChunker {
         Self::with_sizes(
             config.min_chunk_size(),
@@ -98,7 +98,7 @@ impl FastCdcChunker {
     }
 
     /// Panics with Java's `IllegalArgumentException` text when a parameter is out of range.
-    // Java: com/google/devtools/build/lib/remote/chunking/FastCdcChunker.java:110 FastCdcChunker.<init>
+    // Java: com/google/devtools/build/lib/remote/chunking/FastCdcChunker.java:109 FastCdcChunker.<init>
     pub fn with_sizes(
         min_size: i32,
         avg_size: i32,
@@ -143,7 +143,7 @@ impl FastCdcChunker {
     }
 
     /// Finds the next chunk boundary.
-    // Java: com/google/devtools/build/lib/remote/chunking/FastCdcChunker.java:136 FastCdcChunker.cut
+    // Java: com/google/devtools/build/lib/remote/chunking/FastCdcChunker.java:137 FastCdcChunker.cut
     fn cut(&self, buf: &[u8], off: usize, len: i32) -> i32 {
         if len <= self.min_size {
             return len;
@@ -202,7 +202,7 @@ impl ContentDefinedChunker for FastCdcChunker {
     ///
     /// Note: We don't need the raw data here. We can read from the original file (seekable) when
     /// uploading, similar to how whole blobs work.
-    // Java: com/google/devtools/build/lib/remote/chunking/FastCdcChunker.java:193 FastCdcChunker.chunkToDigests
+    // Java: com/google/devtools/build/lib/remote/chunking/FastCdcChunker.java:192 FastCdcChunker.chunkToDigests
     fn chunk_to_digests(&self, input: &mut dyn io::Read) -> io::Result<Vec<Digest>> {
         let mut digests = Vec::new();
         let max_size = self.max_size as usize;

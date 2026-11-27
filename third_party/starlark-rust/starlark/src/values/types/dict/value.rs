@@ -718,6 +718,11 @@ where
     }
 
     fn bit_or(&self, rhs: Value<'v>, heap: Heap<'v>) -> crate::Result<Value<'v>> {
+        // Java EvalUtils.binaryOp PIPE: `map | map` with any Map on the right. // BLAZE PATCH 0068
+        let rhs = match crate::values::types::dict::globals::java_map_as_dict(rhs, heap) { // BLAZE PATCH 0068
+            Some(m) => m?, // BLAZE PATCH 0068
+            None => rhs, // BLAZE PATCH 0068
+        }; // BLAZE PATCH 0068
         let rhs_value = rhs; // BLAZE PATCH 0063
         let rhs = DictRef::from_value(rhs)
             .map_or_else(|| ValueError::unsupported_with(self, "|", rhs), Ok)?;

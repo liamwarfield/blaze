@@ -176,12 +176,7 @@ impl ObjcConfiguration {
         self.alwayslink_by_default
     }
 
-    // Java: com/google/devtools/build/lib/rules/objc/ObjcConfiguration.java:176 ObjcConfiguration.targetShouldAlwayslink
-    /// Looks at any explicit value for alwayslink on ctx and then falls back to the value of
-    /// alwayslink_by_default.
-    pub fn target_should_alwayslink(&self) -> bool {
-        blaze_util::unported!("ObjcConfiguration.targetShouldAlwayslink")
-    }
+    // targetShouldAlwayslink needs the rule context: blaze_rules::fragments::objc_configuration.
 
     // Java: com/google/devtools/build/lib/rules/objc/ObjcConfiguration.java:193 ObjcConfiguration.stripExecutableSafely
     /// Returns whether executable strip action should use flag -x, which does not break dynamic

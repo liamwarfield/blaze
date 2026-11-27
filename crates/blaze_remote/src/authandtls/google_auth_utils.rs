@@ -463,7 +463,8 @@ fn rustls_client_config(
 /// PORT: Java's `SslContextBuilder.forClient()` (Netty 4.1) does not identify the endpoint: the
 /// server's certificate is not checked against the host name. Blaze checks it with the same
 /// verifier as the gRPC channels (`JdkServerCertVerifier`, ruling D16), so a certificate for
-/// another name is refused where Bazel accepts it (stricter, fail closed).
+/// another name is refused where Bazel accepts it (stricter, fail closed; fixture
+/// `http_cache_tls_config_checks_the_host_name_stricter_than_netty`).
 // Java: com/google/devtools/build/lib/remote/http/HttpCacheClient.java:828 HttpCacheClient.createSSLContext
 pub fn http_cache_tls_config(
     host: &str,

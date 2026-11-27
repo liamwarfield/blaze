@@ -53,6 +53,12 @@ pub enum FilteringPolicy {
     FilterTests,
     RulesOnly,
     And(Box<FilteringPolicy>, Box<FilteringPolicy>),
+    /// Excludes multiple single targets (Java `TargetExcludingFilteringPolicy`, package-private
+    /// in `skyframe`); the labels in insertion order without duplicates (`ImmutableSet`).
+    // Java: com/google/devtools/build/lib/skyframe/TargetExcludingFilteringPolicy.java:27 TargetExcludingFilteringPolicy
+    // Java: com/google/devtools/build/lib/skyframe/TargetExcludingFilteringPolicy.java:30 TargetExcludingFilteringPolicy.<init>
+    // PORT: skipped, derived PartialEq/Hash compare the label lists (ImmutableSet.equals is order-insensitive; the only producer builds them in pattern order, so equal sets are equal lists): TargetExcludingFilteringPolicy.equals, TargetExcludingFilteringPolicy.hashCode
+    ExcludedTargets(Vec<Label>),
     /// A filtering policy defined elsewhere (Java: other `FilteringPolicy` implementations,
     /// e.g. `PlatformLookupUtil.HAS_PLATFORM_INFO`, `RegisteredToolchainsFunction`'s
     /// `ruleTypeExplicit("toolchain")`), by name and predicate.
@@ -110,6 +116,10 @@ impl FilteringPolicy {
             FilteringPolicy::And(x, y) => {
                 x.should_retain(target, explicit) && y.should_retain(target, explicit)
             }
+            // Java: com/google/devtools/build/lib/skyframe/TargetExcludingFilteringPolicy.java:35 TargetExcludingFilteringPolicy.shouldRetain
+            FilteringPolicy::ExcludedTargets(excluded_single_targets) => {
+                !excluded_single_targets.contains(target.get_label())
+            }
             FilteringPolicy::Custom(_, predicate) => (predicate.0)(target, explicit),
         }
     }
@@ -126,6 +136,16 @@ impl fmt::Debug for FilteringPolicy {
             FilteringPolicy::FilterManual => f.write_str("FilterManual"),
             FilteringPolicy::FilterTests => f.write_str("FilterTests"),
             FilteringPolicy::RulesOnly => f.write_str("RulesOnly"),
+            // Java: com/google/devtools/build/lib/skyframe/TargetExcludingFilteringPolicy.java:40 TargetExcludingFilteringPolicy.toString
+            FilteringPolicy::ExcludedTargets(excluded_single_targets) => write!(
+                f,
+                "excludedTargets[{}]",
+                excluded_single_targets
+                    .iter()
+                    .map(|l| l.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
             FilteringPolicy::Custom(name, _) => f.write_str(name),
         }
     }
@@ -228,13 +248,16 @@ fn set_excluded_directories_and_targets(
     excluded_subdirectories: Vec<PathFragment>,
     excluded_single_targets: Vec<Label>,
 ) -> TargetPatternKey {
+    let mut policy = original.policy.clone();
     if !excluded_single_targets.is_empty() {
-        // Java: FilteringPolicies.and(policy, new TargetExcludingFilteringPolicy(...)).
-        blaze_util::unported!("TargetExcludingFilteringPolicy");
+        policy = FilteringPolicy::and(
+            policy,
+            FilteringPolicy::ExcludedTargets(excluded_single_targets),
+        );
     }
     TargetPatternKey {
         signed_parsed_pattern: original.signed_parsed_pattern.clone(),
-        policy: original.policy.clone(),
+        policy,
         excluded_subdirectories,
     }
 }
@@ -815,7 +838,7 @@ pub(crate) fn get_path_fragment(path_prefix: &str) -> Result<PathFragment, Targe
 }
 
 /// A [`TargetPatternResolver`] over a [`RecursivePackageProvider`].
-// Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:62 RecursivePackageProviderBackedTargetPatternResolver
+// Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:70 RecursivePackageProviderBackedTargetPatternResolver
 pub struct RecursivePackageProviderBackedTargetPatternResolver<'a> {
     pub policy: FilteringPolicy,
     recursive_package_provider: &'a dyn RecursivePackageProvider,
@@ -823,6 +846,24 @@ pub struct RecursivePackageProviderBackedTargetPatternResolver<'a> {
 }
 
 impl<'a> RecursivePackageProviderBackedTargetPatternResolver<'a> {
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:85 RecursivePackageProviderBackedTargetPatternResolver.<init>
+    // PORT: packageSemaphore and maxConcurrentGetTargetsTasks bound the tasks of a parallel
+    // executor, and the batching callback factory is always
+    // SimplePackageIdentifierBatchingCallback::new at the pin (TargetPatternFunction,
+    // SkyframeTargetPatternEvaluator, SkyQueryEnvironment, PostAnalysisQueryEnvironment); the
+    // tasks run one at a time here, so none of the three is a parameter.
+    //
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:112 RecursivePackageProviderBackedTargetPatternResolver.getPackage
+    // (private; its callers call `recursive_package_provider.get_package` directly.)
+    //
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:244 RecursivePackageProviderBackedTargetPatternResolver.findTargetsBeneathDirectoryAsync
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:408 RecursivePackageProviderBackedTargetPatternResolver.isSuccessful
+    // PORT: skipped, the futures. Java's only asynchronous caller is SkyQueryEnvironment's
+    // parallel pattern evaluation (TargetPattern.evalAsync), which this port runs synchronously
+    // through `find_targets_beneath_directory`. The two differ only for exceptions that cannot
+    // reach a SkyQuery (ProcessPackageDirectoryException and NoSuchPackageException from a
+    // graph-backed provider, where Java throws IllegalStateException) and for an interrupt
+    // (a cancelled future against InterruptedException; both end the query interrupted).
     pub fn new(
         recursive_package_provider: &'a dyn RecursivePackageProvider,
         event_handler: &'a dyn ExtendedEventHandler,
@@ -846,12 +887,12 @@ impl<'a> RecursivePackageProviderBackedTargetPatternResolver<'a> {
 }
 
 impl TargetPatternResolver<Target> for RecursivePackageProviderBackedTargetPatternResolver<'_> {
-    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:100 RecursivePackageProviderBackedTargetPatternResolver.warn
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:103 RecursivePackageProviderBackedTargetPatternResolver.warn
     fn warn(&self, msg: &str) {
         self.event_handler.handle(&Event::warn(msg));
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:115 RecursivePackageProviderBackedTargetPatternResolver.getTargetOrNull
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:117 RecursivePackageProviderBackedTargetPatternResolver.getTargetOrNull
     fn get_target_or_null(&self, label: &Label) -> Result<Option<Target>, TargetPatternEvalError> {
         if !self.is_package(label.get_package_identifier())? {
             return Ok(None);
@@ -866,7 +907,7 @@ impl TargetPatternResolver<Target> for RecursivePackageProviderBackedTargetPatte
         }
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:129 RecursivePackageProviderBackedTargetPatternResolver.getExplicitTarget
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:131 RecursivePackageProviderBackedTargetPatternResolver.getExplicitTarget
     fn get_explicit_target(&self, label: &Label) -> Result<Vec<Target>, TargetPatternEvalError> {
         match self
             .recursive_package_provider
@@ -881,7 +922,7 @@ impl TargetPatternResolver<Target> for RecursivePackageProviderBackedTargetPatte
         }
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:142 RecursivePackageProviderBackedTargetPatternResolver.getTargetsInPackage
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:144 RecursivePackageProviderBackedTargetPatternResolver.getTargetsInPackage
     fn get_targets_in_package(
         &self,
         original_pattern: &str,
@@ -914,7 +955,7 @@ impl TargetPatternResolver<Target> for RecursivePackageProviderBackedTargetPatte
         }
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:208 RecursivePackageProviderBackedTargetPatternResolver.isPackage
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:187 RecursivePackageProviderBackedTargetPatternResolver.isPackage
     fn is_package(
         &self,
         package_identifier: &PackageIdentifier,
@@ -924,13 +965,13 @@ impl TargetPatternResolver<Target> for RecursivePackageProviderBackedTargetPatte
             .map_err(Self::provider_error)
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:213 RecursivePackageProviderBackedTargetPatternResolver.getTargetKind
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:193 RecursivePackageProviderBackedTargetPatternResolver.getTargetKind
     fn get_target_kind(&self, target: &Target) -> String {
         target.get_target_kind()
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:218 RecursivePackageProviderBackedTargetPatternResolver.findTargetsBeneathDirectory
-    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:300 RecursivePackageProviderBackedTargetPatternResolver.findTargetsBeneathDirectoryAsyncImpl
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:198 RecursivePackageProviderBackedTargetPatternResolver.findTargetsBeneathDirectory
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:289 RecursivePackageProviderBackedTargetPatternResolver.findTargetsBeneathDirectoryAsyncImpl
     fn find_targets_beneath_directory(
         &self,
         repository: &RepositoryName,
@@ -946,18 +987,33 @@ impl TargetPatternResolver<Target> for RecursivePackageProviderBackedTargetPatte
         } else {
             self.policy.clone()
         };
+        // getPackageTargetsCallback: each batch of package ids becomes a GetTargetsInPackagesTask.
+        // PORT: Java submits the task to a direct executor from inside the batching callback, so
+        // it runs while the stream is paused; here the batches are collected and their tasks run
+        // in the same order once the stream is done (the providers' streams borrow the
+        // provider). The targets and the callback's batches are the same; only events of the
+        // stream after the first 1000 packages come before those of the tasks.
+        let mut package_id_batches: Vec<Vec<PackageIdentifier>> = Vec::new();
         let path_fragment = get_path_fragment(directory)?;
-        let mut package_ids: Vec<PackageIdentifier> = Vec::new();
-        let streamed = self
-            .recursive_package_provider
-            .stream_packages_under_directory(
-                &mut |batch| package_ids.extend(batch),
-                self.event_handler,
-                repository,
-                &path_fragment,
-                forbidden_subdirectories,
-                excluded_subdirectories,
+        let streamed = {
+            let mut batching_callback = SimplePackageIdentifierBatchingCallback::new(
+                |batch| package_id_batches.push(batch),
+                MAX_PACKAGES_BULK_GET,
             );
+            let streamed = self
+                .recursive_package_provider
+                .stream_packages_under_directory(
+                    &mut |batch| batching_callback.process(batch),
+                    self.event_handler,
+                    repository,
+                    &path_fragment,
+                    forbidden_subdirectories,
+                    excluded_subdirectories,
+                );
+            // try-with-resources: closed (flushed) also when the stream throws.
+            batching_callback.close();
+            streamed
+        };
         match streamed {
             Ok(()) => {}
             Err(ProviderError::NoSuchThing(e)) => {
@@ -974,20 +1030,68 @@ impl TargetPatternResolver<Target> for RecursivePackageProviderBackedTargetPatte
             }
             Err(ProviderError::Eval(e)) => return Err(e),
         }
-        if package_ids.is_empty() {
+        if package_id_batches.is_empty() {
             return Err(TargetParsingException::new(
                 format!("no targets found beneath '{}'", path_fragment),
                 TargetPatternsCode::TargetsMissing,
             )
             .into());
         }
-        // Java GetTargetsInPackagesTask: bulkGetTargetsInPackage over each batch (here: all
-        // packages; the order of the targets is the same).
+        // Futures.whenAllSucceed over tasks that a direct executor has already run: every task
+        // runs, and the first failure in submission order is thrown.
+        let mut first_failure = None;
+        for package_identifiers in &package_id_batches {
+            if let Err(e) = self.get_targets_in_packages_task(
+                package_identifiers,
+                original_pattern,
+                &actual_policy,
+                callback,
+            ) {
+                first_failure.get_or_insert(e);
+            }
+        }
+        match first_failure {
+            Some(e) => Err(e),
+            None => Ok(()),
+        }
+    }
+}
+
+impl RecursivePackageProviderBackedTargetPatternResolver<'_> {
+    /// Gets all matching targets in the given packages, filters them, and passes them to the
+    /// target batch callback.
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:368 RecursivePackageProviderBackedTargetPatternResolver.GetTargetsInPackagesTask.call
+    // PORT: acquireTaskLock/releaseTaskLock and the package semaphore bound concurrent tasks;
+    // the tasks run one at a time here.
+    fn get_targets_in_packages_task(
+        &self,
+        package_identifiers: &[PackageIdentifier],
+        original_pattern: &str,
+        actual_policy: &FilteringPolicy,
+        callback: &mut dyn FnMut(Vec<Target>),
+    ) -> Result<(), TargetPatternEvalError> {
+        let resolved_targets =
+            self.bulk_get_targets_in_package(original_pattern, package_identifiers, actual_policy)?;
+        let mut filtered_targets = Vec::with_capacity(calculate_size(&resolved_targets));
+        for (_, targets) in resolved_targets {
+            filtered_targets.extend(targets);
+        }
+        callback(filtered_targets);
+        Ok(())
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:161 RecursivePackageProviderBackedTargetPatternResolver.bulkGetTargetsInPackage
+    fn bulk_get_targets_in_package(
+        &self,
+        original_pattern: &str,
+        pkg_ids: &[PackageIdentifier],
+        policy: &FilteringPolicy,
+    ) -> Result<Vec<(PackageIdentifier, Vec<Target>)>, TargetPatternEvalError> {
         let pkgs = match self
             .recursive_package_provider
-            .bulk_get_packages(self.event_handler, &package_ids)
+            .bulk_get_packages(self.event_handler, pkg_ids)
         {
-            Ok(p) => p,
+            Ok(pkgs) => pkgs,
             Err(ProviderError::NoSuchThing(e)) => {
                 let message = get_parsing_error_message(&e.get_message(), Some(original_pattern));
                 panic!(
@@ -998,13 +1102,84 @@ impl TargetPatternResolver<Target> for RecursivePackageProviderBackedTargetPatte
             }
             Err(ProviderError::Eval(e)) => return Err(e),
         };
-        let mut filtered_targets = Vec::new();
-        for (_, pkg) in &pkgs {
-            Package::maybe_add_package_contains_errors_event_to_handler(pkg, self.event_handler);
-            filtered_targets.extend(resolve_package_targets(pkg, &actual_policy));
+        let pkgs: HashMap<&PackageIdentifier, &Arc<Package>> =
+            pkgs.iter().map(|(id, pkg)| (id, pkg)).collect();
+        if pkgs.len() != pkg_ids.len() {
+            let missing: Vec<String> = pkg_ids
+                .iter()
+                .filter(|id| !pkgs.contains_key(id))
+                .map(|id| id.to_string())
+                .collect();
+            panic!(
+                "IllegalStateException: Bulk package retrieval missing results: [{}]",
+                missing.join(", ")
+            );
         }
-        callback(filtered_targets);
-        Ok(())
+        let mut result = Vec::with_capacity(pkg_ids.len());
+        for pkg_id in pkg_ids {
+            let pkg = pkgs[pkg_id];
+            Package::maybe_add_package_contains_errors_event_to_handler(pkg, self.event_handler);
+            result.push((pkg_id.clone(), resolve_package_targets(pkg, policy)));
+        }
+        Ok(result)
+    }
+}
+
+// Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:399 RecursivePackageProviderBackedTargetPatternResolver.calculateSize
+fn calculate_size<K, T>(resolved_targets: &[(K, Vec<T>)]) -> usize {
+    resolved_targets
+        .iter()
+        .map(|(_, targets)| targets.len())
+        .sum()
+}
+
+// Java: com/google/devtools/build/lib/skyframe/RecursivePackageProviderBackedTargetPatternResolver.java:75 RecursivePackageProviderBackedTargetPatternResolver.MAX_PACKAGES_BULK_GET
+const MAX_PACKAGES_BULK_GET: usize = 1000;
+
+/// Shards a stream of package identifiers, in order, into fixed-size batches; the final batch
+/// may be smaller than the others.
+// Java: com/google/devtools/build/lib/skyframe/SimplePackageIdentifierBatchingCallback.java:25 SimplePackageIdentifierBatchingCallback
+pub struct SimplePackageIdentifierBatchingCallback<F: FnMut(Vec<PackageIdentifier>)> {
+    batch_results: F,
+    batch_size: usize,
+    package_identifiers: Vec<PackageIdentifier>,
+}
+
+impl<F: FnMut(Vec<PackageIdentifier>)> SimplePackageIdentifierBatchingCallback<F> {
+    // Java: com/google/devtools/build/lib/skyframe/SimplePackageIdentifierBatchingCallback.java:35 SimplePackageIdentifierBatchingCallback.<init>
+    pub fn new(batch_results: F, batch_size: usize) -> Self {
+        SimplePackageIdentifierBatchingCallback {
+            batch_results,
+            batch_size,
+            package_identifiers: Vec::with_capacity(batch_size),
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/SimplePackageIdentifierBatchingCallback.java:43 SimplePackageIdentifierBatchingCallback.process
+    pub fn process(&mut self, partial_result: Vec<PackageIdentifier>) {
+        for path in partial_result {
+            self.package_identifiers.push(path);
+            if self.package_identifiers.len() >= self.batch_size {
+                self.flush();
+            }
+        }
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/SimplePackageIdentifierBatchingCallback.java:55 SimplePackageIdentifierBatchingCallback.close
+    pub fn close(&mut self) {
+        self.flush();
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/SimplePackageIdentifierBatchingCallback.java:60 SimplePackageIdentifierBatchingCallback.flush
+    fn flush(&mut self) {
+        if !self.package_identifiers.is_empty() {
+            // reset(): a new builder with the expected size.
+            let batch = std::mem::replace(
+                &mut self.package_identifiers,
+                Vec::with_capacity(self.batch_size),
+            );
+            (self.batch_results)(batch);
+        }
     }
 }
 

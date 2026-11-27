@@ -179,6 +179,9 @@ pub struct SpawnAction {
     sorted_execution_info: BTreeMap<String, String>,
     output_paths_mode: OutputPathsMode,
     class: SpawnActionClass,
+    /// The Java class of a native `SpawnAction`: `SpawnAction` itself, or the subclass a native
+    /// rule instantiates (`GenRuleAction`); see [`SpawnAction::with_java_class`].
+    native_java_class: &'static str,
 }
 
 impl fmt::Debug for SpawnAction {
@@ -254,7 +257,15 @@ impl SpawnAction {
                 .collect(),
             output_paths_mode,
             class,
+            native_java_class: "com.google.devtools.build.lib.analysis.actions.SpawnAction",
         }
+    }
+
+    /// The action as an instance of the native subclass `java_class` (binary name) of
+    /// `SpawnAction`, for the messages that print its class.
+    pub fn with_java_class(mut self, java_class: &'static str) -> SpawnAction {
+        self.native_java_class = java_class;
+        self
     }
 
     // Java: com/google/devtools/build/lib/analysis/actions/SpawnAction.java:202 SpawnAction.getCommandLines
@@ -425,6 +436,20 @@ impl SpawnAction {
 }
 
 impl Action for SpawnAction {
+    fn java_class_name(&self) -> Option<&'static str> {
+        Some(match &self.class {
+            SpawnActionClass::Spawn => self.native_java_class,
+            // Java: com/google/devtools/build/lib/analysis/actions/StarlarkAction.java:65 StarlarkAction
+            SpawnActionClass::Starlark => {
+                "com.google.devtools.build.lib.analysis.actions.StarlarkAction"
+            }
+            // Java: com/google/devtools/build/lib/analysis/actions/StarlarkAction.java:224 StarlarkAction.EnhancedStarlarkAction
+            SpawnActionClass::EnhancedStarlark(_) => {
+                "com.google.devtools.build.lib.analysis.actions.StarlarkAction$EnhancedStarlarkAction"
+            }
+        })
+    }
+
     fn abstract_action(&self) -> &AbstractAction {
         &self.base
     }

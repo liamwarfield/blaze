@@ -325,6 +325,10 @@ fn is_version_groups(s: &str) -> bool {
 }
 
 impl Action for SolibSymlinkAction {
+    fn java_class_name(&self) -> Option<&'static str> {
+        Some("com.google.devtools.build.lib.rules.cpp.SolibSymlinkAction")
+    }
+
     fn abstract_action(&self) -> &AbstractAction {
         &self.base
     }

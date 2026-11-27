@@ -25,7 +25,9 @@ pub type ValidUndeclaredHeaderPredicate = Arc<dyn Fn(&Artifact) -> bool + Send +
 pub enum IncludeScanningError {
     Io(std::io::Error),
     Exec(ExecException),
-    Interrupted,
+    /// `InterruptedException` with its message (`checkForInterrupt`: "Include scanning
+    /// interrupted while <operation> <source>").
+    Interrupted(String),
 }
 
 impl From<std::io::Error> for IncludeScanningError {

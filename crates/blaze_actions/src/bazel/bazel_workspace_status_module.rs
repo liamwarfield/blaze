@@ -289,6 +289,12 @@ fn parse_java_long(s: &str) -> Option<i64> {
 }
 
 impl Action for BazelWorkspaceStatusAction {
+    fn java_class_name(&self) -> Option<&'static str> {
+        Some(
+            "com.google.devtools.build.lib.bazel.BazelWorkspaceStatusModule$BazelWorkspaceStatusAction",
+        )
+    }
+
     fn abstract_action(&self) -> &AbstractAction {
         &self.base
     }

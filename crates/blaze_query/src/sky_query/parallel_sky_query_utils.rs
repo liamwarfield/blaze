@@ -50,6 +50,9 @@ pub struct DepAndRdepAtDepth {
 /// expression's result is visited by a new visitor from `make_visitor` (Java
 /// `ParallelTargetVisitorCallback.process`).
 // Java: com/google/devtools/build/lib/query2/ParallelVisitorUtils.java:60 ParallelVisitorUtils.ParallelTargetVisitorCallback
+// Java: com/google/devtools/build/lib/query2/ParallelVisitorUtils.java:45 ParallelVisitorUtils.createParallelVisitorCallback
+// Java: com/google/devtools/build/lib/query2/ParallelVisitorUtils.java:72 ParallelVisitorUtils.ParallelTargetVisitorCallback.process
+// PORT: skipped, the callback is the closure below and each visitor a struct literal holding the environment's fields (no visit-task status callback, no executor): ParallelVisitorUtils.ParallelTargetVisitorCallback.<init>, ParallelVisitorUtils.ParallelQueryVisitor.<init>
 fn eval_with_parallel_visitor_callback<V>(
     env: &SkyQueryEnvironment,
     expression: &QueryExpression,
@@ -206,11 +209,13 @@ pub fn get_deps_unbounded_parallel(
 // ---------------------------------------------------------------------------------------------
 // AbstractTargetOuputtingVisitor
 
+// PORT: skipped, each visitor is a struct literal with the batch sizes as constants, the package semaphore bounds parallel tasks (the visits run one at a time here), and visitationKeyToOutputKey is the closure argument of `target_outputting_get_visit_tasks`: AbstractTargetOuputtingVisitor.<init>, AbstractTargetOuputtingVisitor.getPackageSemaphore, AbstractTargetOuputtingVisitor.visitationKeyToOutputKey
 // Java: com/google/devtools/build/lib/query2/AbstractTargetOuputtingVisitor.java:39 AbstractTargetOuputtingVisitor.PROCESS_RESULTS_BATCH_SIZE
 const TARGET_OUTPUTTING_PROCESS_RESULTS_BATCH_SIZE: usize = BATCH_CALLBACK_SIZE;
 
 /// Java `AbstractTargetOuputtingVisitor.outputKeysToOutputValues` with the visitor's
-/// `handleMissingTargets`.
+/// `handleMissingTargets` (the default, which does nothing, is `&|_, _| Ok(())`).
+// Java: com/google/devtools/build/lib/query2/AbstractTargetOuputtingVisitor.java:62 AbstractTargetOuputtingVisitor.handleMissingTargets
 // Java: com/google/devtools/build/lib/query2/AbstractTargetOuputtingVisitor.java:53 AbstractTargetOuputtingVisitor.outputKeysToOutputValues
 fn target_outputting_output_keys_to_output_values(
     env: &SkyQueryEnvironment,
@@ -666,6 +671,7 @@ impl ParallelVisitor for RdepsBoundedVisitor<'_> {
 
 /// A visitor that collects the label keys of the transitive closure, without edge filtering.
 // Java: com/google/devtools/build/lib/query2/UnfilteredSkyKeyLabelDTCVisitor.java:27 UnfilteredSkyKeyLabelDTCVisitor
+// PORT: skipped, the visitor is a struct literal made where Java calls its factory: UnfilteredSkyKeyLabelDTCVisitor.<init>, UnfilteredSkyKeyLabelDTCVisitor.Factory.<init>, UnfilteredSkyKeyLabelDTCVisitor.Factory.create
 // Java: com/google/devtools/build/lib/query2/AbstractUnfilteredLabelDTCVisitor.java:28 AbstractUnfilteredLabelDTCVisitor
 // Java: com/google/devtools/build/lib/query2/AbstractSkyKeyParallelVisitor.java:27 AbstractSkyKeyParallelVisitor
 struct UnfilteredSkyKeyLabelDTCVisitor<'a> {

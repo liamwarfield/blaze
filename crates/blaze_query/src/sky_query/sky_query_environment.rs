@@ -8,6 +8,15 @@
 //! streamed output is the order of the sequential visitation, where Java's depends on thread
 //! scheduling (see `blaze_sky_loading::parallel_visitor`). The package `MultisetSemaphore` only
 //! bounds memory and is not ported.
+//!
+//! Why sequential (review query-2 round 3, SQ-3; a declared deviation, root records it): the
+//! query engine this environment plugs into is sequential (its `QueryTaskFuture`s are immediate,
+//! `blaze_query_engine`), so a pool would need the engine's futures, executor and callbacks to be
+//! made thread-safe first; and Java's order inside a streamed batch is not a fixed value to port
+//! (it changes with thread scheduling), while the sets of results, errors and warnings do not
+//! depend on it. Only unordered outputs (`--order_output=no`, or a streaming formatter without
+//! ordering) can show the difference; the oracle cases compared so far printed the same order in
+//! three runs, which this port also prints.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -467,11 +476,19 @@ impl SkyQueryEnvironment {
             target_labels
         );
         let graph = self.graph();
-        // Java graph.getDirectDeps(keys): a map of the done keys.
+        // Java graph.getDirectDeps(keys): every key with a node in the graph, which must be done.
         let mut results = Vec::with_capacity(target_labels.len());
         for key in target_labels {
-            if graph.get_value(key).is_none() && graph.get_exception(key).is_none() {
-                // PORT: DelegatingWalkableGraph.getDirectDeps skips keys not in the graph.
+            // A done node has a value or an error, and an error has an exception or a cycle
+            // (a node on a cycle has no exception and its deps are still visited, as Java's).
+            // PORT: a node in the graph that is not done fails Java's checkState in
+            // DelegatingWalkableGraph.getDirectDeps; the WalkableGraph port exposes done nodes
+            // only, so such a key is skipped here like a key without a node. After the universe's
+            // evaluation every node of the universe is done.
+            if graph.get_value(key).is_none()
+                && graph.get_exception(key).is_none()
+                && !graph.is_cycle(key)
+            {
                 continue;
             }
             let deps_labels: Vec<SkyKey> = graph
@@ -635,12 +652,14 @@ impl SkyQueryEnvironment {
             .iter()
             .map(|(l, _)| label_key(l))
             .collect();
+        // Java: `new HashSet<SkyKey>()`, iterated by the warning below in its hash order.
         let mut missing_targets: Vec<SkyKey> = Vec::new();
         for key in all_target_keys {
             if !keys_found.contains(key) && !missing_targets.contains(key) {
                 missing_targets.push(key.clone());
             }
         }
+        let missing_targets = java_hash_set_order_of_label_keys(missing_targets);
         let targets: Vec<Target> = keys_with_targets.iter().map(|(_, t)| t.clone()).collect();
         self.report_unsuccessful_or_missing_targets_internal(&targets, &missing_targets, caller)
     }
@@ -968,8 +987,9 @@ fn check_evaluation_result(
         }
         blaze_util::check_state!(
             values.len() == 1,
-            "Universe query \"{:?}\" returned multiple values unexpectedly ({} values in result)",
-            universe_scope_list,
+            "Universe query \"[{}]\" returned multiple values unexpectedly ({} values in result)",
+            // List.toString: "[a, b]".
+            universe_scope_list.join(", "),
             values.len()
         );
         blaze_util::check_state!(result.get(universe_key).is_some(), "{:?}", result);
@@ -977,8 +997,8 @@ fn check_evaluation_result(
     }
     blaze_util::check_state!(
         result.has_error(),
-        "Universe query \"{:?}\" failed but had no error: {:?}",
-        universe_scope_list,
+        "Universe query \"[{}]\" failed but had no error: {:?}",
+        universe_scope_list.join(", "),
         result
     );
     query_transitive_package_preloader::maybe_throw_query_exception_for_result_with_error(
@@ -1827,3 +1847,57 @@ impl OutputFormatterCallback<Target> for BatchStreamedCallback<'_> {
 }
 
 impl ThreadSafeOutputFormatterCallback<Target> for BatchStreamedCallback<'_> {}
+
+/// The iteration order of a `java.util.HashSet` (default capacity 16, load factor 3/4) into which
+/// the TRANSITIVE_TRAVERSAL keys `keys` (Java: the `Label`s themselves, `Label.hashCode`) were
+/// added in this order, without duplicates.
+///
+/// PORT: java-hash-order. A `HashMap` iterates its table from slot 0 and each bin in insertion
+/// order; `resize` splits each bin keeping the relative order, so the order is the stable order
+/// by slot of the final table. `putVal` resizes when the size passes 3/4 of the capacity, and when
+/// a ninth node joins a bin of a table under 64 slots (`treeifyBin`); a ninth node in a bin of a
+/// larger table makes a tree bin, which fails loudly here.
+fn java_hash_set_order_of_label_keys(keys: Vec<SkyKey>) -> Vec<SkyKey> {
+    use blaze_query_engine::JavaHashCode;
+    // HashMap.TREEIFY_THRESHOLD and HashMap.MIN_TREEIFY_CAPACITY.
+    const TREEIFY_THRESHOLD: usize = 8;
+    const MIN_TREEIFY_CAPACITY: usize = 64;
+    let hashes: Vec<usize> = keys
+        .iter()
+        .map(|key| {
+            let label = sky_key_to_label(key).expect("a TRANSITIVE_TRAVERSAL key");
+            // HashMap.hash: h ^ (h >>> 16).
+            let h = label.java_hash_code() as u32;
+            (h ^ (h >> 16)) as usize
+        })
+        .collect();
+    let mut capacity: usize = 16;
+    for (size, hash) in hashes.iter().enumerate() {
+        let bin = hash & (capacity - 1);
+        let nodes_before = hashes[..size]
+            .iter()
+            .filter(|h| *h & (capacity - 1) == bin)
+            .count();
+        if nodes_before >= TREEIFY_THRESHOLD {
+            if capacity < MIN_TREEIFY_CAPACITY {
+                capacity *= 2;
+            } else {
+                blaze_util::unported!(
+                    "HashMap.treeifyBin",
+                    "a tree bin in the HashSet of missing targets"
+                );
+            }
+        }
+        // ++size > threshold
+        if size + 1 > capacity / 4 * 3 {
+            capacity *= 2;
+        }
+    }
+    let mut slotted: Vec<(usize, SkyKey)> = hashes
+        .into_iter()
+        .zip(keys)
+        .map(|(hash, key)| (hash & (capacity - 1), key))
+        .collect();
+    slotted.sort_by_key(|(slot, _)| *slot);
+    slotted.into_iter().map(|(_, key)| key).collect()
+}

@@ -231,26 +231,32 @@ pub struct MetricData {
 }
 
 impl MetricData {
+    // Java: com/google/devtools/build/lib/profiler/MetricData.java:46 MetricData.getDescription
     pub fn get_description(&self) -> Option<&str> {
         self.description.as_deref()
     }
 
+    // Java: com/google/devtools/build/lib/profiler/MetricData.java:50 MetricData.getHistogram
     pub fn get_histogram(&self) -> &[HistogramElement] {
         &self.histogram
     }
 
+    // Java: com/google/devtools/build/lib/profiler/MetricData.java:54 MetricData.getCount
     pub fn get_count(&self) -> i32 {
         self.count
     }
 
+    // Java: com/google/devtools/build/lib/profiler/MetricData.java:58 MetricData.getAvg
     pub fn get_avg(&self) -> f64 {
         self.avg
     }
 
+    // Java: com/google/devtools/build/lib/profiler/MetricData.java:62 MetricData.getStdDev
     pub fn get_std_dev(&self) -> f64 {
         self.std_dev
     }
 
+    // Java: com/google/devtools/build/lib/profiler/MetricData.java:66 MetricData.getMax
     pub fn get_max(&self) -> i32 {
         self.max
     }

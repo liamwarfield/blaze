@@ -576,7 +576,7 @@ fn create_attribute<'v>(
     }
 
     if let Some(values_arg) = arguments.values {
-        let values = sequence_noneable_cast(values_arg, "Object", |_| true, VALUES_ARG)?;
+        let values = sequence_noneable_cast(values_arg, "unknown", |_| true, VALUES_ARG)?;
         if !values.is_empty() {
             let values = values
                 .into_iter()
@@ -588,7 +588,7 @@ fn create_attribute<'v>(
 
     if let Some(obj) = non_none(arguments.providers) {
         let providers_list = build_provider_predicate(
-            &sequence_cast(obj, "Object", |_| true, PROVIDERS_ARG)?,
+            &sequence_cast(obj, "unknown", |_| true, PROVIDERS_ARG)?,
             PROVIDERS_ARG,
         )?;
         // If there is at least one empty set, there is no restriction.

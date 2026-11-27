@@ -10,6 +10,39 @@
 // OptionDefinition's OnceLock caches do not take part in Hash/Eq.
 #![allow(clippy::mutable_key_type)]
 
+// Java classes with no Rust counterpart (each method on its own line, see docs/coverage):
+// PORT: skipped, no user in Bazel at the pin (params files of other tools): ParamsFilePreProcessor.preProcess
+// PORT: skipped, no user in Bazel at the pin (params files of other tools): ParamsFilePreProcessor.parse
+// PORT: skipped, no user in Bazel at the pin (params files of other tools): ShellQuotedParamsFilePreProcessor.parse
+// PORT: skipped, no user in Bazel at the pin (params files of other tools): UnquotedParamsFilePreProcessor.parse
+// PORT: skipped, no user in Bazel at the pin (params files of other tools): ShellQuotedReader.read
+// PORT: skipped, no user in Bazel at the pin (params files of other tools): ShellQuotedReader.unread
+// PORT: skipped, no user in Bazel at the pin (params files of other tools): ShellQuotedReader.hasNext
+// PORT: skipped, no user in Bazel at the pin (params files of other tools): ShellQuotedReader.close
+// PORT: skipped, no user in Bazel at the pin (params files of other tools): ShellQuotedReader.readArg
+// PORT: skipped, an annotation attribute; the options! macro attribute of the same name carries it: Option.name
+// PORT: skipped, an annotation attribute; the options! macro attribute of the same name carries it: Option.abbrev
+// PORT: skipped, an annotation attribute; the options! macro attribute of the same name carries it: Option.help
+// PORT: skipped, an annotation attribute; the options! macro attribute of the same name carries it: Option.valueHelp
+// PORT: skipped, an annotation attribute; the options! macro attribute of the same name carries it: Option.defaultValue
+// PORT: skipped, an annotation attribute; the options! macro attribute of the same name carries it: Option.category
+// PORT: skipped, an annotation attribute; the options! macro attribute of the same name carries it: Option.documentationCategory
+// PORT: skipped, an annotation attribute; the options! macro attribute of the same name carries it: Option.effectTags
+// PORT: skipped, an annotation attribute; the options! macro attribute of the same name carries it: Option.metadataTags
+// PORT: skipped, an annotation attribute; the options! macro attribute of the same name carries it: Option.converter
+// PORT: skipped, an annotation attribute; the options! macro attribute of the same name carries it: Option.allowMultiple
+// PORT: skipped, an annotation attribute; the options! macro attribute of the same name carries it: Option.expansion
+// PORT: skipped, an annotation attribute; the options! macro attribute of the same name carries it: Option.implicitRequirements
+// PORT: skipped, an annotation attribute; the options! macro attribute of the same name carries it: Option.deprecationWarning
+// PORT: skipped, an annotation attribute; the options! macro attribute of the same name carries it: Option.oldName
+// PORT: skipped, an annotation attribute; the options! macro attribute of the same name carries it: Option.oldNameWarning
+// PORT: skipped, JVM reflection on converter type parameters (the options! macro types each field): GenericTypeHelper.getRawType
+// PORT: skipped, JVM reflection on converter type parameters (the options! macro types each field): GenericTypeHelper.matchTypeVariable
+// PORT: skipped, JVM reflection on converter type parameters (the options! macro types each field): GenericTypeHelper.getActualReturnType
+// PORT: skipped, JVM reflection on converter type parameters (the options! macro types each field): GenericTypeHelper.isAssignableFrom
+// PORT: skipped, the opaque holder of OptionsData for other packages (Rust shares OptionsData itself): OpaqueOptionsData.<init>
+// PORT: skipped, the exception's constructor (its class name is exception::DUPLICATE_OPTION_DECLARATION_EXCEPTION): DuplicateOptionDeclarationException.<init>
+
 #[macro_use]
 mod macros;
 

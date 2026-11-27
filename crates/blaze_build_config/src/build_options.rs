@@ -555,7 +555,7 @@ impl BuildOptions {
         result
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/BuildOptions.java:110 BuildOptions.of
+    // Java: com/google/devtools/build/lib/analysis/config/BuildOptions.java:128 BuildOptions.of
     /// Creates a BuildOptions class by taking the option values from command-line arguments.
     /// Returns a BuildOptions class that only has native options.
     pub fn of_args(
@@ -578,7 +578,7 @@ impl BuildOptions {
         Ok(builder.build())
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/BuildOptions.java:110 BuildOptions.of
+    // Java: com/google/devtools/build/lib/analysis/config/BuildOptions.java:144 BuildOptions.of
     /// Returns a BuildOptions class that only has Starlark options.
     pub fn of_starlark(starlark_options: IndexMap<Label, StarlarkOptionValue>) -> BuildOptions {
         BuildOptions::builder()
@@ -998,6 +998,10 @@ impl BuildOptionsBuilder {
     }
 
     // Java: com/google/devtools/build/lib/analysis/config/BuildOptions.java:476 BuildOptions.Builder.build
+    // Java: com/google/devtools/build/lib/analysis/config/BuildOptions.java:491 BuildOptions.Builder.sortedImmutableHashMap
+    // PORT: skipped, serialization of build options (remote analysis caching and Skyframe serialization are not ported): BuildOptions.valueSharingCodec, BuildOptions.ValueSharingCodec.autoRegister, BuildOptions.ValueSharingCodec.getEncodedClass, BuildOptions.ValueSharingCodec.serialize, BuildOptions.ValueSharingCodec.deserializeDeferred
+    // PORT: skipped, serialization of build options (remote analysis caching and Skyframe serialization are not ported): BuildOptions.ValueSharingCodec.DeserializationBuilder.call, BuildOptions.ValueSharingCodec.DeserializationBuilder.setFragmentOptionsMap, BuildOptions.ValueSharingCodec.DeserializationBuilder.setStarlarkOptionsMap, BuildOptions.ValueSharingCodec.DeserializationBuilder.setScopes
+    // PORT: skipped, serialization of build options (remote analysis caching and Skyframe serialization are not ported): BuildOptions.Codec.buildOptionsCodec, BuildOptions.Codec.getEncodedClass, BuildOptions.Codec.serialize, BuildOptions.Codec.deserialize, BuildOptions.OptionsChecksumCache.getOptions, BuildOptions.OptionsChecksumCache.prime, BuildOptions.MapBackedChecksumCache.getOptions, BuildOptions.MapBackedChecksumCache.prime
     pub fn build(&mut self) -> BuildOptions {
         let mut fragments = std::mem::take(&mut self.fragment_options);
         // LEXICAL_FRAGMENT_OPTIONS_COMPARATOR: Comparator.comparing(Class::getName).

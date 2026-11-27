@@ -4,8 +4,8 @@
 mod java_random;
 
 use blaze_remote::chunking::{
-    ChunkingConfig, ContentDefinedChunker, FastCdcChunker, FastCdcChunkingConfig,
-    RepMaxCdcChunker, RepMaxCdcChunkingConfig,
+    ChunkingConfig, ContentDefinedChunker, FastCdcChunker, FastCdcChunkingConfig, RepMaxCdcChunker,
+    RepMaxCdcChunkingConfig,
 };
 use blaze_remote::reapi::{
     CacheCapabilities, FastCdc2020Params, RepMaxCdcParams, ServerCapabilities, chunking_function,
@@ -70,7 +70,10 @@ fn fast_cdc_min_chunk_size_returns_quarter_of_avg() {
 
 #[test]
 fn fast_cdc_max_chunk_size_returns_four_times_avg() {
-    assert_eq!(FastCdcChunkingConfig::new(1024, 2, 0).max_chunk_size(), 4096);
+    assert_eq!(
+        FastCdcChunkingConfig::new(1024, 2, 0).max_chunk_size(),
+        4096
+    );
 }
 
 #[test]
@@ -185,7 +188,10 @@ fn from_server_capabilities_negotiation_neither_advertised_returns_null() {
         cache_capabilities: Some(CacheCapabilities::default()),
         ..Default::default()
     };
-    assert_eq!(ChunkingConfig::from_server_capabilities(&capabilities), None);
+    assert_eq!(
+        ChunkingConfig::from_server_capabilities(&capabilities),
+        None
+    );
     assert_eq!(
         ChunkingConfig::from_server_capabilities(&ServerCapabilities::default()),
         None

@@ -17,8 +17,8 @@ use blaze_optdefs::misc::auth_and_tls_options::AuthAndTLSOptions;
 use blaze_optdefs::misc::auth_and_tls_options::CredentialHelperOptionConverter;
 use blaze_remote::authandtls::Credentials;
 use blaze_remote::authandtls::google_auth_utils::{
-    http_cache_tls_config,
-    is_tls_enabled, new_channel, new_credential_helper_provider, new_credentials_from_netrc,
+    http_cache_tls_config, is_tls_enabled, new_channel, new_credential_helper_provider,
+    new_credentials_from_netrc,
 };
 use blaze_repo_fetch::authandtls::credentialhelper::{
     CommandLinePathFactory, CredentialHelperEnvironment, CredentialHelperProvider,
@@ -600,8 +600,7 @@ fn http_cache_tls_config_checks_the_host_name_stricter_than_netty() {
     use tokio_rustls::rustls::pki_types::pem::PemObject;
     use tokio_rustls::rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName};
 
-    let dir =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/jdk_cert_fixtures");
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/data/jdk_cert_fixtures");
     let handshake = |host: &str| -> Result<(), String> {
         let mut options = AuthAndTLSOptions::default();
         options.tls_certificate = Some(dir.join("ca.pem").to_str().unwrap().to_string());
@@ -631,5 +630,8 @@ fn http_cache_tls_config_checks_the_host_name_stricter_than_netty() {
     };
     handshake("localhost").unwrap();
     let e = handshake("example.com").unwrap_err();
-    assert!(e.contains("NotValidForName"), "{e}");
+    assert!(
+        e.contains("certificate not valid for name \"example.com\""),
+        "{e}"
+    );
 }

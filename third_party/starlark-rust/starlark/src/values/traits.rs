@@ -680,6 +680,16 @@ pub trait StarlarkValue<'v>:
         None // BLAZE PATCH 0066
     } // BLAZE PATCH 0066
 
+    /// BLAZE PATCH 0068: the entries of a native value that Java implements as a `Map` without // BLAZE PATCH 0068
+    /// being a `Dict` (Bazel's `existing_rule` views). Java's `dict(m)`, `d.update(m)`, `f(**m)`, // BLAZE PATCH 0068
+    /// `m | m`, `d |= m` and the set methods accept any `Map`. Default: not a map. // BLAZE PATCH 0068
+    fn java_map_entries( // BLAZE PATCH 0068
+        &self, // BLAZE PATCH 0068
+        _heap: Heap<'v>, // BLAZE PATCH 0068
+    ) -> Option<crate::Result<Vec<(Value<'v>, Value<'v>)>>> { // BLAZE PATCH 0068
+        None // BLAZE PATCH 0068
+    } // BLAZE PATCH 0068
+
     /// Attribute access that may fail and may read the evaluator (Bazel's
     /// `Structure.getValue(StarlarkSemantics, String)`, which throws `EvalException`).
     /// `Ok(None)` means the field is missing. Used by `x.f`, `x.f(...)`, `x.f op= y` and

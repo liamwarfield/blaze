@@ -921,6 +921,10 @@ fn read_executor_jdeps(
 }
 
 impl Action for JavaCompileAction {
+    fn java_class_name(&self) -> Option<&'static str> {
+        Some("com.google.devtools.build.lib.rules.java.JavaCompileAction")
+    }
+
     // Java: com/google/devtools/build/lib/rules/java/JavaCompileAction.java:590 JavaCompileAction.getExtraActionInfo
     fn get_extra_action_info(
         &self,

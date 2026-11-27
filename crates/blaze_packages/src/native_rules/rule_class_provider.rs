@@ -324,6 +324,12 @@ pub fn bazel_rule_class_provider_setup(builder: &mut RuleClassProviderBuilder) {
     builder.set_builtins_bzl_package_path_in_source("src/main/starlark/builtins_bzl");
 
     // Java: BazelRuleClassProvider.RULE_SETS
+    // ConfiguredRuleClassProvider.Builder.addRuleSet initializes a rule set's `requires()` first;
+    // in RULE_SETS order every requirement is already initialized, so the order below is the
+    // initialization order.
+    // PORT: skipped, the requirements are earlier in RULE_SETS (see above): CcRules.requires
+    // PORT: skipped, the requirements are earlier in RULE_SETS (see above): GenericRules.requires
+    // PORT: skipped, the requirements are earlier in RULE_SETS (see above): ToolchainRules.requires
     bazel_setup(builder);
     core_rules(builder);
     generic_rules(builder);

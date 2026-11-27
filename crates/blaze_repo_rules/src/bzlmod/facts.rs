@@ -285,10 +285,15 @@ impl<'v> StarlarkValue<'v> for FactsValue {
     fn at(&self, index: Value<'v>, _heap: Heap<'v>) -> starlark::Result<Value<'v>> {
         match self.dict().get(index)? {
             Some(v) => Ok(v),
-            // Java returns null from getIndex, which EvalUtils.index passes on as a null value.
+            // Java returns null from getIndex, which EvalUtils.index passes on to the evaluator
+            // as a raw Java null (checked against the oracle): `print(facts["b"])` prints
+            // "null", `[facts["b"]]` is `[null]`, a local assigned it is unbound ("local variable
+            // 'x' is referenced before assignment" where it is read), and `facts["b"] == None`
+            // crashes the server (NullPointerException). starlark-rust has no such value; it
+            // would take an interpreter patch.
             None => blaze_util::unported!(
                 "Facts.getIndex",
-                "key {} is not in the facts (Java yields a null value)",
+                "key {} is not in the facts (Java yields a raw null value)",
                 index.to_repr()
             ),
         }

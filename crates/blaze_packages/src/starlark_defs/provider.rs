@@ -421,6 +421,8 @@ impl<V: ValueLifetimeless> StarlarkProviderGen<V> {
     }
 
     // Java: com/google/devtools/build/lib/packages/StarlarkProvider.java:260 StarlarkProvider.newStarlarkInfoFactory
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoNoSchema.java:108 StarlarkInfoNoSchema.newStarlarkInfoFactory
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoWithSchema.java:67 StarlarkInfoWithSchema.newStarlarkInfoFactory
     fn new_starlark_info_factory<'v>(&self, provider: Value<'v>) -> StarlarkInfoFactory<'v> {
         let printable_name = self.get_printable_name();
         match &self.fields {

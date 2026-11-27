@@ -347,7 +347,7 @@ pub fn register_config_global_library(builder: &mut GlobalsBuilder) {
             settings,
             "string",
             |k| k.unpack_str().is_some(),
-            "Object",
+            "unknown",
             |_| true,
             "changed_settings dict",
         )?;

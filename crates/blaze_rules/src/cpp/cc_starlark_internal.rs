@@ -710,8 +710,14 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
     // Java: com/google/devtools/build/lib/rules/cpp/CcStarlarkInternal.java:343 CcStarlarkInternal.getStlComputedDefault
     fn stl_computed_default<'v>(this: Value<'v>) -> starlark::Result<NoneType> {
         let _ = this;
-        // Needs a native ComputedDefault attribute value (blaze_packages::attribute).
-        blaze_util::unported!("CcStarlarkInternal.getStlComputedDefault")
+        // Java returns `new StlComputedDefault()` (CcStarlarkInternal.java:330: `@//third_party/stl`
+        // unless the rule's tags contain `__CC_STL__`), a NativeComputedDefaultApi that only
+        // `attr.label(default = ...)` accepts (Attribute.Builder.value(NativeComputedDefaultApi),
+        // unported in blaze_packages). No .bzl at the pin calls it (builtins_bzl, rules_cc 0.2.17).
+        blaze_util::unported!(
+            "CcStarlarkInternal.getStlComputedDefault",
+            "a native computed default as a Starlark attribute default (no caller at the pin)"
+        )
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CcStarlarkInternal.java:353 CcStarlarkInternal.getArtifactNameForCategory
@@ -1406,8 +1412,16 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
             outputs,
             env,
         );
-        // Needs LtoBackendAction / LtoBackendArtifacts (ThinLTO); not reached by brotli or re2.
-        blaze_util::unported!("CcStarlarkInternal.createLtoBackendAction")
+        // Needs LtoBackendAction (a SpawnAction subclass with its own key, input discovery from
+        // the imports file and allowed derived inputs: a new blaze_actions SpawnActionClass) and
+        // LtoBackendArtifacts. Reached only with a toolchain that has an `lto-backend`
+        // action_config: rules_cc's lto_backends.bzl fails before calling this otherwise ("Thinlto
+        // build is requested, but the C++ toolchain doesn't define an action_config for
+        // 'lto-backend' action."), as with the auto-configured gcc toolchain of brotli and re2.
+        blaze_util::unported!(
+            "CcStarlarkInternal.createLtoBackendAction",
+            "LtoBackendAction (ThinLTO with a toolchain that defines the lto-backend action)"
+        )
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CcStarlarkInternal.java:1130 CcStarlarkInternal.createLtoBackendActionTemplate
@@ -1439,8 +1453,13 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
             dwo_file,
             env,
         );
-        // Needs LtoBackendActionTemplate; not reached by brotli or re2.
-        blaze_util::unported!("CcStarlarkInternal.createLtoBackendActionTemplate")
+        // Needs LtoBackendActionTemplate (an ActionTemplate expanding to LtoBackendActions per
+        // tree-artifact child); reached like create_lto_backend_action, for tree-artifact bitcode.
+        blaze_util::unported!(
+            "CcStarlarkInternal.createLtoBackendActionTemplate",
+            "LtoBackendActionTemplate (ThinLTO of tree-artifact sources with a toolchain that \
+             defines the lto-backend action)"
+        )
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CcStarlarkInternal.java:1196 CcStarlarkInternal.createHeaderInfo

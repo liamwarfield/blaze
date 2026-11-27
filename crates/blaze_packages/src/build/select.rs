@@ -73,12 +73,16 @@ pub(crate) fn select_library(builder: &mut GlobalsBuilder) {
     /// `select()` is the helper function that makes a rule attribute configurable.
     // Java: com/google/devtools/build/lib/packages/SelectorList.java:255 SelectorList.SelectLibrary.select
     fn select<'v>(
-        #[starlark(require = pos)] x: DictRef<'v>,
+        #[starlark(require = pos)] x: starlark::values::ValueOf<'v, DictRef<'v>>,
         // Java: `@Param(name = "no_match_error", defaultValue = "''", named = true)`;
         // `positional` defaults to true, so it is positional-or-named.
         #[starlark(default = "")] no_match_error: &str,
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<Value<'v>> {
+        // SelectorList.select iterates `dict.entrySet()`: a key-tracking dict (`ctx.var`) records
+        // every key.
+        starlark::values::dict::dict_record_all_keys_accessed(x.value);
+        let x = x.typed;
         // If this is not null, string keys in the dict will be resolved to Labels eagerly using
         // the given context.
         let heap = eval.heap();

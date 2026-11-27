@@ -106,6 +106,37 @@ fn testing_methods(builder: &mut MethodsBuilder) {
         eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<NoneType> {
         let _ = this;
+        // Java: the @Param types of TestingModuleApi.analysisTest, checked by the interpreter
+        // before the method body, in parameter order.
+        let check = |param: &str, v: Option<Value<'v>>, ok: fn(Value<'v>) -> bool, want: &str| {
+            match v {
+                Some(v) if !ok(v) => Err(errorf(format!(
+                    "in call to analysis_test(), parameter '{param}' got value of type '{}', want '{want}'",
+                    v.get_type()
+                ))),
+                _ => Ok(()),
+            }
+        };
+        let is_sequence = |v: Value<'v>| {
+            starlark::values::list::ListRef::from_value(v).is_some()
+                || starlark::values::tuple::TupleRef::from_value(v).is_some()
+        };
+        check("name", Some(name), |v| v.unpack_str().is_some(), "string")?;
+        check(
+            "implementation",
+            Some(implementation),
+            |v| v.get_type() == "function",
+            "function",
+        )?;
+        check("attrs", attrs, |v| v.get_type() == "dict", "dict")?;
+        check("fragments", fragments, is_sequence, "sequence")?;
+        check("toolchains", toolchains, is_sequence, "sequence")?;
+        check(
+            "attr_values",
+            attr_values,
+            |v| v.get_type() == "dict",
+            "dict",
+        )?;
         // TODO(b/236456122): Refactor this check into a standard helper / error message
         // PORT: Java checks for a Package.Builder and a RuleDefinitionEnvironment on the thread;
         // both exist exactly in BUILD (loading-phase) threads that hold a package builder.

@@ -599,6 +599,11 @@ pub(crate) fn bit_or_assign<'v>(
     if Dict::is_dict_type(lhs_ty) {
         // Java Eval.inplaceBinaryOp: only `dict |= map` merges in place; anything else is a
         // plain binary `|`, which may dispatch to the right operand.
+        // Java Eval.inplaceBinaryOp: `dict |= map` with any Map on the right. // BLAZE PATCH 0068
+        let rhs = match crate::values::types::dict::globals::java_map_as_dict(rhs, heap) { // BLAZE PATCH 0068
+            Some(m) => m?, // BLAZE PATCH 0068
+            None => rhs, // BLAZE PATCH 0068
+        }; // BLAZE PATCH 0068
         if !lhs.ptr_eq(rhs) && DictRef::from_value(rhs).is_none() { // BLAZE PATCH 0014
             if let Some(r) = rhs.get_ref().rbit_or(lhs, heap) { // BLAZE PATCH 0014
                 return r; // BLAZE PATCH 0014

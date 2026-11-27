@@ -33,6 +33,7 @@ use indexmap::{IndexMap, IndexSet};
 use crate::analysis_phase_runner;
 use crate::build_view::AnalysisResult;
 use crate::skyframe_executor::{SkyframeExecutor, TargetPatternPhaseDetailedError};
+use blaze_analysis::configured_target::ConfiguredTarget;
 
 /// `Interrupted.Code.INTERRUPTED` exit code.
 const INTERRUPTED_EXIT_CODE: i32 = 8;
@@ -473,6 +474,14 @@ pub trait AnalysisPostProcessor {
         Ok(())
     }
 
+    /// `env.throwPendingException()` of `AnalysisAndExecutionPhaseRunner.execute`: the exit a
+    /// module requested while the command runs. The default is for post-processors that create
+    /// no execution tool.
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:113 AnalysisAndExecutionPhaseRunner.execute
+    fn throw_pending_exception(&self) -> Result<(), BuildToolError> {
+        Ok(())
+    }
+
     /// `new ExecutionTool(env, request)` of a request without merged analysis and execution
     /// that does not analyze (`--noanalyze`): Java creates the tool after
     /// `AnalysisPhaseRunner.execute` returned, outside `if (performAnalysisPhase)`. The default
@@ -491,6 +500,7 @@ pub trait AnalysisPostProcessor {
 /// execution of `BuildTool.buildTargetsWithMergedAnalysisExecution`), implemented by the
 /// command, which holds the execution options and the event subscribers.
 pub trait ExecutionPhase {
+    /// `ExecutionTool.executeBuild` (the path without merged analysis and execution).
     fn execute_build(
         &self,
         request: &BuildRequest,
@@ -498,6 +508,47 @@ pub trait ExecutionPhase {
         loading_result: &crate::target_pattern_phase::TargetPatternPhaseValue,
         analysis_result: &AnalysisResult,
     ) -> Result<(), BuildToolError>;
+
+    /// The callbacks `buildTargetsWithMergedAnalysisExecution` hands to
+    /// `AnalysisAndExecutionPhaseRunner.execute` (`executionTool.prepareForExecution`,
+    /// `result::setBuildConfiguration`, the `BuildDriverKeyTestContext`) and what the merged
+    /// evaluation reads of the command (the `BuildResultListener`, the view options).
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:620 BuildTool.buildTargetsWithMergedAnalysisExecution
+    fn merged_analysis_and_execution_args(
+        &self,
+        request: &BuildRequest,
+    ) -> crate::skyframe_build_view::MergedAnalysisAndExecutionArgs<'_>;
+
+    /// `env.getBuildResultListener()`.
+    fn build_result_listener(&self) -> Arc<crate::build_result_listener::BuildResultListener>;
+
+    /// `TopLevelTargetAnalysisWatcher.createAndRegisterWithEventBus(modules, env, request,
+    /// buildOptions)`: the modules' `afterTopLevelTargetAnalysis`, `afterSingleTestAnalysis`,
+    /// `afterSingleAspectAnalysis` and `coverageArtifactsKnown` while the merged phase runs.
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:309 AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.createAndRegisterWithEventBus
+    fn register_top_level_target_analysis_watcher(&self, request: &BuildRequest);
+
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisAndExecutionPhaseRunner.java:351 AnalysisAndExecutionPhaseRunner.TopLevelTargetAnalysisWatcher.close
+    fn close_top_level_target_analysis_watcher(&self);
+
+    /// `AnalysisPhaseRunner.postAbortedEventsForSkippedTargets(env, skippedTargets)`.
+    // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:343 AnalysisPhaseRunner.postAbortedEventsForSkippedTargets
+    fn post_aborted_events_for_skipped_targets(&self, skipped_targets: &[ConfiguredTarget]);
+
+    /// The `finally` block of `buildTargetsWithMergedAnalysisExecution`: the convenience
+    /// symlinks (when the configuration was created), `unconditionalExecutionPhaseFinalizations`,
+    /// the result's targets, and `nonCatastrophicFinalizations(result, actionCache,
+    /// explanationHandler, buildCompleted)` ("Show results"). `error` is what the merged phase
+    /// threw (a catastrophic `BuildFailedException` sets the result's catastrophe, as
+    /// `processRequest` does).
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:664 BuildTool.buildTargetsWithMergedAnalysisExecution
+    fn merged_finalizations(
+        &self,
+        request: &BuildRequest,
+        skyframe_executor: &SkyframeExecutor,
+        build_completed: bool,
+        error: Option<&crate::analysis_and_execution_phase_runner::AnalysisAndExecutionError>,
+    );
 }
 
 /// Validates the targets of a build request before building begins (`run`: exactly one
@@ -897,14 +948,19 @@ impl<'a> BuildTool<'a> {
             hooks.project_evaluated(!project_evaluation_result.build_options.is_empty());
         }
 
-        // buildTargetsWithoutMergedAnalysisExecution
-        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:496 BuildTool.buildTargetsWithoutMergedAnalysisExecution
         self.analysis_and_execution_entered
             .store(true, std::sync::atomic::Ordering::SeqCst);
+        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:410 BuildTool.buildTargets
         if request.with_merged_analysis_and_execution_source_of_truth() {
-            self.analysis_post_processor
-                .before_merged_analysis(request, self.skyframe_executor)?;
+            return self.build_targets_with_merged_analysis_execution(
+                request,
+                &target_pattern_phase_value,
+                &build_options,
+            );
         }
+
+        // buildTargetsWithoutMergedAnalysisExecution
+        // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:496 BuildTool.buildTargetsWithoutMergedAnalysisExecution
         let analysis_result = analysis_phase_runner::execute(
             self.skyframe_executor,
             &self.reporter,
@@ -1003,6 +1059,145 @@ impl<'a> BuildTool<'a> {
             // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:520 BuildTool.buildTargetsWithoutMergedAnalysisExecution
             self.analysis_post_processor
                 .process_without_analysis(request, self.skyframe_executor)?;
+        }
+        Ok(())
+    }
+
+    /// Performs the merged analysis and execution phase.
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:595 BuildTool.buildTargetsWithMergedAnalysisExecution
+    fn build_targets_with_merged_analysis_execution(
+        &self,
+        request: &BuildRequest,
+        target_pattern_phase_value: &crate::target_pattern_phase::TargetPatternPhaseValue,
+        build_options: &Arc<BuildOptions>,
+    ) -> Result<(), BuildToolError> {
+        // See https://github.com/bazelbuild/rules_nodejs/issues/3693.
+        // PORT: skipped, clearSyscallCache (no syscall cache).
+
+        // ExecutionTool executionTool = new ExecutionTool(env, request);
+        self.analysis_post_processor
+            .before_merged_analysis(request, self.skyframe_executor)?;
+        let Some(execution_phase) = self.execution_phase else {
+            blaze_util::unported!(
+                "BuildTool.buildTargetsWithMergedAnalysisExecution",
+                "no execution tool for the {} command",
+                request.command_name
+            );
+        };
+        // This timer measures time from the first execution activity to the last.
+        // PORT: the execution timer is the command's build event stream support's (it starts
+        // with the first SomeExecutionStartedEvent counted in execution time).
+
+        // TODO(b/199053098): implement support for --nobuild.
+        let analysis_and_execution_result = crate::analysis_and_execution_phase_runner::execute(
+            self.skyframe_executor,
+            &self.reporter,
+            &self.relative_working_directory,
+            request,
+            build_options,
+            target_pattern_phase_value,
+            execution_phase,
+            &|| self.analysis_post_processor.throw_pending_exception(),
+        );
+        // env.getReporter().post(new NoAnalyzeEvent()): the runner posts it after "Loading
+        // complete." and before it reports a target pattern failure.
+        if !request.perform_analysis_phase
+            && let Some(hooks) = self.build_event_hooks
+        {
+            hooks.no_analyze();
+        }
+        // buildCompleted: the try block returned, or threw one of the non-catastrophic
+        // InvalidConfigurationException, RepositoryMappingResolutionException,
+        // ViewCreationFailedException, BuildFailedException, TestExecException.
+        let build_completed = match &analysis_and_execution_result {
+            Ok(_) => true,
+            Err(
+                crate::analysis_and_execution_phase_runner::AnalysisAndExecutionError::Execution(_),
+            ) => true,
+            Err(
+                crate::analysis_and_execution_phase_runner::AnalysisAndExecutionError::BuildTool(e),
+            ) => matches!(
+                e,
+                BuildToolError::InvalidConfiguration(_)
+                    | BuildToolError::RepositoryMappingResolution { .. }
+                    | BuildToolError::ViewCreationFailed { .. }
+                    | BuildToolError::BuildFailed { .. }
+            ),
+        };
+        // finally { ... }
+        // PORT: a catastrophe (Error | RuntimeException) is a panic, which skips the finally
+        // block as hasCatastrophe skips nonCatastrophicFinalizations.
+        execution_phase.merged_finalizations(
+            request,
+            self.skyframe_executor,
+            build_completed,
+            analysis_and_execution_result.as_ref().err(),
+        );
+
+        let analysis_and_execution_result = match analysis_and_execution_result {
+            Ok(result) => result,
+            Err(
+                crate::analysis_and_execution_phase_runner::AnalysisAndExecutionError::BuildTool(e),
+            ) => return Err(e),
+            Err(
+                crate::analysis_and_execution_phase_runner::AnalysisAndExecutionError::Execution(
+                    crate::skyframe_error_processor::RethrownException::BuildFailed {
+                        error, ..
+                    },
+                ),
+            ) => return Err(error),
+            Err(
+                crate::analysis_and_execution_phase_runner::AnalysisAndExecutionError::Execution(
+                    crate::skyframe_error_processor::RethrownException::TestExec(message),
+                ),
+            ) => {
+                // processRequest, `catch (TestExecException e)`: ExitCode.SUCCESS means that
+                // build was successful. Real return code of program is going to be calculated in
+                // TestCommand.doTest(). reportExceptionError(e).
+                // PORT: BuildToolError has no TestExecException; it is caught here, where
+                // nothing of buildTargets is left to run (the finally block of buildTargets runs
+                // in the caller).
+                // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:974 BuildTool.processRequest
+                self.report_exception_error(&message);
+                return Ok(());
+            }
+        };
+
+        // This value is null when there's no analysis.
+        let Some(analysis_and_execution_result) = analysis_and_execution_result else {
+            return Ok(());
+        };
+        // The analysis metrics of the build event stream (the AnalysisPhaseCompleteEvent and
+        // AnalysisGraphStatsEvent of analysisFinishedCallback reach the metrics collector here).
+        if let Some(hooks) = self.build_event_hooks {
+            hooks.analysis_complete(
+                request,
+                self.skyframe_executor,
+                target_pattern_phase_value,
+                &analysis_and_execution_result,
+            );
+        }
+
+        // This is the --keep_going code path: Time to throw the delayed exceptions.
+        // Keeping legacy behavior: for execution errors, keep the message of the
+        // BuildFailedException empty.
+        if let Some(execution_detailed_exit_code) =
+            analysis_and_execution_result.get_execution_detailed_exit_code()
+        {
+            return Err(BuildToolError::BuildFailed {
+                message: String::new(),
+                failure_detail: execution_detailed_exit_code
+                    .get_failure_detail()
+                    .cloned()
+                    .expect("an execution exit code has a failure detail"),
+            });
+        }
+
+        if let Some(delayed_failure_detail) = analysis_and_execution_result.get_failure_detail() {
+            return Err(BuildToolError::BuildFailed {
+                message: delayed_failure_detail.message.clone(),
+                failure_detail: delayed_failure_detail.clone(),
+            });
         }
         Ok(())
     }

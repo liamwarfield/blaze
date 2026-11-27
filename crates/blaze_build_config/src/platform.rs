@@ -33,10 +33,12 @@ impl Hash for PlatformValueKey {
 
 impl fmt::Debug for PlatformValueKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        // Java: PlatformValue.Key is an AutoValue (record) printing its fields.
+        // Java: PlatformValue.Key is a record `Key(Label label, ImmutableMap flagAliasMappings)`
+        // printing its fields.
+        // Java: com/google/devtools/build/lib/analysis/platform/PlatformValue.java:61 PlatformValue.Key
         write!(
             f,
-            "Key[platformLabel={}, flagAliasMappings={{{}}}]",
+            "Key[label={}, flagAliasMappings={{{}}}]",
             self.platform_label,
             self.flag_alias_mappings
                 .iter()

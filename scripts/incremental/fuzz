@@ -30,7 +30,9 @@ the three sides and compares:
   The ERROR and WARNING lines against the oracle are printed (msgdiff) but not counted: the
     Starlark interpreter's error texts differ by the user's decision (starlark-rust).
 
-Round-2 review additions: a fixed --invocation_id on stretches of rounds (all sides); --watchfs on
+Round-2 review additions: a fixed --invocation_id on stretches of rounds (all sides; while it
+is on, the clean build is the judge: Bazel 9.3.2 gives stale results or crashes on a repeated
+id, so differences against the oracle are printed and not counted); --watchfs on
 stretches of rounds with directory renames, re-creations and removals; writes racing the start of
 A's command (the racing round is not compared; the next build of all sides is, with no edit in
 between); SIGINT during A's build (the same). Interrupts and races apply to A only.
@@ -783,20 +785,29 @@ def cmd_run(a):
         bba, bbo, bbb = side_a.bazel_bin(), side_o.bazel_bin(), side_b.bazel_bin()
         ta, to, tb = output_tree(side_a, bba), output_tree(side_o, bbo), output_tree(side_b, bbb)
         vs_o, vs_b, notes = [], [], []
+        # With a repeated --invocation_id Bazel's own result is stale (Skymeld's BuildDriver
+        # nodes depend on BUILD_ID only) or a crash (an NPE in ExecutionProgressReceiver when
+        # two builds in a row have the same id): the clean build is the judge, the oracle's
+        # differences are printed only.
+        id_reused = "invocation_id" in editor.opts
+        oracle_agrees = (lambda same: same and not id_reused)
         if ca != co:
             vs_o.append("exit %d (A) vs %d (oracle)" % (ca, co))
         for p in compare_trees(ta, to, True):
             vs_o.append("output %s: A %s oracle %s" % (p, ta.get(p), to.get(p)))
-        if ca != cb and ca != co:
+        if ca != cb and not oracle_agrees(ca == co):
             vs_b.append("exit %d (A) vs %d (clean)" % (ca, cb))
         pa, po, pb = problem_lines(ea, side_a), problem_lines(eo, side_o), problem_lines(eb, side_b)
-        if pa != pb and pa != po:
+        if pa != pb and not oracle_agrees(pa == po):
             vs_b.append("messages: A %s clean %s" % (pa, pb))
         if pa != po:
             notes.append("msgdiff: A %s oracle %s" % (pa, po))
         for p in compare_trees(ta, tb, False):
-            if ta.get(p) != to.get(p):
+            if not oracle_agrees(ta.get(p) == to.get(p)):
                 vs_b.append("output %s: A %s clean %s" % (p, ta.get(p), tb.get(p)))
+        if id_reused and vs_o:
+            notes += ["oracle (repeated invocation id, not counted): " + x for x in vs_o]
+            vs_o = []
         state = "OK" if not vs_o and not vs_b else "MISMATCH"
         say("%4d %-58s %s" % (i, what[:58], state))
         for x in vs_o:

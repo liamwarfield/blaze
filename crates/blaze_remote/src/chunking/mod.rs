@@ -98,9 +98,7 @@ impl ChunkingConfig {
     pub fn new_chunker(&self, digest_util: DigestUtil) -> Box<dyn ContentDefinedChunker> {
         match self {
             ChunkingConfig::FastCdc(c) => Box::new(FastCdcChunker::from_config(c, digest_util)),
-            ChunkingConfig::RepMaxCdc(c) => {
-                Box::new(RepMaxCdcChunker::from_config(c, digest_util))
-            }
+            ChunkingConfig::RepMaxCdc(c) => Box::new(RepMaxCdcChunker::from_config(c, digest_util)),
         }
     }
 
@@ -214,7 +212,7 @@ impl FastCdcChunkingConfig {
 /// controls the lookahead window used to find optimal cutting points; larger values improve
 /// deduplication quality with diminishing returns, and a value of zero produces uniform chunks
 /// of `minChunkSize`.
-// Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunkingConfig.java:28 RepMaxCdcChunkingConfig
+// Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunkingConfig.java:29 RepMaxCdcChunkingConfig
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RepMaxCdcChunkingConfig {
     pub min_chunk_size: i32,
@@ -233,18 +231,18 @@ impl RepMaxCdcChunkingConfig {
         }
     }
 
-    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunkingConfig.java:35 RepMaxCdcChunkingConfig.chunkingFunction
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunkingConfig.java:37 RepMaxCdcChunkingConfig.chunkingFunction
     pub fn chunking_function(&self) -> chunking_function::Value {
         chunking_function::Value::RepMaxCdc
     }
 
     /// Chunks are strictly smaller than twice the minimum chunk size.
-    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunkingConfig.java:40 RepMaxCdcChunkingConfig.maxChunkSize
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunkingConfig.java:42 RepMaxCdcChunkingConfig.maxChunkSize
     pub fn max_chunk_size(&self) -> i32 {
         self.min_chunk_size.wrapping_mul(2).wrapping_sub(1)
     }
 
-    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunkingConfig.java:51 RepMaxCdcChunkingConfig.defaults
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunkingConfig.java:52 RepMaxCdcChunkingConfig.defaults
     pub fn defaults() -> Self {
         Self::new(
             Self::DEFAULT_MIN_CHUNK_SIZE,
@@ -254,7 +252,7 @@ impl RepMaxCdcChunkingConfig {
 
     /// Creates a configuration from the parameters advertised by the server, replacing values
     /// outside the expected range with defaults.
-    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunkingConfig.java:60 RepMaxCdcChunkingConfig.fromParams
+    // Java: com/google/devtools/build/lib/remote/chunking/RepMaxCdcChunkingConfig.java:61 RepMaxCdcChunkingConfig.fromParams
     pub fn from_params(params: &crate::reapi::RepMaxCdcParams) -> Self {
         let mut min_size = Self::DEFAULT_MIN_CHUNK_SIZE;
         let config_min_size = params.min_chunk_size_bytes as i64;

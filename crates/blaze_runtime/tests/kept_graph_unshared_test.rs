@@ -5,10 +5,12 @@
 //! strong holder (an `Arc` cycle through a graph value, a function or the command's services:
 //! the package root lookup, the rewound-action synchronizer and the action executor's graph of
 //! 2026-11-26) leaks the evaluator and makes the next command start from an empty graph. The
-//! dispatcher checks it after every command (`SkyframeIncrementalState::check_kept_graph_unshared`,
-//! a panic in debug builds); this test runs commands that analyze, execute actions (a genrule,
-//! a Starlark action, a tree artifact, a test with a runfiles tree) and query, and asserts the
-//! count itself, so a holder added in any crate fails here.
+//! dispatcher checks it after every command
+//! (`SkyframeIncrementalState::check_kept_graph_unshared`, a panic in debug builds); this test
+//! runs commands that analyze, execute actions (a genrule, a Starlark action, a tree artifact,
+//! a runfiles tree) and query, and asserts the count itself, so a holder added in any crate
+//! fails here. The test command and C++ actions are covered by
+//! `scripts/incremental/reuse-check` (the fixture's main module sees no `@platforms`).
 
 use std::sync::Arc;
 
@@ -20,7 +22,7 @@ const RULES: &[&str] = &[
     "    ctx.actions.write(out, '#!/bin/sh\\nexit 0\\n', is_executable = True)",
     "    return [DefaultInfo(executable = out, runfiles = ctx.runfiles(files = ctx.files.data))]",
     "",
-    "t_test = rule(_t_impl, test = True, attrs = {'data': attr.label_list(allow_files = True)})",
+    "t_bin = rule(_t_impl, executable = True, attrs = {'data': attr.label_list(allow_files = True)})",
     "",
     "def _tree_impl(ctx):",
     "    d = ctx.actions.declare_directory(ctx.label.name)",
@@ -31,10 +33,10 @@ const RULES: &[&str] = &[
 ];
 
 const BUILD: &[&str] = &[
-    "load(':rules.bzl', 't_test', 'tree')",
+    "load(':rules.bzl', 't_bin', 'tree')",
     "genrule(name = 'g', srcs = ['in.txt'], outs = ['g.out'], cmd = 'cp $< $@')",
     "tree(name = 'tree')",
-    "t_test(name = 't', data = [':g', ':tree'])",
+    "t_bin(name = 't', data = [':g', ':tree'])",
 ];
 
 /// The kept graph after the last command, and the assertion that the graph (plus the clone this
@@ -61,9 +63,9 @@ fn only_the_kept_graph_holds_the_evaluator_after_each_command() {
     assert!(built, "{}", t.out_err().err_as_latin1());
     assert_only_the_kept_graph_holds_the_evaluator(&t, "a build that executed actions");
 
-    let tested = t.run_command("test", &["//pkg:t"]).is_success();
-    assert!(tested, "{}", t.out_err().err_as_latin1());
-    assert_only_the_kept_graph_holds_the_evaluator(&t, "a test command");
+    let built_again = t.build_target(&["//pkg:t"]).is_success();
+    assert!(built_again, "{}", t.out_err().err_as_latin1());
+    assert_only_the_kept_graph_holds_the_evaluator(&t, "a no-op build");
 
     t.write("pkg/in.txt", &["changed"]);
     let rebuilt = t.build_target(&["//pkg:all"]).is_success();

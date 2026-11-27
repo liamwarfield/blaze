@@ -71,6 +71,7 @@ options! {
 
         #[option(
             name = "incompatible_autoload_externally",
+            // Java: com/google/devtools/build/lib/packages/semantics/FlagConstants.java:30 FlagConstants.DEFAULT_INCOMPATIBLE_AUTOLOAD_EXTERNALLY
             default_value = "",
             converter = CommaSeparatedOptionSetConverter,
             documentation_category = STARLARK_SEMANTICS,
@@ -441,6 +442,7 @@ options! {
 
         #[option(
             name = "incompatible_package_group_has_public_syntax",
+            // Java: com/google/devtools/build/lib/packages/semantics/FlagConstants.java:40 FlagConstants.DEFAULT_INCOMPATIBLE_PACKAGE_GROUP_HAS_PUBLIC_SYNTAX
             default_value = "true",
             documentation_category = STARLARK_SEMANTICS,
             effect_tags = [BUILD_FILE_SEMANTICS],
@@ -454,6 +456,7 @@ options! {
 
         #[option(
             name = "incompatible_fix_package_group_reporoot_syntax",
+            // Java: com/google/devtools/build/lib/packages/semantics/FlagConstants.java:41 FlagConstants.DEFAULT_INCOMPATIBLE_FIX_PACKAGE_GROUP_REPOROOT_SYNTAX
             default_value = "true",
             documentation_category = STARLARK_SEMANTICS,
             effect_tags = [BUILD_FILE_SEMANTICS],
@@ -662,6 +665,7 @@ options! {
 
         #[option(
             name = "incompatible_enable_proto_toolchain_resolution",
+            // Java: com/google/devtools/build/lib/packages/semantics/FlagConstants.java:48 FlagConstants.DEFAULT_INCOMPATIBLE_ENABLE_PROTO_TOOLCHAIN_RESOLUTION
             default_value = "true",
             documentation_category = TOOLCHAIN,
             effect_tags = [LOADING_AND_ANALYSIS],
@@ -682,6 +686,7 @@ options! {
 
         #[option(
             name = "experimental_rule_extension_api",
+            // Java: com/google/devtools/build/lib/packages/semantics/FlagConstants.java:24 FlagConstants.DEFAULT_EXPERIMENTAL_RULE_EXTENSION_API
             default_value = "true",
             documentation_category = UNCATEGORIZED,
             effect_tags = [LOADING_AND_ANALYSIS],
@@ -706,6 +711,7 @@ options! {
 
         #[option(
             name = "experimental_starlark_type_syntax",
+            // Java: com/google/devtools/build/lib/packages/semantics/FlagConstants.java:36 FlagConstants.DEFAULT_EXPERIMENTAL_STARLARK_TYPE_SYNTAX
             default_value = "true",
             documentation_category = STARLARK_SEMANTICS,
             effect_tags = [LOADING_AND_ANALYSIS],
@@ -716,6 +722,7 @@ options! {
 
         #[option(
             name = "experimental_starlark_type_checking",
+            // Java: com/google/devtools/build/lib/packages/semantics/FlagConstants.java:37 FlagConstants.DEFAULT_EXPERIMENTAL_STARLARK_TYPE_CHECKING
             default_value = "false",
             documentation_category = STARLARK_SEMANTICS,
             effect_tags = [LOADING_AND_ANALYSIS],
@@ -743,6 +750,7 @@ options! {
 
         #[option(
             name = "experimental_starlark_types_allowed_paths",
+            // Java: com/google/devtools/build/lib/packages/semantics/FlagConstants.java:38 FlagConstants.DEFAULT_EXPERIMENTAL_STARLARK_TYPES_ALLOWED_PATHS
             default_value = "",
             converter = CommaSeparatedOptionListConverter,
             documentation_category = STARLARK_SEMANTICS,
@@ -1078,9 +1086,11 @@ pub const INCOMPATIBLE_CHECK_EXTERNAL_REPO_SOURCE_DIR_PACKAGE_BOUNDARY: &str =
 // Java: com/google/devtools/build/lib/packages/semantics/BuildLanguageOptions.java:1113 BuildLanguageOptions.INCOMPATIBLE_DISALLOW_EMPTY_GLOB
 pub const INCOMPATIBLE_DISALLOW_EMPTY_GLOB: &str = "+incompatible_disallow_empty_glob";
 // Java: com/google/devtools/build/lib/packages/semantics/BuildLanguageOptions.java:1114 BuildLanguageOptions.INCOMPATIBLE_PACKAGE_GROUP_HAS_PUBLIC_SYNTAX
+// Java: com/google/devtools/build/lib/packages/semantics/FlagConstants.java:43 FlagConstants.INCOMPATIBLE_PACKAGE_GROUP_HAS_PUBLIC_SYNTAX
 pub const INCOMPATIBLE_PACKAGE_GROUP_HAS_PUBLIC_SYNTAX: &str =
     "+incompatible_package_group_has_public_syntax";
 // Java: com/google/devtools/build/lib/packages/semantics/BuildLanguageOptions.java:1116 BuildLanguageOptions.INCOMPATIBLE_FIX_PACKAGE_GROUP_REPOROOT_SYNTAX
+// Java: com/google/devtools/build/lib/packages/semantics/FlagConstants.java:45 FlagConstants.INCOMPATIBLE_FIX_PACKAGE_GROUP_REPOROOT_SYNTAX
 pub const INCOMPATIBLE_FIX_PACKAGE_GROUP_REPOROOT_SYNTAX: &str =
     "+incompatible_fix_package_group_reporoot_syntax";
 // Java: com/google/devtools/build/lib/packages/semantics/BuildLanguageOptions.java:1120 BuildLanguageOptions.INCOMPATIBLE_JAVA_INFO_MERGE_RUNTIME_MODULE_FLAGS
@@ -1115,6 +1125,7 @@ pub const ADD_GO_EXEC_GROUPS_TO_BINARY_RULES: &str = "-add_go_exec_groups_to_bin
 pub const INCOMPATIBLE_FAIL_ON_UNKNOWN_ATTRIBUTES: &str =
     "+incompatible_fail_on_unknown_attributes";
 // Java: com/google/devtools/build/lib/packages/semantics/BuildLanguageOptions.java:1141 BuildLanguageOptions.INCOMPATIBLE_ENABLE_PROTO_TOOLCHAIN_RESOLUTION
+// Java: com/google/devtools/build/lib/packages/semantics/FlagConstants.java:49 FlagConstants.DEFAULT_INCOMPATIBLE_ENABLE_PROTO_TOOLCHAIN_RESOLUTION_NAME
 pub const INCOMPATIBLE_ENABLE_PROTO_TOOLCHAIN_RESOLUTION: &str =
     "+incompatible_enable_proto_toolchain_resolution";
 // Java: com/google/devtools/build/lib/packages/semantics/BuildLanguageOptions.java:1143 BuildLanguageOptions.INCOMPATIBLE_DISABLE_NON_EXECUTABLE_JAVA_BINARY
@@ -1124,10 +1135,12 @@ pub const INCOMPATIBLE_DISABLE_NON_EXECUTABLE_JAVA_BINARY: &str =
 pub const INCOMPATIBLE_DISABLE_TARGET_DEFAULT_PROVIDER_FIELDS: &str =
     "-incompatible_disable_target_default_provider_fields";
 // Java: com/google/devtools/build/lib/packages/semantics/BuildLanguageOptions.java:1147 BuildLanguageOptions.EXPERIMENTAL_RULE_EXTENSION_API
+// Java: com/google/devtools/build/lib/packages/semantics/FlagConstants.java:25 FlagConstants.DEFAULT_EXPERIMENTAL_RULE_EXTENSION_API_NAME
 pub const EXPERIMENTAL_RULE_EXTENSION_API: &str = "+experimental_rule_extension_api";
 // Java: com/google/devtools/build/lib/packages/semantics/BuildLanguageOptions.java:1149 BuildLanguageOptions.EXPERIMENTAL_DORMANT_DEPS
 pub const EXPERIMENTAL_DORMANT_DEPS: &str = "-experimental_dormant_deps";
 // Java: com/google/devtools/build/lib/packages/semantics/BuildLanguageOptions.java:1151 BuildLanguageOptions.EXPERIMENTAL_STARLARK_TYPE_SYNTAX
+// Java: com/google/devtools/build/lib/packages/semantics/FlagConstants.java:34 FlagConstants.EXPERIMENTAL_STARLARK_TYPE_SYNTAX_FLAG_NAME
 pub const EXPERIMENTAL_STARLARK_TYPE_SYNTAX: &str = "+experimental_starlark_type_syntax";
 // Java: com/google/devtools/build/lib/packages/semantics/BuildLanguageOptions.java:1153 BuildLanguageOptions.INCOMPATIBLE_ENABLE_DEPRECATED_LABEL_APIS
 pub const INCOMPATIBLE_ENABLE_DEPRECATED_LABEL_APIS: &str =

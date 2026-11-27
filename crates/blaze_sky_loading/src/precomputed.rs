@@ -27,6 +27,13 @@ pub static VENDOR_DIRECTORY: Precomputed<Option<std::path::PathBuf>> =
 // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:88 PrecomputedValue.BUILD_ID
 pub static BUILD_ID: Precomputed<String> = Precomputed::new("build_id");
 
+/// The `--action_env` variables, in order; `None` for a variable inherited from the client
+/// (Java's `LinkedHashMap` with null values). Injected by every command (`SkyframeExecutor.sync`);
+/// Java's `ActionEnvironmentFunction` reads it.
+// Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:91 PrecomputedValue.ACTION_ENV
+pub static ACTION_ENV: Precomputed<indexmap::IndexMap<String, Option<String>>> =
+    Precomputed::new("action_env");
+
 // Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:84 PrecomputedValue.STARLARK_SEMANTICS
 pub static STARLARK_SEMANTICS: Precomputed<StarlarkSemantics> =
     Precomputed::new("starlark_semantics");

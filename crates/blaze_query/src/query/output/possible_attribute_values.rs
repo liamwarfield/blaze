@@ -4,6 +4,8 @@ use blaze_packages::attribute::{AggregatingAttributeMapper, Attribute, Attribute
 use blaze_packages::target::Rule;
 use blaze_packages::types::{AttrValue, Type};
 
+// PORT: skipped, a module of free functions has no instance: PossibleAttributeValues.<init>
+
 /// Returns the possible values of the specified attribute in the specified rule. For
 /// configurable attributes, multiple values may be possible (one per branch of the select, or
 /// the concatenations of the selects of a list-typed attribute); `None` elements are Java's

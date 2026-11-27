@@ -325,6 +325,7 @@ impl TargetDefinitionContext {
     }
 
     // Java: com/google/devtools/build/lib/packages/TargetDefinitionContext.java:224 TargetDefinitionContext.newFromOrFailException
+    // Java: com/google/devtools/build/lib/packages/TargetDefinitionContext.java:219 TargetDefinitionContext.newFromOrFailException
     pub fn new_from_or_fail_exception(
         what: &str,
         participle: &str,
@@ -1179,6 +1180,7 @@ impl TargetDefinitionContext {
 
     /// Validates the member environments of environment groups (all targets are loaded now).
     // Java: com/google/devtools/build/lib/packages/Package.java:960 Package.AbstractBuilder.finalBuilderValidationHook
+    // Java: com/google/devtools/build/lib/packages/TargetDefinitionContext.java:913 TargetDefinitionContext.finalBuilderValidationHook
     pub(crate) fn final_builder_validation_hook(&mut self) {
         // Java: ImmutableSet.copyOf(environmentGroups.values()) (HashMap order).
         // PORT: java-hash-order. The groups are processed in label order here; the order only
@@ -1252,3 +1254,10 @@ pub enum PackageBuilderError {
 fn join_english_list(items: &[String]) -> String {
     crate::attribute::string_util::join_english_list(items)
 }
+
+// PORT: skipped, starlark-rust does not count Java's executed steps; `--max_computation_steps` stops with unported! (PackageFactory): TargetDefinitionContext.updateStartedThreadComputationSteps, TargetDefinitionContext.updatePausedThreadComputationSteps
+// PORT: skipped, starlark-rust does not count Java's executed steps; `--max_computation_steps` stops with unported! (PackageFactory): TargetDefinitionContext.close, TargetDefinitionContext.setComputationSteps
+// PORT: skipped, the BUILD thread's blaze_starlark ThreadContext generates the identity tokens: TargetDefinitionContext.getSymbolGenerator
+// PORT: skipped, memory interning of list attribute values (no output depends on it): TargetDefinitionContext.getListInterner, TargetDefinitionContext.intern
+// PORT: skipped, packages load on the evaluator's workers without Java's CPU-bound semaphore (throughput only): TargetDefinitionContext.getCpuBoundSemaphore
+// PORT: skipped, a no-op in the base class; its overrides (the PackagePiece builders) copy the computation steps, which are not counted (see above): TargetDefinitionContext.packageoidInitializationHook

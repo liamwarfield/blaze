@@ -13,7 +13,8 @@
 #   ~/.cache/blaze/work/remote-7/http-probe/<side-name>/{ws,ur,tmp,worker,log/<function>.log}
 # Between functions the workspace is emptied and its output base expunged; the worker (Bazel's
 # remote worker from worker_deploy.jar, with --http_listen_port as the test's set_up starts it)
-# is started and stopped per function as the tests do. startup --max_idle_secs=60,
+# is started and stopped per function as the tests do; log/<function>.cas lists its CAS directory
+# as the function left it. HTTP_PROBE_EXTRA_RC (rc lines) is appended to the test bazelrc. startup --max_idle_secs=60,
 # build --jobs=4; the server is shut down after each function. Everything runs inside one
 #   systemd-run --user --collect --wait -p MemoryMax=12G -p MemorySwapMax=0
 # unit. Blaze runs with BLAZE_SERVER_MODE=daemon. Prints one line per function: name, PASS or
@@ -38,7 +39,8 @@ if [[ "${HTTP_PROBE_IN_UNIT:-}" != "1" ]]; then
   mkdir -p "$BASE"
   exec systemd-run --user --collect --wait --quiet --pipe -p MemoryMax=12G -p MemorySwapMax=0 \
     --setenv=HOME="$HOME" --setenv=PATH=/usr/bin:/bin:/usr/sbin --setenv=HTTP_PROBE_IN_UNIT=1 \
-    --setenv=BLAZE_SERVER_MODE=daemon "$(realpath "$0")" "$@"
+    --setenv=BLAZE_SERVER_MODE=daemon --setenv=HTTP_PROBE_EXTRA_RC="${HTTP_PROBE_EXTRA_RC:-}" \
+    "$(realpath "$0")" "$@"
 fi
 
 INSTALL="$CACHE/oracle-out/ur/install/58cf1ecbff441bac762b0050d6da21e9"
@@ -63,6 +65,7 @@ common --repository_cache=$CACHE/repo-cache
 common --repo_env=BAZEL_HTTP_RULES_URLS_AS_DEFAULT_CANONICAL_ID=0
 startup --max_idle_secs=60
 build --jobs=4
+${HTTP_PROBE_EXTRA_RC:-}
 EOF
 
 # --- the test framework's helpers -------------------------------------------------------------
@@ -71,6 +74,9 @@ bazel() {
 }
 fail() {
   echo "FAIL: $*" >> "$RESULT"
+  (cd "$BASE/worker" 2>/dev/null && find cas -ls \
+    && find cas/cas -type f -size -2k -exec sh -c 'echo "== $1"; od -c "$1" | head -8' _ {} \;) \
+    > "${RESULT%.result}.cas" 2>&1
   exit 1
 }
 expect_log() {
@@ -173,6 +179,8 @@ run_one() {
     fi
     "$name"
     rc=$?
+    # The worker's CAS as the function left it (find -ls), for log/<function>.cas.
+    (cd "$BASE/worker" 2>/dev/null && find cas -ls) > "$BASE/log/$name.cas" 2>&1
     bazel clean >> "$TEST_log" 2>&1
     stop_worker
     exit $rc

@@ -661,16 +661,21 @@ fn stored_attr_value(type_: Type, value: &AttributeValue) -> AttrValue {
             AttributeValue::Bool(b) => AttrValue::Bool(*b),
             other => panic!("ClassCastException: {other:?} is not a Boolean"),
         },
-        Type::Label | Type::NodepLabel | Type::DormantLabel | Type::GenqueryScopeType => {
-            AttrValue::Label(label(value))
-        }
+        // attr.output(): the repo definition stores the output's label (checked against the
+        // oracle with `mod show_repo`).
+        Type::Label
+        | Type::NodepLabel
+        | Type::DormantLabel
+        | Type::GenqueryScopeType
+        | Type::Output => AttrValue::Label(label(value)),
         Type::StringList => AttrValue::StringList(list(value).iter().map(string).collect()),
         Type::StringSet => AttrValue::StringSet(list(value).iter().map(string).collect()),
         Type::IntegerList => AttrValue::IntList(list(value).iter().map(int).collect()),
         Type::LabelList
         | Type::NodepLabelList
         | Type::DormantLabelList
-        | Type::GenqueryScopeTypeList => {
+        | Type::GenqueryScopeTypeList
+        | Type::OutputList => {
             AttrValue::LabelList(list(value).iter().map(label).collect())
         }
         Type::StringDict => AttrValue::StringDict(

@@ -33,6 +33,7 @@ pub const DEFAULT_EXEC_GROUP_NAME: &str = "default-exec-group";
 
 /// An execution group declared by a rule (Java `DeclaredExecGroup`).
 // Java: com/google/devtools/build/lib/packages/DeclaredExecGroup.java:43 DeclaredExecGroup
+// PORT: skipped, the AutoBuilder is a struct literal at its callers: DeclaredExecGroup.builder, DeclaredExecGroup.toBuilder, DeclaredExecGroup.Builder.toolchainTypes, DeclaredExecGroup.Builder.toolchainTypesMapBuilder, DeclaredExecGroup.Builder.addToolchainType, DeclaredExecGroup.Builder.execCompatibleWith, DeclaredExecGroup.Builder.copyFromDefault, DeclaredExecGroup.Builder.build
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeclaredExecGroup {
     pub toolchain_types_map: IndexMap<Label, ToolchainTypeRequirement>,

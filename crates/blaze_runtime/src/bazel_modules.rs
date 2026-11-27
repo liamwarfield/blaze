@@ -752,16 +752,85 @@ impl BlazeModule for StarlarkDebuggerModule {
     }
 }
 
-/// Module that reports cache hits.
-/// PORT: beforeCommand, afterCommand are not ported: on a `RepositoryFailedEvent` the module
-/// lists the download cache hits the repository used, and no ported code posts that event (the
-/// repository crates post `DownloadCacheHitEvent` only).
+/// Module reporting about cache hits in external repositories in case of failures.
 // Java: com/google/devtools/build/lib/bazel/CacheHitReportingModule.java:31 CacheHitReportingModule
 pub struct CacheHitReportingModule;
 
 impl BlazeModule for CacheHitReportingModule {
     fn name(&self) -> &'static str {
         "CacheHitReportingModule"
+    }
+
+    /// The module's per-command state (`reporter`, `cacheHitsByContext`) lives in the
+    /// subscriber registered here, dropped with the command's event bus (Java `afterCommand`
+    /// clears both fields).
+    // Java: com/google/devtools/build/lib/bazel/CacheHitReportingModule.java:35 CacheHitReportingModule.beforeCommand
+    // Java: com/google/devtools/build/lib/bazel/CacheHitReportingModule.java:42 CacheHitReportingModule.afterCommand
+    fn before_command(&self, env: &mut CommandEnvironment) -> Result<(), AbruptExitException> {
+        env.get_event_bus()
+            .register(Arc::new(CacheHitReportingSubscriber {
+                reporter: env.get_reporter().clone(),
+                cache_hits_by_context: parking_lot::Mutex::new(std::collections::HashMap::new()),
+            }));
+        Ok(())
+    }
+}
+
+/// The subscriber half of [`CacheHitReportingModule`].
+struct CacheHitReportingSubscriber {
+    reporter: Arc<blaze_events::Reporter>,
+    /// Java `ConcurrentHashMap<String, Set<Pair<String, URI>>>`.
+    ///
+    /// PORT: the hits of one context are kept in the order they were seen; Java's set is a
+    /// `ConcurrentHashMap.newKeySet()`, whose order follows the (hash, URI) pairs' hash codes,
+    /// so the listing order differs when a repository has more than one cache hit.
+    cache_hits_by_context:
+        parking_lot::Mutex<std::collections::HashMap<String, indexmap::IndexSet<(String, String)>>>,
+}
+
+impl blaze_events::EventBus for CacheHitReportingSubscriber {
+    fn post(&self, event: Arc<dyn blaze_events::handler::Postable>) {
+        let any: &dyn std::any::Any = &*event;
+        // Java: com/google/devtools/build/lib/bazel/CacheHitReportingModule.java:48 CacheHitReportingModule.cacheHit
+        if let Some(e) = any.downcast_ref::<blaze_repo_fetch::cache::DownloadCacheHitEvent>() {
+            self.cache_hits_by_context
+                .lock()
+                .entry(e.context.clone())
+                .or_default()
+                .insert((e.file_hash.clone(), e.uri.to_string()));
+        // Java: com/google/devtools/build/lib/bazel/CacheHitReportingModule.java:56 CacheHitReportingModule.failed
+        } else if let Some(e) = any.downcast_ref::<
+            blaze_repo_rules::repository::repository_fetch_function::RepositoryFailedEvent,
+        >() {
+            // TODO(wyv): add an event for the failure of a module extension too
+            let context =
+                blaze_repo_rules::starlark::repository_context::repository_fetch_context_string(
+                    e.get_repo(),
+                );
+            let info = {
+                let hits = self.cache_hits_by_context.lock();
+                let Some(cache_hits) = hits.get(&context).filter(|h| !h.is_empty()) else {
+                    return;
+                };
+                let mut info = String::new();
+                info.push_str(&context);
+                info.push_str(
+                    "' used the following cache hits instead of downloading the corresponding file.\n",
+                );
+                for (hash, uri) in cache_hits {
+                    info.push_str(" * Hash '");
+                    info.push_str(hash);
+                    info.push_str("' for ");
+                    info.push_str(uri);
+                    info.push('\n');
+                }
+                info.push_str("If the definition of '");
+                info.push_str(&context);
+                info.push_str("' was updated, verify that the hashes were also updated.");
+                info
+            };
+            blaze_events::EventHandler::handle(&*self.reporter, &blaze_events::Event::info(info));
+        }
     }
 }
 

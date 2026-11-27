@@ -42,7 +42,13 @@ pub struct Scratch {
 
 impl Scratch {
     pub fn new() -> Scratch {
-        let fs = UnixFileSystem::create(DigestHashFunction::Sha256);
+        Scratch::with_file_system(|unix| unix)
+    }
+
+    /// A scratch directory whose paths are on `wrap(unix_file_system)`, e.g. a
+    /// `blaze_vfs::testing::FaultInjectingFileSystem` (Java tests' `FileSystem` subclasses).
+    pub fn with_file_system(wrap: impl FnOnce(FileSystemRef) -> FileSystemRef) -> Scratch {
+        let fs = wrap(UnixFileSystem::create(DigestHashFunction::Sha256));
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let base = std::env::temp_dir().join(format!(
             "blaze_sky_loading_test_{}_{}",
@@ -182,7 +188,11 @@ pub struct TestSetup {
 
 impl TestSetup {
     pub fn new(repos: FakeRepos) -> TestSetup {
-        let scratch = Scratch::new();
+        TestSetup::with_scratch(repos, Scratch::new())
+    }
+
+    /// Like [`TestSetup::new`] on the given scratch directory (and its file system).
+    pub fn with_scratch(repos: FakeRepos, scratch: Scratch) -> TestSetup {
         let directories = LoadingDirectories {
             workspace: scratch.dir("workspace"),
             output_base: scratch.dir("output_base"),

@@ -9,16 +9,11 @@
 //! PORT: incompatible top-level targets. Java has two paths. Without the execution phase
 //! (`includeExecutionPhase` false: cquery, aquery, `--nobuild`,
 //! `--noexperimental_merged_skyframe_analysis_execution`) `BuildView.update` runs
-//! `TopLevelConstraintSemantics` itself; that part is ported as written. With Skymeld (the default
-//! of `build` and `test`) `analyzeAndExecuteTargets` evaluates one `BuildDriverKey` per top-level
-//! target and `BuildDriverFunction` does the check, an explicitly requested incompatible target
-//! being an error of that key that `SkyframeErrorProcessor.processErrors` reports. Blaze analyzes
-//! every top-level target before it executes any, so for `include_execution_phase` the
-//! compatibility part of `BuildDriverFunction.compute` and the handling of its
-//! `TargetCompatibilityCheckException` by `SkyframeErrorProcessor` run here, after
-//! `configureTargets`, in top-level target order (see `check_target_compatibility_of_build_driver_keys`).
-//! In both paths the skipped targets are `AnalysisResult::get_targets_to_skip()` (Java's Skymeld
-//! path tracks them through `TopLevelTargetSkippedEvent` in the `BuildResultListener` instead).
+//! `TopLevelConstraintSemantics` itself. With Skymeld (the default of `build` and `test`)
+//! `analyzeAndExecuteTargets` evaluates one `BuildDriverKey` per top-level target and
+//! `BuildDriverFunction` does the check (`execution_seam`), an explicitly requested incompatible
+//! target being an error of that key that `SkyframeErrorProcessor.processErrors` reports; the
+//! skipped targets are then the `BuildResultListener`'s (`TopLevelTargetSkippedEvent`).
 
 use std::sync::Arc;
 
@@ -28,7 +23,7 @@ use blaze_analysis::aspect_value::AspectValue;
 use blaze_analysis::configured_target::ConfiguredTarget;
 use blaze_analysis::configured_target_key::ConfiguredTargetKey;
 use blaze_analysis::constraints::top_level_constraint_semantics::{
-    PlatformCompatibility, TargetLookup, TargetLookupException, TopLevelConstraintSemantics,
+    TargetLookup, TargetLookupException, TopLevelConstraintSemantics,
 };
 use blaze_build_config::build_configuration_value::BuildConfigurationValue;
 use blaze_build_config::build_options::BuildOptions;
@@ -39,9 +34,6 @@ use blaze_events::{Event, ExtendedEventHandler};
 use blaze_packages::aspect::{AspectClass, StarlarkAspectClass};
 use blaze_packages::target::Target;
 use blaze_protos::failure_details::{self, FailureDetail, failure_detail::Category};
-use blaze_sky_analysis::top_level_status_events::{
-    TopLevelTargetAnalyzedEvent, TopLevelTargetSkippedEvent,
-};
 use blaze_sky_loading::package_manager::RepositoryMappingResolutionOrInterrupted;
 use blaze_skyframe::WalkableGraph;
 use indexmap::{IndexMap, IndexSet};
@@ -67,6 +59,13 @@ pub struct AnalysisResult {
     top_level_targets_with_configs: Vec<TargetAndConfiguration>,
     /// The counters of the `AnalysisPhaseCompleteEvent`.
     analysis_phase_complete_stats: AnalysisPhaseCompleteStats,
+    /// Whether the `AnalysisPhaseCompleteEvent` was posted: always without merged analysis and
+    /// execution; with it, when the analysis of every top-level key concluded
+    /// (`SkyframeBuildView.analysisFinishedCallback`).
+    analysis_phase_complete_event_posted: bool,
+    /// `AnalysisAndExecutionResult.getExecutionDetailedExitCode()`: the most important execution
+    /// exit code of a `--keep_going` build with merged analysis and execution.
+    execution_detailed_exit_code: Option<blaze_util::DetailedExitCode>,
     /// The `AnalysisGraphStatsEvent`'s metrics (`None`: conflicts were not checked, no event).
     build_graph_metrics: Option<blaze_protos::build_event_stream::build_metrics::BuildGraphMetrics>,
     /// The number of top-level keys the analysis was asked for: the configured target keys and
@@ -91,6 +90,16 @@ impl AnalysisResult {
     // Java: com/google/devtools/build/lib/skyframe/AnalysisOperationWatcher.java:70 AnalysisOperationWatcher.handleTopLevelEntityAnalysisConcluded
     pub fn has_top_level_keys(&self) -> bool {
         self.top_level_key_count > 0
+    }
+
+    /// See the field.
+    pub fn analysis_phase_complete_event_posted(&self) -> bool {
+        self.analysis_phase_complete_event_posted
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/AnalysisAndExecutionResult.java:68 AnalysisAndExecutionResult.getExecutionDetailedExitCode
+    pub fn get_execution_detailed_exit_code(&self) -> Option<&blaze_util::DetailedExitCode> {
+        self.execution_detailed_exit_code.as_ref()
     }
 
     /// The `BuildGraphMetrics` of the `AnalysisGraphStatsEvent` (`None` when the analysis did not
@@ -172,6 +181,14 @@ pub enum BuildViewError {
     InvalidConfiguration(InvalidConfigurationException),
     #[error("interrupted")]
     Interrupted,
+    /// `BuildFailedException` / `TestExecException` of the execution phase (merged analysis
+    /// and execution).
+    #[error("{0:?}")]
+    Execution(crate::skyframe_error_processor::RethrownException),
+    /// What `executionSetupCallback.prepareForExecution()` throws (`AbruptExitException`,
+    /// `InterruptedException`), as `BuildTool` reports it.
+    #[error("{0}")]
+    BuildTool(Box<crate::build_tool::BuildToolError>),
 }
 
 impl From<ConfigureTargetsError> for BuildViewError {
@@ -231,38 +248,14 @@ impl blaze_events::Postable for TopLevelConfigurationEvent {}
 pub struct TopLevelTargetConfiguredEvent {
     pub target: Target,
     pub configuration: Option<Arc<BuildConfigurationValue>>,
+    /// PORT: not in Java's event. The configured target the event announces, and the target of
+    /// its `getLabel()` (an alias's actual target): what the target's `TargetCompleteEvent`
+    /// reads of its `ConfiguredTargetAndData`, which the build event stream records here.
+    pub configured_target: Option<ConfiguredTarget>,
+    pub actual_target: Option<Target>,
 }
 
 impl blaze_events::Postable for TopLevelTargetConfiguredEvent {}
-
-/// `announceTopLevelConfiguredTargetAnalyzed`'s `TargetConfiguredEvent` (once per key: the
-/// function posts it when `TOP_LEVEL_TARGET_CONFIGURED` is first added to its posted types).
-// Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:415 BuildDriverFunction.announceTopLevelConfiguredTargetAnalyzed
-fn announce_top_level_target_configured(
-    graph: &dyn blaze_skyframe::WalkableGraph,
-    configured_target: &ConfiguredTarget,
-    target_lookup: &dyn TargetLookup,
-    event_handler: &dyn ExtendedEventHandler,
-) {
-    let label = configured_target.get_original_label();
-    // ((PackageValue) env.getValue(label.getPackageIdentifier())).getPackage()
-    // .getTarget(label.getName())
-    let target = match target_lookup.get_target(&label) {
-        Ok(Some((target, _))) => target,
-        _ => panic!(
-            "IllegalStateException: Target should already be verified and available for top level ConfiguredTarget: {}",
-            label
-        ),
-    };
-    event_handler.post(Arc::new(TopLevelTargetConfiguredEvent {
-        target,
-        // getConfigurationValue(env, configuredTarget.getConfigurationKey())
-        configuration: crate::skyframe_executor::get_configuration_from_graph(
-            graph,
-            configured_target.get_configuration_key().as_ref(),
-        ),
-    }));
-}
 
 pub fn update(
     skyframe_executor: &SkyframeExecutor,
@@ -296,6 +289,31 @@ pub fn update_with_aspects_parameters(
     aspects_parameters: &IndexMap<String, String>,
     event_handler: Arc<dyn ExtendedEventHandler>,
 ) -> Result<AnalysisResult, BuildViewError> {
+    update_with_execution(
+        skyframe_executor,
+        loading_result,
+        target_options,
+        options,
+        aspects_parameters,
+        /* execution= */ None,
+        event_handler,
+    )
+}
+
+/// [`update_with_aspects_parameters`] with the arguments of a build with merged analysis and
+/// execution (`includeExecutionPhase`): Java's `executionSetupCallback`,
+/// `buildConfigurationCreatedCallback`, `buildResultListener`, `buildDriverKeyTestContext`,
+/// `skymeldAnalysisOverlapPercentage` and the view options that path reads.
+// Java: com/google/devtools/build/lib/analysis/BuildView.java:216 BuildView.update
+pub fn update_with_execution(
+    skyframe_executor: &SkyframeExecutor,
+    loading_result: &TargetPatternPhaseValue,
+    target_options: &Arc<BuildOptions>,
+    options: &BuildViewUpdateOptions,
+    aspects_parameters: &IndexMap<String, String>,
+    execution: Option<&skyframe_build_view::MergedAnalysisAndExecutionArgs<'_>>,
+    event_handler: Arc<dyn ExtendedEventHandler>,
+) -> Result<AnalysisResult, BuildViewError> {
     // AnalysisPhaseRunner.runAnalysisPhase: Stopwatch timer = Stopwatch.createStarted().
     // PORT: the analysis timer runs over BuildView.update (Java starts it just before).
     let timer = std::time::Instant::now();
@@ -322,6 +340,12 @@ pub fn update_with_aspects_parameters(
             options.keep_going,
         )
         .map_err(BuildViewError::InvalidConfiguration)?;
+    // Java: com/google/devtools/build/lib/analysis/BuildView.java:327 BuildView.update
+    if let Some(execution) = execution {
+        execution
+            .hooks
+            .build_configuration_created(&top_level_config);
+    }
     // PORT: getTopLevelConfigurationTrimmedOfTestOptions only feeds TopLevelConfigRequestedEvent
     // (the `config` command's collector) and remote analysis caching, neither ported.
     // MakeEnvironmentEvent is not posted (no port of the event).
@@ -376,131 +400,90 @@ pub fn update_with_aspects_parameters(
     )?;
 
     // PORT: ArtifactFactory.noteAnalysisStarting only resets incremental state.
-    // With the execution phase, Java's SkyframeBuildView.analyzeAndExecuteTargets requests the
-    // workspace status artifacts together with the top-level BuildDriverKeys, right after
-    // `executionSetupCallback.prepareForExecution()`; the workspace status action then runs while
-    // the top-level targets are analyzed.
-    // PORT: Blaze analyzes the top-level targets (configureTargets below) before it evaluates
-    // the BuildDriverKeys (module comment of blaze_runtime commands/build.rs), so the workspace
-    // status artifacts are evaluated here, before the analysis; the build command requests them
-    // again with the BuildDriverKeys (done nodes, or their error). The symlink forest of
-    // prepareForExecution is planted by the build command before the BuildDriverKeys; the
-    // workspace status action writes only to the output tree.
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:654 SkyframeBuildView.analyzeAndExecuteTargets
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2327 SkyframeExecutor.configureTargets
-    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2492 SkyframeExecutor.evaluateBuildDriverKeys
-    // PORT: both of Java's paths post ConfigurationPhaseStartedEvent before their evaluation
-    // (configureTargets without, evaluateBuildDriverKeys with the execution phase); Blaze's one
-    // path posts it here, before the workspace status artifacts and configureTargets below.
-    event_handler.post(Arc::new(
-        blaze_buildtool::buildtool::buildevent::ConfigurationPhaseStartedEvent::new(Arc::new(
-            crate::skyframe_progress_receiver::AnalysisProgressReceiverView(
-                &blaze_sky_analysis::analysis_progress_receiver::ANALYSIS_PROGRESS,
-            ),
-        )),
-    ));
-    if options.include_execution_phase {
-        // For the workspace status actions.
-        event_handler.post(Arc::new(
-            blaze_sky_exec::events::SomeExecutionStartedEvent::not_counted_in_execution_time(),
-        ));
-    }
-    if options.include_execution_phase
-        && let Some(execution) = skyframe_executor.get_execution()
-    {
-        blaze_buildtool::buildtool::execution_tool::evaluate_build_driver_keys(
-            skyframe_executor.get_evaluator(),
-            &[],
-            &execution.seam.get_workspace_status_artifacts(),
-            &execution.config,
-            event_handler.clone(),
-        )
-        .map_err(|_| BuildViewError::Interrupted)?;
-    }
-    let mut skyframe_analysis_result = skyframe_build_view::configure_targets(
-        skyframe_executor,
-        event_handler.clone(),
-        &label_to_target_map,
-        &top_level_ct_keys,
-        &aspect_keys,
-        options.keep_going,
-        options.check_for_action_conflicts,
-    )?;
-    // Java: setArtifactRoots(skyframeAnalysisResult.getPackageRoots()) of the path without
-    // merged analysis and execution; Skymeld's package roots are the IncrementalPackageRoots of
-    // ExecutionTool.prepareForExecution.
-    // Java: com/google/devtools/build/lib/analysis/BuildView.java:434 BuildView.update
-    if !options.include_execution_phase {
-        set_artifact_roots(skyframe_executor);
-    }
-
-    // PORT: with the execution phase, Java's `analyzeAndExecuteTargets` has checked the
-    // compatibility of each top-level target in its `BuildDriverFunction` by now (module comment).
     let mut targets_to_skip: Vec<ConfiguredTarget> = Vec::new();
-    if options.include_execution_phase {
-        // PORT: a target dropped for an action conflict was analyzed too: Java's
-        // BuildDriverFunction announces it before the conflict check of the merged phase.
-        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:415 BuildDriverFunction.announceTopLevelConfiguredTargetAnalyzed
-        let target_lookup = SkyframeTargetLookup {
-            skyframe_executor,
-            event_handler: event_handler.clone(),
-        };
-        let graph = skyframe_executor.get_walkable_graph();
-        for configured_target in
-            skyframe_analysis_result.get_configured_targets_with_action_conflicts()
+    // Java: com/google/devtools/build/lib/analysis/BuildView.java:382 BuildView.update
+    let mut skyframe_analysis_result = if options.include_execution_phase {
+        let execution = execution.unwrap_or_else(|| {
+            panic!("NullPointerException: the execution callbacks of a merged build")
+        });
+        // skyframeExecutor.setExtraActionFilter(viewOptions.extraActionFilter)
+        if let Some(services) = skyframe_executor.get_analysis_services() {
+            *services.extra_action_filter.write() = execution.extra_action_filter.clone();
+        }
+        // PORT: setRuleContextConstraintSemantics: BuildDriverFunction's compatibility check
+        // (the seam) calls TopLevelConstraintSemantics, whose semantics are the rule class
+        // provider's in Blaze.
+        // We wait until now to setup for execution, in case the artifact factory was reset
+        // due to a config change.
         {
-            announce_top_level_target_configured(
-                &*graph,
-                configured_target,
-                &target_lookup,
-                event_handler.as_ref(),
-            );
-            event_handler.post(Arc::new(TopLevelTargetAnalyzedEvent::create(
-                configured_target.clone(),
-            )));
+            let _c = blaze_util::profiler::Profiler::instance().profile_info("prepareForExecution");
+            execution
+                .hooks
+                .prepare_for_execution(skyframe_executor)
+                .map_err(|e| BuildViewError::BuildTool(Box::new(e)))?;
         }
-        let (result, skipped) = check_target_compatibility_of_build_driver_keys(
+        skyframe_build_view::analyze_and_execute_targets(
             skyframe_executor,
-            skyframe_analysis_result,
-            options,
-            event_handler.as_ref(),
-            &target_lookup,
-        )?;
-        skyframe_analysis_result = result;
-        targets_to_skip = skipped;
-        // PORT: Java's BuildDriverFunction of each TopLevelAspectsKey announces its aspects as
-        // analyzed (`announceTopLevelAspectAnalyzed`); the ToplevelAspectsIdentifiedEvent and
-        // AspectConfiguredEvents were posted by `configureTargets`, the AspectAnalyzedEvents
-        // are posted here, in the order of the aspects map.
-        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:449 BuildDriverFunction.announceTopLevelAspectAnalyzed
-        for (aspect_key, aspect_value) in skyframe_analysis_result.get_aspects() {
-            event_handler.post(Arc::new(
-                crate::analysis_phase_runner::AspectAnalyzedEvent::create(
-                    aspect_key.clone(),
-                    aspect_value.clone(),
+            event_handler.clone(),
+            &top_level_ct_keys,
+            &aspect_keys,
+            loading_result.get_tests_to_run_labels(),
+            &label_to_target_map,
+            &options.explicit_target_patterns,
+            options.keep_going,
+            options.skip_incompatible_explicit_targets,
+            options.check_for_action_conflicts,
+            execution,
+        )
+        .map_err(|e| match e {
+            skyframe_build_view::AnalyzeAndExecuteError::Interrupted => BuildViewError::Interrupted,
+            skyframe_build_view::AnalyzeAndExecuteError::ViewCreationFailed(e) => {
+                BuildViewError::ViewCreationFailed {
+                    message: e.get_message().to_owned(),
+                    failure_detail: e.get_failure_detail().clone(),
+                }
+            }
+            skyframe_build_view::AnalyzeAndExecuteError::Execution(e) => {
+                BuildViewError::Execution(e)
+            }
+        })?
+    } else {
+        // SkyframeExecutor.configureTargets: ConfigurationPhaseStartedEvent.
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2327 SkyframeExecutor.configureTargets
+        event_handler.post(Arc::new(
+            blaze_buildtool::buildtool::buildevent::ConfigurationPhaseStartedEvent::new(Arc::new(
+                crate::skyframe_progress_receiver::AnalysisProgressReceiverView(
+                    &blaze_sky_analysis::analysis_progress_receiver::ANALYSIS_PROGRESS,
                 ),
-            ));
-        }
-        // PORT: Java's SkyframeBuildView.analyzeAndExecuteTargets creates a
-        // `BuildDriverKey.ofTopLevelAspect` per TopLevelAspectsKey next to the configured-target
-        // keys; the build command creates them from the analysis result
-        // (`AnalysisResult::get_top_level_aspects_keys`,
-        // `execution_seam::build_driver_aspect_keys`).
-        crate::execution_seam::note_top_level_aspects_analyzed_for_execution(aspect_keys.len());
-    }
+            )),
+        ));
+        let skyframe_analysis_result = skyframe_build_view::configure_targets(
+            skyframe_executor,
+            event_handler.clone(),
+            &label_to_target_map,
+            &top_level_ct_keys,
+            &aspect_keys,
+            options.keep_going,
+            options.check_for_action_conflicts,
+        )?;
+        // Java: com/google/devtools/build/lib/analysis/BuildView.java:434 BuildView.update
+        set_artifact_roots(skyframe_executor);
+        skyframe_analysis_result
+    };
+    // PORT: skipped, skyframeBuildView.clearInvalidatedActionLookupKeys (incremental bookkeeping).
 
     let num_targets_to_analyze = label_to_target_map.len();
     let num_successful = skyframe_analysis_result.get_configured_targets().len();
-    // PORT: with the execution phase the line is "Build succeeded for only ..." and counts the
-    // targets that were built (Java: SkyframeBuildView.analyzeAndExecuteTargets); the build
-    // command prints it after execution (blaze_runtime commands/build.rs).
-    if !options.include_execution_phase
-        && 0 < num_successful
-        && num_successful < num_targets_to_analyze
-    {
+    if 0 < num_successful && num_successful < num_targets_to_analyze {
         let msg = format!(
-            "Analysis succeeded for only {} of {} top-level targets",
-            num_successful, num_targets_to_analyze
+            "{} succeeded for only {} of {} top-level targets",
+            if options.include_execution_phase {
+                "Build"
+            } else {
+                "Analysis"
+            },
+            num_successful,
+            num_targets_to_analyze
         );
         event_handler.handle(&Event::info(msg));
     }
@@ -578,10 +561,23 @@ pub fn update_with_aspects_parameters(
         build_info_artifacts
     );
 
-    // The counters of AnalysisPhaseRunner's AnalysisPhaseCompleteEvent.
+    // The counters of AnalysisPhaseRunner's AnalysisPhaseCompleteEvent; with merged analysis
+    // and execution, those of SkyframeBuildView.analysisFinishedCallback's (when the analysis of
+    // every top-level key concluded).
     // Java: com/google/devtools/build/lib/buildtool/AnalysisPhaseRunner.java:431 AnalysisPhaseRunner.runAnalysisPhase
-    let analysis_phase_complete_stats =
-        skyframe_executor.get_evaluated_counts(timer.elapsed().as_millis() as i64);
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:957 SkyframeBuildView.analysisFinishedCallback
+    let (analysis_phase_complete_stats, analysis_phase_complete_event_posted) =
+        if options.include_execution_phase {
+            match skyframe_analysis_result.get_analysis_phase_complete_stats() {
+                Some(stats) => (stats.clone(), true),
+                None => (AnalysisPhaseCompleteStats::default(), false),
+            }
+        } else {
+            (
+                skyframe_executor.get_evaluated_counts(timer.elapsed().as_millis() as i64),
+                true,
+            )
+        };
 
     // Sets.union(buildDriverCTKeys, buildDriverAspectKeys).size()
     let top_level_key_count = top_level_ct_keys.len() + aspect_keys.len();
@@ -592,6 +588,7 @@ pub fn update_with_aspects_parameters(
         aspect_keys,
         targets_to_skip,
         analysis_phase_complete_stats,
+        analysis_phase_complete_event_posted,
         top_level_key_count,
     ))
 }
@@ -602,153 +599,6 @@ fn contains_configured_target(targets: &[ConfiguredTarget], target: &ConfiguredT
     targets
         .iter()
         .any(|t| t.get_lookup_key() == target.get_lookup_key())
-}
-
-/// The target compatibility part of `BuildDriverFunction.compute` for every analyzed top-level
-/// target, and `SkyframeErrorProcessor.processErrors` for the `TargetCompatibilityCheckException`
-/// it throws for an incompatible target that was explicitly requested (module comment).
-///
-/// Returns the analysis result without the errored targets, and the skipped targets.
-///
-/// PORT: Java evaluates the `BuildDriverKey`s concurrently; without `--keep_going` the first
-/// error to occur ends the build. Here the targets are checked in top-level order, so the first
-/// explicitly requested incompatible target in that order is the one reported.
-// Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:254 BuildDriverFunction.compute
-fn check_target_compatibility_of_build_driver_keys(
-    skyframe_executor: &SkyframeExecutor,
-    skyframe_analysis_result: SkyframeAnalysisResult,
-    options: &BuildViewUpdateOptions,
-    event_handler: &dyn ExtendedEventHandler,
-    target_lookup: &dyn TargetLookup,
-) -> Result<(SkyframeAnalysisResult, Vec<ConfiguredTarget>), BuildViewError> {
-    let graph = skyframe_executor.get_walkable_graph();
-    let mut skipped: Vec<ConfiguredTarget> = Vec::new();
-    let mut targets_with_errors: Vec<ConfiguredTarget> = Vec::new();
-    for configured_target in skyframe_analysis_result.get_configured_targets() {
-        // At this point, the target is considered "analyzed".
-        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:415 BuildDriverFunction.announceTopLevelConfiguredTargetAnalyzed
-        announce_top_level_target_configured(
-            &*graph,
-            configured_target,
-            target_lookup,
-            event_handler,
-        );
-        event_handler.post(Arc::new(TopLevelTargetAnalyzedEvent::create(
-            configured_target.clone(),
-        )));
-
-        // `buildDriverKey.isExplicitlyRequested()`: `explicitTargetPatterns.contains(k.getLabel())`
-        // for the target's key (SkyframeBuildView.analyzeAndExecuteTargets).
-        let top_level_label = configured_target.get_original_label();
-        let is_explicitly_requested = options.explicit_target_patterns.contains(&top_level_label);
-
-        // Java: com/google/devtools/build/lib/skyframe/BuildDriverFunction.java:523 BuildDriverFunction.isConfiguredTargetCompatible
-        let is_configured_target_compatible =
-            match TopLevelConstraintSemantics::compatibility_with_platform_restrictions(
-                configured_target,
-                event_handler,
-                /* eagerly_throw_error= */ true,
-                is_explicitly_requested,
-                options.skip_incompatible_explicit_targets,
-            ) {
-                Ok(PlatformCompatibility::INCOMPATIBLE_EXPLICIT)
-                | Ok(PlatformCompatibility::INCOMPATIBLE_IMPLICIT) => Ok(false),
-                Ok(PlatformCompatibility::COMPATIBLE) => {
-                    let build_configuration_value =
-                        crate::skyframe_executor::get_configuration_from_graph(
-                            &*graph,
-                            configured_target.get_configuration_key().as_ref(),
-                        );
-                    TopLevelConstraintSemantics::compatibility_with_target_environment(
-                        configured_target,
-                        build_configuration_value.as_deref(),
-                        target_lookup,
-                        event_handler,
-                    )
-                    .map(|environment_compatibility| {
-                        // PORT: the lookup loads packages outside Skyframe, so a value is never
-                        // missing (Java: BuildDriverFunction returns null then).
-                        environment_compatibility
-                            .expect("environment compatibility")
-                            .is_compatible()
-                    })
-                }
-                Err(e) => Err(e),
-            };
-        match is_configured_target_compatible {
-            Ok(true) => {}
-            Ok(false) => {
-                event_handler.post(Arc::new(TopLevelTargetSkippedEvent::create(
-                    configured_target.clone(),
-                )));
-                // We consider the evaluation of this BuildDriverKey successful at this point,
-                // even when the target is skipped.
-                skipped.push(configured_target.clone());
-            }
-            // The analysis of the target technically succeeded, just that it was incompatible
-            // and can't be executed.
-            Err(cause) => {
-                // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:302 SkyframeErrorProcessor.processErrors
-                // (`processIndividualError`: a TargetCompatibilityCheckException has no root
-                // causes and is an analysis error).
-                // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:411 SkyframeErrorProcessor.maybePostFailureEventsForNonConflictError
-                // (the effective error key is the BuildDriverKey's ActionLookupKey; analysis
-                // review R2-6).
-                if let Some(ct_key) = configured_target
-                    .get_lookup_key()
-                    .as_any()
-                    .downcast_ref::<ConfiguredTargetKey>()
-                {
-                    event_handler.post(Arc::new(
-                        crate::analysis_failure_event::AnalysisFailureEvent::while_analyzing_target(
-                            ct_key.clone(),
-                            Vec::new(),
-                        ),
-                    ));
-                }
-                if options.keep_going {
-                    // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:665 SkyframeErrorProcessor.logOrPrintWarningsKeepGoing
-                    let mut message = format!(
-                        "errors encountered while analyzing target '{}', it will not be built.",
-                        top_level_label
-                    );
-                    message.push_str(&format!("\n{}", cause.get_message()));
-                    event_handler.handle(&Event::warn(message));
-                    targets_with_errors.push(configured_target.clone());
-                } else {
-                    // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:472 SkyframeErrorProcessor.throwOrReturnAspectAnalysisException
-                    let error_msg = format!(
-                        "Analysis of target '{}' failed; build aborted",
-                        top_level_label
-                    );
-                    // Java: com/google/devtools/build/lib/skyframe/SkyframeErrorProcessor.java:736 SkyframeErrorProcessor.maybeContextualizeFailureDetail
-                    let original_failure_detail = cause.get_failure_detail();
-                    let failure_detail = FailureDetail {
-                        message: format!("{}: {}", error_msg, original_failure_detail.message),
-                        category: original_failure_detail.category.clone(),
-                    };
-                    // ViewCreationFailedException.combineMessages
-                    let message = if cause.get_message().is_empty() {
-                        error_msg
-                    } else {
-                        format!("{}: {}", error_msg, cause.get_message())
-                    };
-                    return Err(BuildViewError::ViewCreationFailed {
-                        message,
-                        failure_detail,
-                    });
-                }
-            }
-        }
-    }
-    let skyframe_analysis_result = if targets_with_errors.is_empty() {
-        skyframe_analysis_result
-    } else {
-        // The errored BuildDriverKeys have no value: their targets are not among the result's
-        // configured targets and the result has an analysis error.
-        skyframe_analysis_result.with_additional_errored_targets(&targets_with_errors)
-    };
-    Ok((skyframe_analysis_result, skipped))
 }
 
 // Java: com/google/devtools/build/lib/analysis/BuildView.java:517 BuildView.constructLabelToTargetMap
@@ -951,6 +801,7 @@ fn create_result(
     top_level_aspects_keys: Vec<TopLevelAspectsKey>,
     targets_to_skip: Vec<ConfiguredTarget>,
     analysis_phase_complete_stats: AnalysisPhaseCompleteStats,
+    analysis_phase_complete_event_posted: bool,
     top_level_key_count: usize,
 ) -> AnalysisResult {
     let tests_to_run = loading_result.get_tests_to_run_labels();
@@ -976,6 +827,10 @@ fn create_result(
             .get_targets_with_configuration()
             .to_vec(),
         analysis_phase_complete_stats,
+        analysis_phase_complete_event_posted,
+        execution_detailed_exit_code: skyframe_analysis_result
+            .get_execution_detailed_exit_code()
+            .cloned(),
         build_graph_metrics: skyframe_analysis_result.get_build_graph_metrics().cloned(),
         top_level_key_count,
     }

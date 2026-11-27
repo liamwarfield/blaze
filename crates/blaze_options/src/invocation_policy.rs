@@ -634,17 +634,10 @@ fn expand_policy(
     // If there are any repeatable flag SetValues, deal with them together now.
     // Note that expansion flags have no value, and so cannot have multiple values either.
     // Skipping the recursion above is fine.
-    if repeatable_subflags_in_set_values.len() > 1 {
-        blaze_util::unported!(
-            "InvocationPolicyEnforcer.expandPolicy",
-            "HashMap order of {} repeatable subflags of a SetValue policy on --{}",
-            repeatable_subflags_in_set_values.len(),
-            original_policy
-                .description
-                .get_option_definition()
-                .get_option_name()
-        );
-    }
+    // PORT: Java iterates an `ArrayListMultimap` (a `HashMap`) keyed by `OptionDescription`,
+    // whose `hashCode` adds `OptionDefinition.hashCode()`, the identity hash code (not
+    // overridden): the order is unspecified and differs from run to run. Blaze takes the order
+    // the subflags were first seen in (one of Java's possible orders).
     for (repeatable_flag, set_values) in repeatable_subflags_in_set_values.values() {
         let mut new_values: Vec<String> = Vec::with_capacity(set_values.len());
         let mut origins: Vec<&OptionInstanceOrigin> = Vec::with_capacity(set_values.len());
@@ -967,6 +960,7 @@ impl<'a> FilterValueOperation<'a> {
 
     /// Determines if the given value is allowed. `converted_policy_values` is Java's
     /// `HashSet<Object>` (null allowed; only `contains` is used).
+    // Java: com/google/devtools/common/options/InvocationPolicyEnforcer.java:707 InvocationPolicyEnforcer.FilterValueOperation.isFlagValueAllowed
     // Java: com/google/devtools/common/options/InvocationPolicyEnforcer.java:672 AllowValueOperation.isFlagValueAllowed
     // Java: com/google/devtools/common/options/InvocationPolicyEnforcer.java:683 DisallowValueOperation.isFlagValueAllowed
     fn is_flag_value_allowed(

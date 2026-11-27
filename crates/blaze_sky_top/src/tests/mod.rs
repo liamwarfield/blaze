@@ -2,7 +2,6 @@
 //! (`crate::testing`, Java `BuildViewTestCase` / `AnalysisTestCase`).
 
 mod alias_test;
-mod kept_graph_references_test;
 mod aspect_auto_exec_groups_test;
 mod aspect_aware_attribute_mapper_test;
 mod aspect_test;
@@ -26,10 +25,12 @@ mod java_compile_action_builder_test;
 mod java_param_types_test;
 mod java_runtime_test;
 mod java_starlark_api_test;
+mod kept_graph_references_test;
 mod platform_configuration_api_test;
 mod platform_info_api_test;
 mod platform_lookup_util_test;
 mod platform_test_case;
+mod prepare_deps_of_patterns_function_test;
 mod project_function_test;
 mod project_test;
 mod registered_execution_platforms_function_test;
@@ -56,3 +57,4 @@ mod toolchain_test_case;
 mod toolchain_type_lookup_util_test;
 mod toolchains_for_targets_test;
 mod visibility_test;
+mod whole_dict_readers_test;

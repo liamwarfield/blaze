@@ -57,8 +57,8 @@ impl Key for ActionExecutionKey {
     /// (`TreeArtifactValue.equals`), the rich artifact data (`RunfilesArtifactValue.equals`) and the
     /// discovered modules (`shallowEquals`). PORT: `TreeArtifactValue` and
     /// `RunfilesArtifactValue` have no Java-faithful equality yet, so a value with tree artifacts
-    /// or rich artifact data is never equal; discovered modules (C++ modules) are not ported and
-    /// are empty on both sides. Remote file values are never equal (see
+    /// or rich artifact data is never equal; the discovered modules are compared with
+    /// `shallowEquals` (the same set object, or both empty). Remote file values are never equal (see
     /// [`file_values_equal_for_pruning`]). Rust prunes less than Java, never more.
     // Java: com/google/devtools/build/lib/skyframe/ActionExecutionValue.java:232 ActionExecutionValue.equals
     fn values_equal(old: &ActionExecutionValue, new: &ActionExecutionValue) -> bool {
@@ -67,6 +67,9 @@ impl Key for ActionExecutionKey {
             && new.get_all_tree_artifact_values().is_empty()
             && old.get_rich_artifact_data().is_none()
             && new.get_rich_artifact_data().is_none()
+            && old
+                .get_discovered_modules()
+                .shallow_equals(Some(&new.get_discovered_modules()))
             && old_files.len() == new_files.len()
             && old_files.iter().all(|(artifact, value)| {
                 new_files
@@ -374,6 +377,29 @@ pub struct BuildDriverKey {
 pub const TOP_LEVEL_ASPECTS: &str = "TOP_LEVEL_ASPECTS";
 
 impl BuildDriverKey {
+    /// A key for a `ConfiguredTargetKey` of a build with merged analysis and execution: the test
+    /// type is resolved by `BuildDriverFunction` once the target is analyzed (the
+    /// `TestTypeResolver`), so the key carries `NOT_TEST`.
+    // Java: com/google/devtools/build/lib/skyframe/BuildDriverKey.java:72 BuildDriverKey.ofConfiguredTarget
+    pub fn of_configured_target(
+        action_lookup_key: ActionLookupKeyRef,
+        output_groups: Vec<String>,
+        explicitly_requested: bool,
+        skip_incompatible_explicit_targets: bool,
+        extra_action_top_level_only: bool,
+        keep_going: bool,
+    ) -> BuildDriverKey {
+        BuildDriverKey {
+            action_lookup_key,
+            output_groups,
+            explicitly_requested,
+            skip_incompatible_explicit_targets,
+            extra_action_top_level_only,
+            test_type: TestType::NOT_TEST,
+            keep_going,
+        }
+    }
+
     /// A key for a `TopLevelAspectsKey`.
     ///
     /// PORT: Java's `isTopLevelAspectDriver` field is not carried (adding a field would change

@@ -14,7 +14,6 @@ use starlark::environment::{Methods, MethodsBuilder, MethodsStatic};
 use starlark::eval::Evaluator;
 use starlark::starlark_module;
 use starlark::starlark_simple_value;
-use starlark::values::dict::{AllocDict, DictRef};
 use starlark::values::list::AllocList;
 use starlark::values::none::NoneType;
 use starlark::values::{Heap, NoSerialize, StarlarkValue, Value, ValueLike, starlark_value};
@@ -321,12 +320,15 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
     // Java: com/google/devtools/build/lib/rules/cpp/CcStarlarkInternal.java:954 CcStarlarkInternal.freeze
     fn freeze<'v>(this: Value<'v>, value: Value<'v>, heap: Heap<'v>) -> anyhow::Result<Value<'v>> {
         let _ = this;
-        // PORT: Java returns an immutable copy; starlark-rust has no immutable list or dict on a
-        // mutable heap, so this returns a copy (the module freezes it when it is done).
-        if let Some(dict) = DictRef::from_value(value) {
-            let entries: Vec<(Value<'v>, Value<'v>)> = dict.iter().collect();
-            return Ok(heap.alloc(AllocDict(entries)));
+        // Java: com/google/devtools/build/lib/rules/cpp/CcStarlarkInternal.java:954 CcStarlarkInternal.freeze
+        // Dict.immutableCopyOf(dict): the dict itself when it is immutable (a key-tracking
+        // `ctx.var` keeps its tracking), else an immutable copy of its entries.
+        if blaze_starlark::dict::dict_is_immutable(value).is_some() {
+            return blaze_starlark::dict::dict_immutable_copy_of(heap, value)
+                .map_err(|e| anyhow::anyhow!("{e}"));
         }
+        // PORT: Java returns an immutable list; starlark-rust has no immutable list on a mutable
+        // heap, so this returns a copy (the module freezes it when it is done).
         if value.get_type() != "string"
             && let Ok(it) = value.iterate(heap)
         {

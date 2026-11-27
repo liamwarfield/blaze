@@ -3,6 +3,18 @@
 
 use blaze_util::java_regex::Pattern;
 
+// Native C++ classes and methods with no caller at the pin: the C++ rules moved to Starlark
+// (rules_cc, builtins_bzl), which configures features, reads the FDO context and the debug
+// package provider in Starlark; the Java left behind is reached from nowhere (checked by
+// searching the pinned src/main/java for each name).
+// PORT: skipped, no caller at the pin (feature configuration is rules_cc's Starlark; CcToolchainFeatures.configureFeatures is ported): CcCommon.configureFeaturesOrThrowEvalException, CcCommon.getCoverageFeatures, CcCommon.Language.<init>, CcCommon.Language.getRepresentation
+// PORT: skipped, starlark-rust values are immutable unless they are mutable containers, so CoptsFilter needs no override: CcCommon.CoptsFilter.isImmutable
+// PORT: skipped, read only by CcCommon.configureFeaturesOrThrowEvalException (no caller at the pin): FdoContext.<init>, FdoContext.getBranchFdoProfile, FdoContext.getPrefetchHintsArtifact, FdoContext.getPropellerOptimizeInputFile, FdoContext.getMemProfProfileArtifact, FdoContext.getProtoProfileArtifact, FdoContext.hasArtifacts, FdoContext.BranchFdoProfile.<init>, FdoContext.BranchFdoProfile.isAutoFdo, FdoContext.BranchFdoProfile.isAutoXBinaryFdo, FdoContext.BranchFdoProfile.isLlvmFdo, FdoContext.BranchFdoProfile.isLlvmCSFdo, FdoContext.BranchFdoProfile.getProfileArtifact, FdoContext.BranchFdoProfile.getBranchFdoMode
+// PORT: skipped, read only through FdoContext.getPropellerOptimizeInputFile (no caller at the pin): PropellerOptimizeInputFile.<init>, PropellerOptimizeInputFile.getCcArtifact, PropellerOptimizeInputFile.getLdArtifact
+// PORT: skipped, no caller at the pin: CppHelper.<init>, CppHelper.getToolchain, CppHelper.usePicForBinaries
+// PORT: skipped, an interface without an implementation at the pin, so `validate_layering_check_features` is on no Starlark value: CppSemantics.validateLayeringCheckFeaturesForStarlark, CppSemantics.validateLayeringCheckFeatures
+// PORT: skipped, no caller at the pin (debug_package_info is read by rules_cc's Starlark): DebugPackageProvider.get, DebugPackageProvider.<init>, DebugPackageProvider.getTargetLabel, DebugPackageProvider.getStrippedArtifact, DebugPackageProvider.getUnstrippedArtifact, DebugPackageProvider.getDwpArtifact, DebugPackageProvider.RulesCcProvider.<init>, DebugPackageProvider.RulesCcProvider.wrap
+
 /// A filter that removes copts from a c++ compile action according to a nocopts regex.
 // Java: com/google/devtools/build/lib/rules/cpp/CcCommon.java:101 CcCommon.CoptsFilter
 // `java.util.regex.Pattern` is `blaze_util::java_regex::Pattern` (Java's dialect on the `regex`

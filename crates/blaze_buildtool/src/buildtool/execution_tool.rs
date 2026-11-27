@@ -866,9 +866,20 @@ pub fn evaluate_build_driver_keys(
         thread_stack_size: 16 << 20,
         ..EvaluationContext::default()
     };
-    let evaluation = evaluator.evaluate(&roots, &ctx)?;
+    let evaluation = evaluator.evaluate(&roots, &ctx);
+    // skyframeExecutor.resetBuildDriverFunction(), in the finally block of the evaluation: the
+    // function's per-build states (the events posted for each key, the keys checked for
+    // conflicts) start over. Required for incremental correctness: a server keeps the build arena
+    // that holds them across commands, and a key that did not finish (its build failed) would
+    // otherwise keep its posted events, which the next build would not post again.
+    // PORT: Java's path without merged analysis and execution evaluates no BuildDriverKey;
+    // Blaze's does (blaze_runtime commands/build.rs), so it resets the states as the merged path
+    // does.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:749 SkyframeBuildView.analyzeAndExecuteTargets
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2616 SkyframeExecutor.resetBuildDriverFunction
+    blaze_sky_exec::build_driver_function::BuildDriverFunction::reset_states();
     Ok(ExecutionPhaseResult {
-        evaluation,
+        evaluation: evaluation?,
         start,
         stop: Instant::now(),
     })

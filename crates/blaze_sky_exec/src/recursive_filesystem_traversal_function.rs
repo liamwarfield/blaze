@@ -733,11 +733,19 @@ enum PkgLookupResultType {
     Pkg,
 }
 
+// Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalFunction.java:508 RecursiveFilesystemTraversalFunction.PkgLookupResult.conflict
+// Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalFunction.java:513 RecursiveFilesystemTraversalFunction.PkgLookupResult.directory
+// Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalFunction.java:518 RecursiveFilesystemTraversalFunction.PkgLookupResult.pkg
+// PORT: the factories are struct literals at their callers (`check_if_package`).
+// PORT: skipped, no caller prints it: RecursiveFilesystemTraversalFunction.PkgLookupResult.toString
+// PORT: skipped, never thrown in Bazel 9.3.2 (no `new DanglingSymlinkException`): RecursiveFilesystemTraversalFunction.DanglingSymlinkException.<init>
 impl PkgLookupResult {
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalFunction.java:529 RecursiveFilesystemTraversalFunction.PkgLookupResult.isPackage
     fn is_package(&self) -> bool {
         self.type_ == PkgLookupResultType::Pkg
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveFilesystemTraversalFunction.java:533 RecursiveFilesystemTraversalFunction.PkgLookupResult.isConflicting
     fn is_conflicting(&self) -> bool {
         self.type_ == PkgLookupResultType::Conflict
     }
@@ -1264,7 +1272,7 @@ fn traverse_children(
     env: &mut Environment<'_>,
     traversal: &DirectoryArtifactTraversalRequest,
 ) -> Step<Vec<Arc<RecursiveFilesystemTraversalValue>>> {
-    // PORT: `traverseGeneratedChildren` is unreachable (the root is never generated).
+    // PORT: skipped, unreachable: the one TraversalRequest of the Bazel binary (ArtifactFunction.DirectoryArtifactTraversalRequest) has a source root: RecursiveFilesystemTraversalFunction.traverseGeneratedChildren
     traverse_source_children(env, traversal)
 }
 

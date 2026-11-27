@@ -572,15 +572,16 @@ impl LegacyIncludeScanner {
     }
 }
 
-/// `checkForInterrupt(operation, source)`: an interrupt ends the scan.
+/// `checkForInterrupt(operation, source)`: an interrupt ends the scan with
+/// `InterruptedException("Include scanning interrupted while <operation> <source>")`.
 ///
-/// PORT: Java's `InterruptedException` message ("Include scanning interrupted while <operation>
-/// <source>") is not carried: the error is [`IncludeScanningError::Interrupted`], which the
-/// execution layer reports as Java reports an `InterruptedException` (without its message).
+/// We require passing in the operation and the source to avoid intermediate String operations.
 // Java: com/google/devtools/build/lib/includescanning/LegacyIncludeScanner.java:628 LegacyIncludeScanner.checkForInterrupt
-fn check_for_interrupt() -> Result<(), IncludeScanningError> {
+fn check_for_interrupt(operation: &str, source: &Artifact) -> Result<(), IncludeScanningError> {
     if blaze_shell::thread_interrupt::interrupted() {
-        return Err(IncludeScanningError::Interrupted);
+        return Err(IncludeScanningError::Interrupted(format!(
+            "Include scanning interrupted while {operation} {source}"
+        )));
     }
     Ok(())
 }
@@ -681,7 +682,7 @@ impl IncludeVisitor<'_> {
         context_kind: Option<Kind>,
         visited: &mut IndexSet<Artifact>,
     ) -> Result<(), IncludeScanningError> {
-        check_for_interrupt()?;
+        check_for_interrupt("processing", source)?;
 
         let cached = self.scanner.file_parse_cache.lock().get(source).cloned();
         let inclusions = match cached {
@@ -738,7 +739,7 @@ impl IncludeVisitor<'_> {
         let mut context_path_pos = 0;
         let mut context_kind = None;
 
-        check_for_interrupt()?;
+        check_for_interrupt("visiting", source)?;
 
         // If nothing has been found, get an inclusion from the cache. This will automatically
         // search on the include paths and populate the cache if necessary.

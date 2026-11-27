@@ -668,6 +668,15 @@ impl<'v> Value<'v> {
             // reflected form (Java EvalUtils.binaryOp, Python __ror__).
             Err(e) => match other.get_ref().rbit_or(self, heap) { // BLAZE PATCH 0014
                 Some(r) => r, // BLAZE PATCH 0014
+                // Java EvalUtils.binaryOp PIPE: `map | map` with a Map, not a dict, on the left. // BLAZE PATCH 0068
+                None if crate::values::dict::DictRef::from_value(other).is_some() // BLAZE PATCH 0068
+                    || other.get_ref().java_map_entries(heap).is_some() => // BLAZE PATCH 0068
+                { // BLAZE PATCH 0068
+                    match crate::values::types::dict::globals::java_map_as_dict(self, heap) { // BLAZE PATCH 0068
+                        Some(lhs) => lhs?.bit_or(other, heap), // BLAZE PATCH 0068
+                        None => Err(e), // BLAZE PATCH 0068
+                    } // BLAZE PATCH 0068
+                } // BLAZE PATCH 0068
                 None => Err(e), // BLAZE PATCH 0014
             }, // BLAZE PATCH 0014
         } // BLAZE PATCH 0014

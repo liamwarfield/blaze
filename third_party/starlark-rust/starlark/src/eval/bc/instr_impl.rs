@@ -68,6 +68,7 @@ use crate::eval::compiler::stmt::AssignError;
 use crate::eval::compiler::stmt::add_assign;
 use crate::eval::compiler::stmt::bit_or_assign;
 use crate::eval::compiler::stmt::possible_gc;
+use crate::eval::runtime::arguments::ArgumentsImpl; // BLAZE PATCH 0068
 use crate::eval::runtime::arguments::ResolvedArgName;
 use crate::eval::runtime::frame_span::FrameSpan;
 use crate::eval::runtime::profile::instant::ProfilerInstant;
@@ -1620,7 +1621,8 @@ impl<A: BcCallArgs<Symbol>> InstrNoFlowImpl for InstrCallImpl<A> {
     ) -> crate::Result<()> {
         eval.report_forward_progress()?;
         let f = frame.get_bc_slot(*this);
-        let arguments = Arguments(args.pop_from_stack(frame));
+        let mut arguments = Arguments(args.pop_from_stack(frame)); // BLAZE PATCH 0068
+        arguments.0.java_map_kwargs(eval.heap())?; // BLAZE PATCH 0068
         let r = f.invoke_with_loc(Some(span.as_ref()), &arguments, eval)?;
         frame.set_bc_slot(*target, r);
         Ok(())
@@ -1640,7 +1642,8 @@ impl<F: BcFrozenCallable, A: BcCallArgs<Symbol>> InstrNoFlowImpl
         (fun, args, span, target): &(F, A, FrozenAnyValue<FrameSpan>, BcSlotOut),
     ) -> crate::Result<()> {
         eval.report_forward_progress()?;
-        let arguments = Arguments(args.pop_from_stack(frame));
+        let mut arguments = Arguments(args.pop_from_stack(frame)); // BLAZE PATCH 0068
+        arguments.0.java_map_kwargs(eval.heap())?; // BLAZE PATCH 0068
         let r = fun.bc_invoke(span.as_ref(), &arguments, eval)?;
         frame.set_bc_slot(*target, r);
         Ok(())
@@ -1668,7 +1671,8 @@ impl<A: BcCallArgsForDef> InstrNoFlowImpl for InstrCallFrozenDefImpl<A> {
         ),
     ) -> crate::Result<()> {
         eval.report_forward_progress()?;
-        let arguments = args.pop_from_stack(frame);
+        let mut arguments = args.pop_from_stack(frame); // BLAZE PATCH 0068
+        arguments.java_map_kwargs(eval.heap())?; // BLAZE PATCH 0068
         let r = eval.with_call_stack(fun.to_value(), Some(span.as_ref()), |eval| {
             fun.as_ref()
                 .invoke_with_args(fun.to_value(), &arguments, eval)
@@ -1746,7 +1750,8 @@ impl<A: BcCallArgs<Symbol>> InstrNoFlowImpl for InstrCallMethodImpl<A> {
         ),
     ) -> crate::Result<()> {
         let this = frame.get_bc_slot(*this);
-        let arguments = Arguments(args.pop_from_stack(frame));
+        let mut arguments = Arguments(args.pop_from_stack(frame)); // BLAZE PATCH 0068
+        arguments.0.java_map_kwargs(eval.heap())?; // BLAZE PATCH 0068
         call_method_common(
             eval,
             frame,
@@ -1784,7 +1789,8 @@ impl<A: BcCallArgs<Symbol>> InstrNoFlowImpl for InstrCallMaybeKnownMethodImpl<A>
         ),
     ) -> crate::Result<()> {
         let this = frame.get_bc_slot(*this);
-        let arguments = Arguments(args.pop_from_stack(frame));
+        let mut arguments = Arguments(args.pop_from_stack(frame)); // BLAZE PATCH 0068
+        arguments.0.java_map_kwargs(eval.heap())?; // BLAZE PATCH 0068
         call_maybe_known_method_common(
             eval,
             frame,

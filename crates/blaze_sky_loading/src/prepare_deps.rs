@@ -126,9 +126,15 @@ impl CollectPackagesUnderDirectoryKey {
 }
 
 // Java: com/google/devtools/build/lib/skyframe/RecursivePkgKey.java:63 RecursivePkgKey.toString
+// Java: com/google/devtools/build/lib/skyframe/RecursivePkgSkyKey.java:29 RecursivePkgSkyKey.toString
 impl fmt::Debug for CollectPackagesUnderDirectoryKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(&self.0, f)
+        write!(
+            f,
+            "{} {}",
+            COLLECT_PACKAGES_UNDER_DIRECTORY,
+            self.0.to_key_string()
+        )
     }
 }
 
@@ -204,6 +210,11 @@ impl CollectPackagesUnderDirectoryValue {
 
 /// What a directory's own package contributes (Java `PackageDirectoryConsumer`).
 // Java: com/google/devtools/build/lib/skyframe/RecursiveDirectoryTraversalFunction.java:105 RecursiveDirectoryTraversalFunction.PackageDirectoryConsumer
+// Java: com/google/devtools/build/lib/skyframe/CollectPackagesUnderDirectoryFunction.java:110 CollectPackagesUnderDirectoryFunction.MyPackageDirectoryConsumer.<init>
+// Java: com/google/devtools/build/lib/skyframe/CollectPackagesUnderDirectoryFunction.java:112 CollectPackagesUnderDirectoryFunction.MyPackageDirectoryConsumer.notePackage
+// Java: com/google/devtools/build/lib/skyframe/CollectPackagesUnderDirectoryFunction.java:117 CollectPackagesUnderDirectoryFunction.MyPackageDirectoryConsumer.notePackageError
+// Java: com/google/devtools/build/lib/skyframe/CollectPackagesUnderDirectoryFunction.java:122 CollectPackagesUnderDirectoryFunction.MyPackageDirectoryConsumer.isDirectoryPackage
+// Java: com/google/devtools/build/lib/skyframe/CollectPackagesUnderDirectoryFunction.java:126 CollectPackagesUnderDirectoryFunction.MyPackageDirectoryConsumer.getErrorMessage
 enum OwnPackage {
     None,
     /// `notePackage`.
@@ -317,6 +328,9 @@ impl CollectPackagesUnderDirectoryFunction {
     }
 
     // Java: com/google/devtools/build/lib/skyframe/CollectPackagesUnderDirectoryFunction.java:45 CollectPackagesUnderDirectoryFunction.compute
+    // Java: com/google/devtools/build/lib/skyframe/CollectPackagesUnderDirectoryFunction.java:55 CollectPackagesUnderDirectoryFunction.MyTraversalFunction.<init>
+    // Java: com/google/devtools/build/lib/skyframe/CollectPackagesUnderDirectoryFunction.java:59 CollectPackagesUnderDirectoryFunction.MyTraversalFunction.getInitialConsumer
+    // Java: com/google/devtools/build/lib/skyframe/CollectPackagesUnderDirectoryFunction.java:64 CollectPackagesUnderDirectoryFunction.MyTraversalFunction.getSkyKeyForSubdirectory
     pub fn compute(
         &self,
         key: &CollectPackagesUnderDirectoryKey,
@@ -332,6 +346,7 @@ impl CollectPackagesUnderDirectoryFunction {
             return Ok(None);
         };
         // Java MyTraversalFunction.aggregateWithSubdirectorySkyValues.
+        // Java: com/google/devtools/build/lib/skyframe/CollectPackagesUnderDirectoryFunction.java:73 CollectPackagesUnderDirectoryFunction.MyTraversalFunction.aggregateWithSubdirectorySkyValues
         // Aggregate the child subdirectory package state.
         let mut subdirectories: IndexMap<RootedPath, bool> = IndexMap::new();
         for (recursive_pkg_key, collect_packages_value) in subdirectory_sky_values {
@@ -365,6 +380,7 @@ impl CollectPackagesUnderDirectoryFunction {
 
 /// The key of COLLECT_TARGETS_IN_PACKAGE.
 // Java: com/google/devtools/build/lib/skyframe/CollectTargetsInPackageValue.java:45 CollectTargetsInPackageValue.CollectTargetsInPackageKey
+// PORT: skipped, the key is a plain struct (derived equality and hashing, no interner) and its function name is `Key::FUNCTION`: CollectTargetsInPackageValue.CollectTargetsInPackageKey.<init>, CollectTargetsInPackageValue.CollectTargetsInPackageKey.create, CollectTargetsInPackageValue.CollectTargetsInPackageKey.functionName, CollectTargetsInPackageValue.CollectTargetsInPackageKey.getSkyKeyInterner
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct CollectTargetsInPackageKey {
     package_id: PackageIdentifier,
@@ -408,6 +424,7 @@ impl Key for CollectTargetsInPackageKey {
 
 /// A marker value: the package's targets (and their transitive dependencies) are in the graph.
 // Java: com/google/devtools/build/lib/skyframe/CollectTargetsInPackageValue.java:28 CollectTargetsInPackageValue
+// PORT: skipped, a unit struct stands for the INSTANCE singleton: CollectTargetsInPackageValue.<init>
 #[derive(Debug)]
 pub struct CollectTargetsInPackageValue;
 
@@ -457,6 +474,7 @@ pub fn collect_targets_in_package_function(
 
 /// The key of PREPARE_DEPS_OF_TARGETS_UNDER_DIRECTORY: a directory and a filtering policy.
 // Java: com/google/devtools/build/lib/skyframe/PrepareDepsOfTargetsUnderDirectoryValue.java:76 PrepareDepsOfTargetsUnderDirectoryValue.PrepareDepsOfTargetsUnderDirectoryKey
+// PORT: skipped, the key is a plain struct (derived equality and hashing, no interner; the fields are read directly) and its function name is `Key::FUNCTION`: PrepareDepsOfTargetsUnderDirectoryValue.PrepareDepsOfTargetsUnderDirectoryKey.<init>, PrepareDepsOfTargetsUnderDirectoryValue.PrepareDepsOfTargetsUnderDirectoryKey.create, PrepareDepsOfTargetsUnderDirectoryValue.PrepareDepsOfTargetsUnderDirectoryKey.intern, PrepareDepsOfTargetsUnderDirectoryValue.PrepareDepsOfTargetsUnderDirectoryKey.getRecursivePkgKey, PrepareDepsOfTargetsUnderDirectoryValue.PrepareDepsOfTargetsUnderDirectoryKey.getFilteringPolicy, PrepareDepsOfTargetsUnderDirectoryValue.PrepareDepsOfTargetsUnderDirectoryKey.functionName, PrepareDepsOfTargetsUnderDirectoryValue.PrepareDepsOfTargetsUnderDirectoryKey.equals, PrepareDepsOfTargetsUnderDirectoryValue.PrepareDepsOfTargetsUnderDirectoryKey.hashCode
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct PrepareDepsOfTargetsUnderDirectoryKey {
     recursive_pkg_key: RecursivePkgKey,
@@ -483,8 +501,9 @@ impl fmt::Debug for PrepareDepsOfTargetsUnderDirectoryKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "PrepareDepsOfTargetsUnderDirectoryKey{{pkgKey={:?}, filteringPolicy={:?}}}",
-            self.recursive_pkg_key, self.filtering_policy
+            "PrepareDepsOfTargetsUnderDirectoryKey{{pkg-key={}, filtering policy={:?}}}",
+            self.recursive_pkg_key.to_key_string(),
+            self.filtering_policy
         )
     }
 }
@@ -506,6 +525,7 @@ impl Key for PrepareDepsOfTargetsUnderDirectoryKey {
 /// A marker value: the targets in the directory's package and in the non-excluded packages
 /// beneath it, and their transitive dependencies, are in the graph.
 // Java: com/google/devtools/build/lib/skyframe/PrepareDepsOfTargetsUnderDirectoryValue.java:44 PrepareDepsOfTargetsUnderDirectoryValue
+// PORT: skipped, a unit struct stands for the INSTANCE singleton: PrepareDepsOfTargetsUnderDirectoryValue.<init>
 #[derive(Debug)]
 pub struct PrepareDepsOfTargetsUnderDirectoryValue;
 
@@ -589,6 +609,9 @@ impl PrepareDepsOfTargetsUnderDirectoryFunction {
 /// The key of PREPARE_DEPS_OF_PATTERN: a [`TargetPatternKey`] (always with the `NO_FILTER`
 /// policy).
 // Java: com/google/devtools/build/lib/skyframe/PrepareDepsOfPatternValue.java:194 PrepareDepsOfPatternValue.PrepareDepsOfPatternSkyKeyValue.Key
+// Java: com/google/devtools/build/lib/skyframe/PrepareDepsOfPatternValue.java:185 PrepareDepsOfPatternValue.PrepareDepsOfPatternSkyKeyValue.<init>
+// Java: com/google/devtools/build/lib/skyframe/PrepareDepsOfPatternValue.java:189 PrepareDepsOfPatternValue.PrepareDepsOfPatternSkyKeyValue.getSkyKey
+// PORT: skipped, the key is a newtype key (Key::FUNCTION; no interning): PrepareDepsOfPatternValue.PrepareDepsOfPatternSkyKeyValue.Key.create, PrepareDepsOfPatternValue.PrepareDepsOfPatternSkyKeyValue.Key.functionName, PrepareDepsOfPatternValue.PrepareDepsOfPatternSkyKeyValue.Key.getSkyKeyInterner
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct PrepareDepsOfPatternKey(pub TargetPatternKey);
 
@@ -605,6 +628,7 @@ impl Key for PrepareDepsOfPatternKey {
     // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:75 SkyFunctions.PREPARE_DEPS_OF_PATTERN (createHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
     // Java: com/google/devtools/build/lib/skyframe/PrepareDepsOfPatternValue.java:55 PrepareDepsOfPatternValue.equals
+    // PORT: skipped, a marker value is never hashed (all values are equal): PrepareDepsOfPatternValue.hashCode
     fn values_equal(_old: &PrepareDepsOfPatternValue, _new: &PrepareDepsOfPatternValue) -> bool {
         true
     }
@@ -619,6 +643,8 @@ pub struct PrepareDepsOfPatternValue;
 /// A pattern that could not be turned into a key, with the pattern as written (Java
 /// `PrepareDepsOfPatternSkyKeyException`).
 // Java: com/google/devtools/build/lib/skyframe/PrepareDepsOfPatternValue.java:158 PrepareDepsOfPatternValue.PrepareDepsOfPatternSkyKeyException
+// Java: com/google/devtools/build/lib/skyframe/PrepareDepsOfPatternValue.java:169 PrepareDepsOfPatternValue.PrepareDepsOfPatternSkyKeyException.getException
+// Java: com/google/devtools/build/lib/skyframe/PrepareDepsOfPatternValue.java:173 PrepareDepsOfPatternValue.PrepareDepsOfPatternSkyKeyException.getOriginalPattern
 pub struct PrepareDepsOfPatternSkyKeyException {
     pub exception: TargetParsingException,
     pub original_pattern: String,
@@ -627,6 +653,8 @@ pub struct PrepareDepsOfPatternSkyKeyException {
 /// The keys of a pattern sequence and the patterns that failed (Java
 /// `PrepareDepsOfPatternSkyKeysAndExceptions`).
 // Java: com/google/devtools/build/lib/skyframe/PrepareDepsOfPatternValue.java:137 PrepareDepsOfPatternValue.PrepareDepsOfPatternSkyKeysAndExceptions
+// Java: com/google/devtools/build/lib/skyframe/PrepareDepsOfPatternValue.java:148 PrepareDepsOfPatternValue.PrepareDepsOfPatternSkyKeysAndExceptions.getValues
+// Java: com/google/devtools/build/lib/skyframe/PrepareDepsOfPatternValue.java:152 PrepareDepsOfPatternValue.PrepareDepsOfPatternSkyKeysAndExceptions.getExceptions
 pub struct PrepareDepsOfPatternSkyKeysAndExceptions {
     pub values: Vec<PrepareDepsOfPatternKey>,
     pub exceptions: Vec<PrepareDepsOfPatternSkyKeyException>,

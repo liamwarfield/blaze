@@ -78,6 +78,10 @@ impl BaselineCoverageAction {
 }
 
 impl Action for BaselineCoverageAction {
+    fn java_class_name(&self) -> Option<&'static str> {
+        Some("com.google.devtools.build.lib.analysis.test.BaselineCoverageAction")
+    }
+
     fn abstract_action(&self) -> &AbstractAction {
         &self.base
     }

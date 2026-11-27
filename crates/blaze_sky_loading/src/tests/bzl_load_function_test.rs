@@ -1424,8 +1424,36 @@ fn test_error_reading_other_bzl_file_is_persistent_from_perspective_of_parent() 
 //   ... evaluate(key) ...
 //   assertThatEvaluationResult(result).hasErrorEntryForKeyThat(key).isNotTransient();
 #[test]
-#[ignore = "needs a file system whose statIfFound throws an IOException for one path (Java CustomInMemoryFs.badPathForStat); the harness runs on the real UnixFileSystem, where no permission makes the stat of a/a1.bzl fail without also failing the stat of a/BUILD"]
-fn test_error_stating_bzl_file_in_file_state_function_is_persistent() {}
+fn test_error_stating_bzl_file_in_file_state_function_is_persistent() {
+    // Java CustomInMemoryFs.badPathForStat: `statIfFound` of that path throws
+    // `IOException("bad")`.
+    let bad_path_for_stat: Arc<std::sync::Mutex<Option<String>>> = Arc::default();
+    let hook_path = bad_path_for_stat.clone();
+    let scratch = crate::test_util::Scratch::with_file_system(move |unix| {
+        blaze_vfs::testing::FaultInjectingFileSystem::new(
+            unix,
+            blaze_vfs::testing::Hooks {
+                stat: Some(Box::new(move |path, _follow| {
+                    (hook_path.lock().unwrap().as_deref() == Some(path))
+                        .then(|| Err(std::io::Error::other("bad")))
+                })),
+                ..Default::default()
+            },
+        )
+    });
+    let mut s = TestSetup::with_scratch(FakeRepos::default(), scratch);
+    s.semantics.experimental_builtins_bzl_path = String::new();
+    file(&s, "a/BUILD", "");
+    let bad = s.scratch.file(&s.ws("a/a1.bzl"), "doesntmatter");
+    *bad_path_for_stat.lock().unwrap() = Some(bad.get_path_string().to_owned());
+
+    let k = key("//a:a1.bzl");
+    let (result, events) = eval_key(&s, &k);
+    let error = result
+        .get_error(&SkyKey::new(k))
+        .unwrap_or_else(|| panic!("no error entry; events: {:#?}", event_strings(&events)));
+    assert!(!error.is_transitively_transient(), "{error:?}");
+}
 
 // Java: BzlLoadFunctionTest.bzlCompileCacheHitFromNodeWithOtherKeyKind_registersFileDep
 //   Regression test for https://github.com/bazelbuild/bazel/issues/30900: evaluates

@@ -326,6 +326,14 @@ impl blaze_events::EventBus for IncrementalPackageRoots {
         {
             panic!("AbruptExitException: {}", e.failure_detail.message);
         }
+        // @Subscribe analysisFinished(AnalysisPhaseCompleteEvent unused)
+        if downcast_event::<blaze_buildtool::buildtool::buildevent::AnalysisPhaseCompleteEvent>(
+            &event,
+        )
+        .is_some()
+        {
+            self.analysis_finished();
+        }
     }
 }
 

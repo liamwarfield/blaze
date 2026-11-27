@@ -325,6 +325,20 @@ impl EventBus for BepSubscriber {
             }
             return;
         }
+        if let Some(e) = downcast_event::<
+            blaze_sky_top::skyframe_build_view::AnalysisPhaseCompleteStatsEvent,
+        >(&event)
+        {
+            // The merged phase's analysisFinishedCallback: AnalysisPhaseCompleteEvent and
+            // AnalysisGraphStatsEvent (the path without it logs them in `analysis_complete`).
+            // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:164 MetricsCollector.onAnalysisPhaseComplete
+            log_analysis_metrics(
+                &shared.metrics,
+                Some(&e.stats),
+                e.build_graph_metrics.as_ref(),
+            );
+            return;
+        }
         if let Some(e) = downcast_event::<TopLevelTargetPendingExecutionEvent>(&event) {
             // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:213 MetricsCollector.handleExecutionPhaseStart
             shared.metrics.handle_execution_phase_start();
@@ -424,6 +438,27 @@ impl EventBus for BepSubscriber {
                     configuration.map(|c| shared.configuration_event(c)),
                     configuration.map(|c| c.checksum().to_string()),
                 )));
+            // What the target's TargetCompleteEvent reads of its ConfiguredTargetAndData, which
+            // the merged phase posts before the analysis of the other targets is over (the path
+            // without it records them in `post_targets_configured`).
+            if let (Some(configured_target), Some(actual_target)) =
+                (&e.configured_target, &e.actual_target)
+            {
+                let view = configured_target_views(std::slice::from_ref(configured_target))
+                    .pop()
+                    .expect("one view per configured target");
+                shared.targets.lock().insert(
+                    (view.get_label(), view.get_configuration_checksum()),
+                    CompletedTargetFacts {
+                        original_label: view.get_original_label(),
+                        configuration_event: configuration.map(|c| shared.configuration_event(c)),
+                        configuration: e.configuration.clone(),
+                        rule_tags: actual_target.get_rule_tags().into_iter().collect(),
+                        test_timeout: actual_target.get_test_timeout(),
+                        test_runs_and_shards: view.get_test_params().map(|p| (p.runs, p.shards)),
+                    },
+                );
+            }
             return;
         }
         if let Some(e) = downcast_event::<TopLevelConfigurationEvent>(&event) {
@@ -1315,10 +1350,16 @@ fn create_abrupt_exit_exception(
 /// `e.getMessage()` of the `ExecutionException` whose cause is the `TimeoutException` of
 /// `Futures.withTimeout`.
 ///
-/// PORT: Guava's message ends with the `toString()` of the timed-out future (an object identity
-/// and its state), which cannot be reproduced; the port gives the exception's class and the
-/// fixed start of its message.
-const TIMEOUT_EXCEPTION_MESSAGE: &str = "java.util.concurrent.TimeoutException: Timed out";
+/// The exception is Guava's `TimeoutFuture.TimeoutFutureException` (oracle, a backend that
+/// closes after `--bes_timeout`: `...TimeoutFutureException: Timed out:
+/// NonCancellationPropagatingFuture@489f1984[status=PENDING, info=[delegate=[SettableFuture@...`).
+///
+/// PORT: Guava's message ends with the `toString()` of the timed-out future (object identity
+/// hashes and its state), which cannot be reproduced; the port gives the exception's class and
+/// the fixed start of its message.
+// Java: com/google/common/util/concurrent/TimeoutFuture.java TimeoutFuture.TimeoutFutureException
+const TIMEOUT_EXCEPTION_MESSAGE: &str =
+    "com.google.common.util.concurrent.TimeoutFuture$TimeoutFutureException: Timed out";
 
 /// What waiting for a close future with its timeout gave.
 #[derive(Clone, Debug)]
@@ -2328,55 +2369,72 @@ impl BepCommandSupport {
     /// top-level key (`blaze_sky_top::analysis_phase_runner::analysis_phase_complete_event_posted`).
     // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:911 SkyframeBuildView.analysisFinishedCallback
     fn analysis_metrics(&self, analysis_result: &AnalysisResult, analysis_phase_completed: bool) {
-        let metrics = &self.shared.metrics;
-        metrics.log_analysis_starting_event();
-        if !analysis_phase_completed {
-            return;
-        }
-        let stats = analysis_result.get_analysis_phase_complete_stats();
-        // PackageMetricsPackageLoadingListener.getInstance(): the recorder's metrics, read here
-        // for the MetricsCollector.
-        // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:164 MetricsCollector.onAnalysisPhaseComplete
-        let listener = crate::package_metrics::PackageMetricsPackageLoadingListener::get_instance();
-        let package_metrics_recorder = if listener.get_publish_package_metrics_in_bep() {
-            listener
-                .get_package_metrics_recorder()
-                .map(|recorder| PackageMetricsRecorderSnapshot {
-                    package_load_metrics: recorder.get_package_load_metrics(),
-                    only_extremes_num_packages_to_track: match recorder.get_recorder_type() {
-                        crate::package_metrics::RecorderType::OnlyExtremes => Some(
-                            recorder
-                                .as_extrema()
-                                .expect("ClassCastException: ExtremaPackageMetricsRecorder")
-                                .get_num_packages_to_track(),
-                        ),
-                        crate::package_metrics::RecorderType::All => None,
-                    },
-                })
-        } else {
-            None
-        };
-        metrics.on_analysis_phase_complete(&AnalysisPhaseCompleteInfo {
-            actions_constructed: TotalAndConfiguredTargetOnlyMetric::create(
-                stats.actions_constructed_total,
-                stats.actions_constructed_configured_targets_only,
-            ),
-            targets_configured: TotalAndConfiguredTargetOnlyMetric::create(
-                stats.targets_configured_total,
-                stats.targets_configured_configured_targets_only,
-            ),
-            time_in_ms: stats.time_in_ms,
-            packages_successfully_loaded: stats.packages_successfully_loaded,
-            actions_constructed_by_mnemonic: stats.actions_constructed_by_mnemonic.clone(),
-            package_metrics_recorder,
-        });
-        // AnalysisGraphStatsEvent: posted only when the analysis checked for action conflicts.
-        // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:454 SkyframeBuildView.configureTargets
-        if let Some(build_graph_metrics) = analysis_result.get_build_graph_metrics() {
-            metrics.log_analysis_graph_stats(build_graph_metrics);
-        }
+        log_analysis_metrics(
+            &self.shared.metrics,
+            analysis_phase_completed.then(|| analysis_result.get_analysis_phase_complete_stats()),
+            analysis_result.get_build_graph_metrics(),
+        );
     }
+}
 
+/// `AnalysisPhaseStartedEvent`, `AnalysisPhaseCompleteEvent` (`stats`: `None` when it was not
+/// posted) and `AnalysisGraphStatsEvent` as the `MetricsCollector` receives them.
+// Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:145 MetricsCollector.logAnalysisStartingEvent
+fn log_analysis_metrics(
+    metrics: &MetricsCollector,
+    stats: Option<&blaze_sky_top::build_view::AnalysisPhaseCompleteStats>,
+    build_graph_metrics: Option<
+        &blaze_protos::build_event_stream::build_metrics::BuildGraphMetrics,
+    >,
+) {
+    metrics.log_analysis_starting_event();
+    let Some(stats) = stats else {
+        return;
+    };
+    // PackageMetricsPackageLoadingListener.getInstance(): the recorder's metrics, read here
+    // for the MetricsCollector.
+    // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:164 MetricsCollector.onAnalysisPhaseComplete
+    let listener = crate::package_metrics::PackageMetricsPackageLoadingListener::get_instance();
+    let package_metrics_recorder = if listener.get_publish_package_metrics_in_bep() {
+        listener
+            .get_package_metrics_recorder()
+            .map(|recorder| PackageMetricsRecorderSnapshot {
+                package_load_metrics: recorder.get_package_load_metrics(),
+                only_extremes_num_packages_to_track: match recorder.get_recorder_type() {
+                    crate::package_metrics::RecorderType::OnlyExtremes => Some(
+                        recorder
+                            .as_extrema()
+                            .expect("ClassCastException: ExtremaPackageMetricsRecorder")
+                            .get_num_packages_to_track(),
+                    ),
+                    crate::package_metrics::RecorderType::All => None,
+                },
+            })
+    } else {
+        None
+    };
+    metrics.on_analysis_phase_complete(&AnalysisPhaseCompleteInfo {
+        actions_constructed: TotalAndConfiguredTargetOnlyMetric::create(
+            stats.actions_constructed_total,
+            stats.actions_constructed_configured_targets_only,
+        ),
+        targets_configured: TotalAndConfiguredTargetOnlyMetric::create(
+            stats.targets_configured_total,
+            stats.targets_configured_configured_targets_only,
+        ),
+        time_in_ms: stats.time_in_ms,
+        packages_successfully_loaded: stats.packages_successfully_loaded,
+        actions_constructed_by_mnemonic: stats.actions_constructed_by_mnemonic.clone(),
+        package_metrics_recorder,
+    });
+    // AnalysisGraphStatsEvent: posted only when the analysis checked for action conflicts.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:454 SkyframeBuildView.configureTargets
+    if let Some(build_graph_metrics) = build_graph_metrics {
+        metrics.log_analysis_graph_stats(build_graph_metrics);
+    }
+}
+
+impl BepCommandSupport {
     /// `SkyframeExecutor.configureTargets`: a `TargetConfiguredEvent` per configured top-level
     /// target (the path without merged analysis and execution; with it, `BuildDriverFunction`
     /// posts them, see `blaze_sky_top::build_view::TopLevelTargetConfiguredEvent`); also records
@@ -2999,13 +3057,17 @@ impl BuildEventHooks for BepCommandSupport {
         _target_pattern_phase_value: &TargetPatternPhaseValue,
         analysis_result: &AnalysisResult,
     ) {
-        self.analysis_metrics(
-            analysis_result,
-            blaze_sky_top::analysis_phase_runner::analysis_phase_complete_event_posted(
-                request,
+        // With merged analysis and execution the metrics arrive with the
+        // AnalysisPhaseCompleteStatsEvent of analysisFinishedCallback.
+        if !request.with_merged_analysis_and_execution_source_of_truth() {
+            self.analysis_metrics(
                 analysis_result,
-            ),
-        );
+                blaze_sky_top::analysis_phase_runner::analysis_phase_complete_event_posted(
+                    request,
+                    analysis_result,
+                ),
+            );
+        }
         self.post_targets_configured(
             skyframe_executor,
             analysis_result,
@@ -3334,12 +3396,16 @@ impl BuildEventHooks for MetricsOnlyCommandSupport {
     // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:145 MetricsCollector.logAnalysisStartingEvent
     fn analysis_complete(
         &self,
-        _request: &BuildRequest,
+        request: &BuildRequest,
         _skyframe_executor: &SkyframeExecutor,
         _target_pattern_phase_value: &TargetPatternPhaseValue,
         _analysis_result: &AnalysisResult,
     ) {
-        self.metrics.log_analysis_starting_event();
+        // With merged analysis and execution: the subscriber, at the
+        // AnalysisPhaseCompleteStatsEvent.
+        if !request.with_merged_analysis_and_execution_source_of_truth() {
+            self.metrics.log_analysis_starting_event();
+        }
     }
 }
 
@@ -3351,6 +3417,14 @@ struct MetricsOnlySubscriber {
 
 impl EventBus for MetricsOnlySubscriber {
     fn post(&self, event: Arc<dyn Postable>) {
+        if downcast_event::<blaze_sky_top::skyframe_build_view::AnalysisPhaseCompleteStatsEvent>(
+            &event,
+        )
+        .is_some()
+        {
+            // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:145 MetricsCollector.logAnalysisStartingEvent
+            self.metrics.log_analysis_starting_event();
+        }
         if downcast_event::<TopLevelTargetPendingExecutionEvent>(&event).is_some() {
             // Java: com/google/devtools/build/lib/metrics/MetricsCollector.java:213 MetricsCollector.handleExecutionPhaseStart
             self.metrics.handle_execution_phase_start();

@@ -417,6 +417,16 @@ impl SkyframeExecutor {
                 .map(|i| i.command_id.clone())
                 .unwrap_or_default(),
         );
+        // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:2994 SkyframeExecutor.sync
+        // (getActionEnvFromOptions(options.getOptions(CoreOptions.class))).
+        builder = blaze_sky_loading::precomputed::ACTION_ENV.set(
+            builder,
+            get_action_env_from_options(
+                options
+                    .get_options::<blaze_optdefs::fragment::core_options::CoreOptions>()
+                    .as_ref(),
+            ),
+        );
         builder = blaze_repo_rules::registration::register_repo_rules_functions(
             builder,
             repository_functions.services,
@@ -1616,6 +1626,25 @@ impl SkyframeExecutor {
         }
     }
 
+    /// [`SkyframeExecutor::get_evaluated_counts`] as a value that does not borrow the executor:
+    /// `SkyframeBuildView.analysisFinishedCallback` reads the counters on an evaluator thread,
+    /// when the analysis of the last top-level key concluded.
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeBuildView.java:197 SkyframeBuildView.getEvaluatedCounts
+    pub fn evaluated_counts_supplier(
+        &self,
+    ) -> Arc<dyn Fn(i64) -> crate::build_view::AnalysisPhaseCompleteStats + Send + Sync> {
+        let incremental = self.incremental.is_some();
+        let progress_receiver = self.progress_receiver.clone();
+        let evaluator = self.evaluator.clone();
+        Arc::new(move |time_in_ms| {
+            if incremental {
+                progress_receiver.evaluated_counts().to_stats(time_in_ms)
+            } else {
+                crate::skyframe_build_view::get_evaluated_counts(&evaluator, time_in_ms)
+            }
+        })
+    }
+
     /// `SkyframeBuildView.resetProgressReceiver` (`BuildView.update`).
     pub fn reset_progress_receiver(&self) {
         self.progress_receiver.reset_evaluated_counts();
@@ -2311,4 +2340,32 @@ impl blaze_actions::actions::artifact_factory::PackageRootLookup for DonePackage
         let package_value = value.downcast::<PackageValue>().ok()?;
         Some(package_value.get_package().get_source_root().clone())
     }
+}
+
+/// The `--action_env` variables in order: `name=value` sets, `name` inherits (`None`), `=name`
+/// removes.
+// Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3071 SkyframeExecutor.getActionEnvFromOptions
+fn get_action_env_from_options(
+    opt: Option<&blaze_optdefs::fragment::core_options::CoreOptions>,
+) -> indexmap::IndexMap<String, Option<String>> {
+    use blaze_options::converters::EnvVar;
+    // ImmutableMap does not support null values, so use a LinkedHashMap instead.
+    let mut action_environment = indexmap::IndexMap::new();
+    if let Some(opt) = opt {
+        for env_var in &opt.action_environment {
+            match env_var {
+                EnvVar::Set { name, value } => {
+                    action_environment.insert(name.clone(), Some(value.clone()));
+                }
+                EnvVar::Inherit { name } => {
+                    action_environment.insert(name.clone(), None);
+                }
+                // LinkedHashMap.remove: a later re-insertion goes to the end.
+                EnvVar::Unset { name } => {
+                    action_environment.shift_remove(name);
+                }
+            }
+        }
+    }
+    action_environment
 }

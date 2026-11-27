@@ -452,6 +452,9 @@ pub fn select_impl<'v>(
     label_converter: Option<&LabelConverter>,
     heap: Heap<'v>,
 ) -> starlark::Result<Value<'v>> {
+    // SelectorList.select iterates `dict.entrySet()`: a key-tracking dict (`ctx.var`) records
+    // every key.
+    starlark::values::dict::dict_record_all_keys_accessed(dict);
     let Some(dict) = DictRef::from_value(dict) else {
         // PORT: Java's @Param type check of `x`.
         return Err(eval_err(format!(

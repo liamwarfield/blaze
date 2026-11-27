@@ -765,10 +765,15 @@ impl SkyframeIncrementalState {
                         None => fallback.build(),
                     };
                 drop(inner);
+                Self::inject_environment_into_new_graph(&evaluator, &inputs);
                 return (evaluator, handle);
             }
             drop(inner);
-            return (builder.build(), handle);
+            let evaluator = builder.build();
+            if first_in_command {
+                Self::inject_environment_into_new_graph(&evaluator, &inputs);
+            }
+            return (evaluator, handle);
         };
 
         // The sync runs on the executor's evaluator (its functions and its precomputed values
@@ -800,6 +805,32 @@ impl SkyframeIncrementalState {
         };
         drop(inner);
         (evaluator, handle)
+    }
+
+    /// Java's handleDiffs ends with handleClientEnvironmentChanges and
+    /// handleRepositoryEnvironmentChanges on every graph, also a new one: each variable of the
+    /// client and repository environments becomes an injected node (`note_new_graph` records
+    /// them as the previous environments).
+    // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3861 SkyframeExecutor.handleDiffs
+    fn inject_environment_into_new_graph(evaluator: &Evaluator, inputs: &SyncInputs<'_>) {
+        inject_environment_values(
+            evaluator,
+            |name| SkyKey::new(blaze_skyframe::precomputed::ClientEnvironmentKey::key(name)),
+            inputs.client_env,
+            &IndexSet::new(),
+        );
+        inject_environment_values(
+            evaluator,
+            |name| {
+                SkyKey::new(
+                    blaze_repo_rules::repository::repo_environment_function::RepoEnvironmentKey::key(
+                        name,
+                    ),
+                )
+            },
+            inputs.repo_env,
+            &IndexSet::new(),
+        );
     }
 
     /// The analysis-cache bookkeeping that describes the graph (Java resets it with the graph in

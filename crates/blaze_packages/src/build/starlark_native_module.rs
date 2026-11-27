@@ -3,7 +3,10 @@
 //! are also BUILD-file toplevels.
 
 use std::fmt;
+use std::hash::Hash;
 use std::sync::Arc;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering as AtomicOrdering;
 
 use allocative::Allocative;
 use blaze_cmdline::Label;
@@ -13,6 +16,7 @@ use blaze_starlark::Location;
 use blaze_starlark::Phase;
 use blaze_starlark::ThreadContext;
 use blaze_starlark::label::LabelValue;
+use blaze_starlark::structs::DeeplyImmutable;
 use indexmap::IndexMap;
 use starlark::any::ProvidesStaticType;
 use starlark::environment::GlobalsBuilder;
@@ -22,6 +26,7 @@ use starlark::environment::MethodsStatic;
 use starlark::eval::Evaluator;
 use starlark::starlark_module;
 use starlark::starlark_simple_value;
+use starlark::values::Demand;
 use starlark::values::Heap;
 use starlark::values::NoSerialize;
 use starlark::values::StarlarkValue;
@@ -32,6 +37,7 @@ use starlark::values::none::NoneOr;
 use starlark::values::none::NoneType;
 use starlark::values::starlark_value;
 use starlark::values::tuple::AllocTuple;
+use starlark_map::StarlarkHasher;
 
 use crate::build::build_globals::check_sequence_or_none_param;
 use crate::build::build_globals::check_sequence_param;
@@ -328,13 +334,17 @@ fn starlarkify_selector_list<'v>(
 pub struct ExistingRuleView {
     #[allocative(skip)]
     rule: Arc<Rule>,
+    identity: u64,
 }
 
 starlark_simple_value!(ExistingRuleView);
 
 impl ExistingRuleView {
     pub fn new(rule: Arc<Rule>) -> Self {
-        ExistingRuleView { rule }
+        ExistingRuleView {
+            rule,
+            identity: next_view_identity(),
+        }
     }
 
     fn package_identifier(&self) -> &PackageIdentifier {
@@ -354,6 +364,7 @@ impl ExistingRuleView {
     }
 
     /// Java `getOrDefault(key, null)`.
+    // Java: com/google/devtools/build/lib/packages/StarlarkNativeModule.java:235 StarlarkNativeModule.DictLikeView.get
     // Java: com/google/devtools/build/lib/packages/StarlarkNativeModule.java:349 StarlarkNativeModule.ExistingRuleView.getOrDefault
     fn get_or_none<'v>(&self, heap: Heap<'v>, key: Value<'v>) -> Option<Value<'v>> {
         let attribute_name = key.unpack_str()?;
@@ -393,21 +404,35 @@ impl fmt::Display for ExistingRuleView {
     }
 }
 
-// Java `Starlark.type`: a `Map` without a `@StarlarkBuiltin` is a "dict".
-#[starlark_value(type = "dict")]
+// Java: net/starlark/java/eval/Starlark.java:397 Starlark.classType: a java.util.Map that is not
+// a Dict and has no `@StarlarkBuiltin` is a "Map".
+#[starlark_value(type = "Map")]
 impl<'v> StarlarkValue<'v> for ExistingRuleView {
     // PORT: Java's views are not `Dict`s, so `view[k] = v` is not a dict mutation but
-    // EvalUtils.setIndex's last branch, with `Starlark.type(view)` ("dict" for a java.util.Map).
+    // EvalUtils.setIndex's last branch, with `Starlark.type(view)` ("Map").
     // Java: net/starlark/java/eval/EvalUtils.java:522 EvalUtils.setIndex
     fn set_at(&self, _index: Value<'v>, _new_value: Value<'v>) -> starlark::Result<()> {
         Err(starlark::Error::new_other(anyhow::anyhow!(
-            "can only assign an element in a dictionary or a list, not in a 'dict'"
+            "can only assign an element in a dictionary or a list, not in a 'Map'"
         )))
     }
 
     fn get_methods() -> Option<&'static Methods> {
         static RES: MethodsStatic = MethodsStatic::new("ExistingRuleView", dict_like_view_methods);
         Some(RES.methods())
+    }
+
+    // Java: com/google/devtools/build/lib/packages/StarlarkNativeModule.java:149 StarlarkNativeModule.DictLikeView.isImmutable
+    fn provide(&'v self, demand: &mut Demand<'_, 'v>) {
+        demand.provide_value(DeeplyImmutable);
+    }
+
+    // Java: a view is immutable, so hashable (StarlarkValue.checkHashable), and does not
+    // override `Object.hashCode` or `equals`: identity. A view's address moves when the heap is
+    // collected, so its identity is a number given at creation.
+    fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
+        self.identity.hash(hasher);
+        Ok(())
     }
 
     // Java: com/google/devtools/build/lib/packages/StarlarkNativeModule.java:220 StarlarkNativeModule.DictLikeView.getIndex
@@ -422,6 +447,7 @@ impl<'v> StarlarkValue<'v> for ExistingRuleView {
     }
 
     // Java: com/google/devtools/build/lib/packages/StarlarkNativeModule.java:423 StarlarkNativeModule.ExistingRuleView.containsKey
+    // Java: com/google/devtools/build/lib/packages/StarlarkNativeModule.java:228 StarlarkNativeModule.DictLikeView.containsKey
     fn is_in(&self, other: Value<'v>) -> starlark::Result<bool> {
         // PORT: `is_in` has no heap; a key is present iff its value is representable, which
         // does not depend on where the value would be allocated.
@@ -461,6 +487,18 @@ impl<'v> StarlarkValue<'v> for ExistingRuleView {
             .count();
         Ok((2 + heap_independent) as i32)
     }
+    // Java: com/google/devtools/build/lib/packages/StarlarkNativeModule.java:257 StarlarkNativeModule.DictLikeView.entrySet
+    fn java_map_entries(
+        &self,
+        heap: Heap<'v>,
+    ) -> Option<starlark::Result<Vec<(Value<'v>, Value<'v>)>>> {
+        // Java DictLikeView.items(): every key with its value.
+        Some(self.iterate_collect(heap).map(|keys| {
+            keys.into_iter()
+                .filter_map(|k| self.get_or_none(heap, k).map(|v| (k, v)))
+                .collect()
+        }))
+    }
 }
 
 /// Whether [`starlarkify_value`] returns a value for `val` (without allocating).
@@ -494,6 +532,7 @@ pub struct ExistingRulesView {
     /// this view.
     #[allocative(skip)]
     rules_snapshot_view: IndexMap<String, Arc<Rule>>,
+    identity: u64,
 }
 
 starlark_simple_value!(ExistingRulesView);
@@ -502,6 +541,7 @@ impl ExistingRulesView {
     pub fn new(rules_snapshot_view: IndexMap<String, Arc<Rule>>) -> Self {
         ExistingRulesView {
             rules_snapshot_view,
+            identity: next_view_identity(),
         }
     }
 
@@ -521,21 +561,35 @@ impl fmt::Display for ExistingRulesView {
     }
 }
 
-// Java `Starlark.type`: a `Map` without a `@StarlarkBuiltin` is a "dict".
-#[starlark_value(type = "dict")]
+// Java: net/starlark/java/eval/Starlark.java:397 Starlark.classType: a java.util.Map that is not
+// a Dict and has no `@StarlarkBuiltin` is a "Map".
+#[starlark_value(type = "Map")]
 impl<'v> StarlarkValue<'v> for ExistingRulesView {
     // PORT: Java's views are not `Dict`s, so `view[k] = v` is not a dict mutation but
-    // EvalUtils.setIndex's last branch, with `Starlark.type(view)` ("dict" for a java.util.Map).
+    // EvalUtils.setIndex's last branch, with `Starlark.type(view)` ("Map").
     // Java: net/starlark/java/eval/EvalUtils.java:522 EvalUtils.setIndex
     fn set_at(&self, _index: Value<'v>, _new_value: Value<'v>) -> starlark::Result<()> {
         Err(starlark::Error::new_other(anyhow::anyhow!(
-            "can only assign an element in a dictionary or a list, not in a 'dict'"
+            "can only assign an element in a dictionary or a list, not in a 'Map'"
         )))
     }
 
     fn get_methods() -> Option<&'static Methods> {
         static RES: MethodsStatic = MethodsStatic::new("ExistingRulesView", dict_like_view_methods);
         Some(RES.methods())
+    }
+
+    // Java: com/google/devtools/build/lib/packages/StarlarkNativeModule.java:149 StarlarkNativeModule.DictLikeView.isImmutable
+    fn provide(&'v self, demand: &mut Demand<'_, 'v>) {
+        demand.provide_value(DeeplyImmutable);
+    }
+
+    // Java: a view is immutable, so hashable (StarlarkValue.checkHashable), and does not
+    // override `Object.hashCode` or `equals`: identity. A view's address moves when the heap is
+    // collected, so its identity is a number given at creation.
+    fn write_hash(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
+        self.identity.hash(hasher);
+        Ok(())
     }
 
     // Java: com/google/devtools/build/lib/packages/StarlarkNativeModule.java:220 StarlarkNativeModule.DictLikeView.getIndex
@@ -569,6 +623,24 @@ impl<'v> StarlarkValue<'v> for ExistingRulesView {
     fn length(&self) -> starlark::Result<i32> {
         Ok(self.rules_snapshot_view.len() as i32)
     }
+    // Java: com/google/devtools/build/lib/packages/StarlarkNativeModule.java:257 StarlarkNativeModule.DictLikeView.entrySet
+    fn java_map_entries(
+        &self,
+        heap: Heap<'v>,
+    ) -> Option<starlark::Result<Vec<(Value<'v>, Value<'v>)>>> {
+        // Java DictLikeView.items(): every key with its value.
+        Some(self.iterate_collect(heap).map(|keys| {
+            keys.into_iter()
+                .filter_map(|k| self.get_or_none(heap, k).map(|v| (k, v)))
+                .collect()
+        }))
+    }
+}
+
+/// A new identity for a view (Java's identity hash code).
+fn next_view_identity() -> u64 {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    NEXT.fetch_add(1, AtomicOrdering::Relaxed)
 }
 
 /// The keys of a view, in iteration order.
@@ -593,6 +665,14 @@ fn view_get<'v>(this: Value<'v>, heap: Heap<'v>, key: Value<'v>) -> Option<Value
     }
 }
 
+// PORT: skipped, a java.util.Map accessor no Starlark operation reaches (`java_map_entries` gives the entries): StarlarkNativeModule.DictLikeView.isEmpty
+// PORT: skipped, a java.util.Map accessor no Starlark operation reaches: StarlarkNativeModule.DictLikeView.keySet
+// PORT: skipped, a java.util.Map accessor no Starlark operation reaches (the `values` method is `starlarkValues`): StarlarkNativeModule.DictLikeView.values
+// PORT: skipped, a java.util.Map accessor no Starlark operation reaches: StarlarkNativeModule.DictLikeView.containsValue
+// PORT: skipped, an unsupported java.util.Map mutator: StarlarkNativeModule.DictLikeView.clear
+// PORT: skipped, an unsupported java.util.Map mutator: StarlarkNativeModule.DictLikeView.put
+// PORT: skipped, an unsupported java.util.Map mutator: StarlarkNativeModule.DictLikeView.putAll
+// PORT: skipped, an unsupported java.util.Map mutator: StarlarkNativeModule.DictLikeView.remove
 /// The methods of Java's `DictLikeView` (`get`, `keys`, `values`, `items`).
 #[starlark_module]
 fn dict_like_view_methods(builder: &mut MethodsBuilder) {

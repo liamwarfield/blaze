@@ -205,6 +205,10 @@ impl StreamedConsumingOutputHandler {
     /// Construct the printing task and print it (Java: put it in the queue, whose consumer
     /// prints it).
     // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/StreamedConsumingOutputHandler.java:133 StreamedConsumingOutputHandler.addTaskToQueue
+    // PORT: skipped, a task is printed when it is made (no value class; the field number selects the container field through `wrap`, so StreamedProtoPrintTask's unknown-field default cannot be reached from the eight typed callers): PrintTask.ProtoPrintTask.create, PrintTask.ProtoPrintTask.message, PrintTask.ProtoPrintTask.fieldNumber, PrintTask.StreamedProtoPrintTask.create, PrintTask.StreamedProtoPrintTask.message, PrintTask.StreamedProtoPrintTask.fieldNumber, PrintTask.TextProtoPrintTask.create, PrintTask.TextProtoPrintTask.message, PrintTask.TextProtoPrintTask.messageLabel
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/PrintTask.java:54 PrintTask.ProtoPrintTask.print
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/PrintTask.java:77 PrintTask.StreamedProtoPrintTask.print
+    // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/PrintTask.java:129 PrintTask.TextProtoPrintTask.print
     fn add_task_to_queue<M: JavaMessage>(
         &mut self,
         message: M,
@@ -214,7 +218,7 @@ impl StreamedConsumingOutputHandler {
     ) {
         match self.output_type {
             OutputType::BINARY => {
-                // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/PrintTask.java:54 PrintTask.ProtoPrintTask.print
+                // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/PrintTask.java:59 PrintTask.ProtoPrintTask.print
                 // codedOutputStream.writeMessage(fieldNumber, message)
                 encode_varint(u64::from((field_number << 3) | 2), &mut self.buffer);
                 message.write_delimited_to(&mut self.buffer);
@@ -223,14 +227,14 @@ impl StreamedConsumingOutputHandler {
                 }
             }
             OutputType::DELIMITED_BINARY => {
-                // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/PrintTask.java:77 PrintTask.StreamedProtoPrintTask.print
+                // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/PrintTask.java:81 PrintTask.StreamedProtoPrintTask.print
                 let mut bytes = Vec::new();
                 wrap(message).write_delimited_to(&mut bytes);
                 // builder.build().writeDelimitedTo(out): straight to the stream.
                 let _ = self.output_stream.borrow_mut().write_all(&bytes);
             }
             OutputType::TEXT => {
-                // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/PrintTask.java:129 PrintTask.TextProtoPrintTask.print
+                // Java: com/google/devtools/build/lib/skyframe/actiongraph/v2/PrintTask.java:133 PrintTask.TextProtoPrintTask.print
                 let text = format!("{message_label} {{\n{}}}\n", message_to_string(&message));
                 // PrintStream(out): the default charset (ISO-8859-1 on Bazel's server).
                 self.buffer.extend_from_slice(&latin1_encode_lossy(&text));

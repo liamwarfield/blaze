@@ -119,6 +119,7 @@ options! {
 
         #[option(
             name = "incompatible_package_group_includes_double_slash",
+            // Java: com/google/devtools/build/lib/query2/common/FlagConstants.java:24 FlagConstants.DEFAULT_INCOMPATIBLE_PACKAGE_GROUP_INCLUDES_DOUBLE_SLASH
             default_value = "true",
             documentation_category = QUERY,
             effect_tags = [TERMINAL_OUTPUT],

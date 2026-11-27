@@ -50,6 +50,8 @@ fn operation_name(operation: GlobberOperation) -> &'static str {
 
 /// One glob pattern of a package and its operation.
 // Java: com/google/devtools/build/lib/skyframe/GlobsValue.java:62 GlobsValue.GlobRequest
+// Java: com/google/devtools/build/lib/skyframe/GlobsValue.java:91 GlobsValue.GlobRequest.equals
+// Java: com/google/devtools/build/lib/skyframe/GlobsValue.java:103 GlobsValue.GlobRequest.hashCode
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct GlobRequest {
     pattern: String,
@@ -57,10 +59,12 @@ pub struct GlobRequest {
 }
 
 impl GlobRequest {
+    // Java: com/google/devtools/build/lib/skyframe/GlobsValue.java:73 GlobsValue.GlobRequest.getPattern
     pub fn get_pattern(&self) -> &str {
         &self.pattern
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/GlobsValue.java:77 GlobsValue.GlobRequest.getGlobOperation
     pub fn get_glob_operation(&self) -> GlobberOperation {
         self.glob_operation
     }
@@ -135,6 +139,8 @@ impl GlobsValue {
 /// The requests are kept sorted and deduplicated, so that equality is set equality (Java
 /// `ImmutableSet.equals`).
 // Java: com/google/devtools/build/lib/skyframe/GlobsValue.java:148 GlobsValue.Key
+// Java: com/google/devtools/build/lib/skyframe/GlobsValue.java:211 GlobsValue.Key.equals
+// Java: com/google/devtools/build/lib/skyframe/GlobsValue.java:224 GlobsValue.Key.hashCode
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct GlobsKey {
     package_identifier: PackageIdentifier,
@@ -159,14 +165,17 @@ impl GlobsKey {
         }
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/GlobsValue.java:184 GlobsValue.Key.getPackageIdentifier
     pub fn get_package_identifier(&self) -> &PackageIdentifier {
         &self.package_identifier
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/GlobsValue.java:189 GlobsValue.Key.getPackageRoot
     pub fn get_package_root(&self) -> &Root {
         &self.package_root
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/GlobsValue.java:197 GlobsValue.Key.getGlobRequests
     pub fn get_glob_requests(&self) -> &[GlobRequest] {
         &self.glob_requests
     }
@@ -189,11 +198,13 @@ impl fmt::Debug for GlobsKey {
 
 impl Key for GlobsKey {
     type Value = GlobsValue;
+    // Java: com/google/devtools/build/lib/skyframe/GlobsValue.java:206 GlobsValue.Key.functionName
     const FUNCTION: SkyFunctionName = sky_functions::GLOBS;
     // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:55 SkyFunctions.GLOBS (createHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
     /// Java: the set of matches.
     // Java: com/google/devtools/build/lib/skyframe/GlobsValue.java:48 GlobsValue.equals
+    // Java: com/google/devtools/build/lib/skyframe/GlobsValue.java:59 GlobsValue.hashCode
     fn values_equal(old: &GlobsValue, new: &GlobsValue) -> bool {
         old == new
     }
@@ -257,11 +268,15 @@ struct GlobRun<'a, 'e, 'x> {
 }
 
 impl GlobRun<'_, '_, '_> {
+    // Java: com/google/devtools/build/lib/packages/producers/GlobComputationProducer.java:125 GlobComputationProducer.acceptPathFragmentWithPackageFragment
+    // Java: com/google/devtools/build/lib/packages/producers/FragmentProducer.java:39 FragmentProducer.ResultSink.acceptPathFragmentWithPackageFragment
     fn accept_path_fragment_with_package_fragment(&mut self, path_fragment: PathFragment) {
         self.path_fragments_with_package_fragment
             .insert(path_fragment);
     }
 
+    // Java: com/google/devtools/build/lib/packages/producers/GlobComputationProducer.java:130 GlobComputationProducer.acceptGlobError
+    // Java: com/google/devtools/build/lib/packages/producers/FragmentProducer.java:41 FragmentProducer.ResultSink.acceptGlobError
     fn accept_glob_error(&mut self, error: GlobError) {
         // Keeps the first reported error if there are multiple.
         if self.error.is_none() {
@@ -269,6 +284,7 @@ impl GlobRun<'_, '_, '_> {
         }
     }
 
+    // Java: com/google/devtools/build/lib/packages/producers/FragmentProducer.java:90 FragmentProducer.FragmentProducer
     fn enqueue_fragment(&mut self, base: PathFragment, fragment_index: usize) {
         self.queue.push_back(Task::Fragment {
             base,
@@ -356,6 +372,8 @@ impl GlobRun<'_, '_, '_> {
     }
 
     // Java: com/google/devtools/build/lib/packages/producers/PatternWithoutWildcardProducer.java:72 PatternWithoutWildcardProducer.step
+    // Java: com/google/devtools/build/lib/packages/producers/PatternWithoutWildcardProducer.java:55 PatternWithoutWildcardProducer.PatternWithoutWildcardProducer
+    // Java: com/google/devtools/build/lib/packages/producers/PatternWithoutWildcardProducer.java:76 PatternWithoutWildcardProducer.accept
     fn pattern_without_wildcard(
         &mut self,
         file_path: PathFragment,
@@ -365,7 +383,7 @@ impl GlobRun<'_, '_, '_> {
             self.detail.package_root.clone(),
             &file_path,
         )))?;
-        // Java: processFileValue
+        // Java: com/google/devtools/build/lib/packages/producers/PatternWithoutWildcardProducer.java:82 PatternWithoutWildcardProducer.processFileValue
         let Some(file_value) = file_value else {
             self.values_missing = true;
             return Ok(());
@@ -385,6 +403,8 @@ impl GlobRun<'_, '_, '_> {
     }
 
     // Java: com/google/devtools/build/lib/packages/producers/PatternWithWildcardProducer.java:81 PatternWithWildcardProducer.step
+    // Java: com/google/devtools/build/lib/packages/producers/PatternWithWildcardProducer.java:76 PatternWithWildcardProducer.PatternWithWildcardProducer
+    // Java: com/google/devtools/build/lib/packages/producers/PatternWithWildcardProducer.java:97 PatternWithWildcardProducer.accept
     fn pattern_with_wildcard(
         &mut self,
         base: &PathFragment,
@@ -396,7 +416,7 @@ impl GlobRun<'_, '_, '_> {
                     self.detail.package_root.clone(),
                     base,
                 )))?;
-        // Java: processDirectoryListingValue
+        // Java: com/google/devtools/build/lib/packages/producers/PatternWithWildcardProducer.java:102 PatternWithWildcardProducer.processDirectoryListingValue
         let Some(directory_listing_value) = directory_listing_value else {
             self.values_missing = true;
             return Ok(());
@@ -438,17 +458,23 @@ impl GlobRun<'_, '_, '_> {
         let mut symlinks = Vec::with_capacity(symlinks_count);
         for symlink_key in symlink_keys {
             // Java: com/google/devtools/build/lib/packages/producers/SymlinkProducer.java:66 SymlinkProducer.accept
+            // Java: com/google/devtools/build/lib/packages/producers/SymlinkProducer.java:55 SymlinkProducer.SymlinkProducer
+            // Java: com/google/devtools/build/lib/packages/producers/SymlinkProducer.java:60 SymlinkProducer.step
             let Some(symlink_value) = self.env.get_value(symlink_key.clone())? else {
                 self.values_missing = true;
                 continue;
             };
             if !symlink_value.is_symlink() {
+                // Java: com/google/devtools/build/lib/packages/producers/SymlinkProducer.java:46 SymlinkProducer.ResultSink.acceptInconsistentFilesystemException
+                // Java: com/google/devtools/build/lib/packages/producers/PatternWithWildcardProducer.java:159 PatternWithWildcardProducer.acceptInconsistentFilesystemException
                 self.accept_glob_error(IOException::inconsistent_filesystem(format!(
                     "readdir and stat disagree about whether {} is a symlink.",
                     symlink_key.argument().as_path()
                 )));
                 continue;
             }
+            // Java: com/google/devtools/build/lib/packages/producers/SymlinkProducer.java:44 SymlinkProducer.ResultSink.acceptSymlinkFileValue
+            // Java: com/google/devtools/build/lib/packages/producers/PatternWithWildcardProducer.java:154 PatternWithWildcardProducer.acceptSymlinkFileValue
             symlinks.push((symlink_key, symlink_value));
         }
         self.process_symlinks(symlinks, symlinks_count, fragment_index)
@@ -658,6 +684,8 @@ fn compute_glob(
         .map(str::to_owned)
         .collect();
     let contains_multiple_double_stars = patterns.iter().filter(|p| *p == "**").count() > 1;
+    // Java: com/google/devtools/build/lib/packages/producers/GlobComputationProducer.java:174 GlobComputationProducer.GlobDetail.create
+    // Java: com/google/devtools/build/lib/packages/producers/GlobComputationProducer.java:82 GlobComputationProducer.GlobComputationProducer
     let detail = GlobDetail {
         package_identifier: &globs_key.package_identifier,
         package_root: &globs_key.package_root,
@@ -683,11 +711,16 @@ fn compute_glob(
     run.run()?;
 
     // Java: ResultSink.acceptGlobError keeps the first error of all globs.
+    // Java: com/google/devtools/build/lib/packages/producers/GlobComputationProducer.java:70 GlobComputationProducer.ResultSink.acceptGlobError
+    // Java: com/google/devtools/build/lib/skyframe/GlobsFunction.java:97 GlobsFunction.State.acceptGlobError
     if error.is_none() {
         *error = run.error.take();
     }
     // Java: buildAndBubbleUpResult. Removes the package fragment from all accepted matching path
     // fragments; matchings are ignored once an error was accepted.
+    // Java: com/google/devtools/build/lib/packages/producers/GlobComputationProducer.java:139 GlobComputationProducer.buildAndBubbleUpResult
+    // Java: com/google/devtools/build/lib/packages/producers/GlobComputationProducer.java:68 GlobComputationProducer.ResultSink.acceptPathFragmentsWithoutPackageFragment
+    // Java: com/google/devtools/build/lib/skyframe/GlobsFunction.java:87 GlobsFunction.State.acceptPathFragmentsWithoutPackageFragment
     if error.is_none() {
         for p in &run.path_fragments_with_package_fragment {
             matchings.insert(p.relative_to(&package_fragment));

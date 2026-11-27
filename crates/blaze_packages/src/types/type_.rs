@@ -48,6 +48,7 @@ pub enum LabelClass {
 /// An attribute type: one variant per Java `Type` constant (`Type.*`, `Types.*`, `BuildType.*`).
 // Java: com/google/devtools/build/lib/packages/Type.java:89 Type
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+// PORT: skipped, the types are the variants of this closed enum (no instances made at run time): Type.StringType.<init>, Type.DictType.create, Type.DictType.<init>, Type.CollectionType.<init>, Type.ListType.create, Type.ListType.<init>, Type.SetType.create, Type.SetType.<init>
 pub enum Type {
     // Java: com/google/devtools/build/lib/packages/Type.java:270 Type.INTEGER
     Integer,
@@ -103,6 +104,7 @@ pub enum Type {
 // PORT: Java passes a @Nullable Label; callers never visit null labels of set values, so the
 // label is a reference here.
 // Java: com/google/devtools/build/lib/packages/Type.java:196 Type.LabelVisitor
+// Java: com/google/devtools/build/lib/packages/Type.java:197 Type.LabelVisitor.visit
 pub type LabelVisitor<'a> = dyn FnMut(&Label, Option<&Attribute>) + 'a;
 
 impl Type {
@@ -374,6 +376,8 @@ impl Type {
             | Type::LabelDictUnary
             | Type::LabelKeyedStringDict
             | Type::LabelListDict => {
+                // `o.entrySet()`: a key-tracking dict (`ctx.var`) records every key.
+                starlark::values::dict::dict_record_all_keys_accessed(x);
                 let Some(o) = DictRef::from_value(x) else {
                     return Err(ConversionException::of_type(self, x, what));
                 };
@@ -708,6 +712,8 @@ pub(crate) fn what_str(what: Option<&dyn fmt::Display>) -> String {
 /// The description of an element being converted: "element N of <what>" (Java
 /// `Type.CollectionType.ConversionContext`).
 // Java: com/google/devtools/build/lib/packages/Type.java:675 Type.CollectionType.ConversionContext
+// PORT: the converters set `index` directly (Java `update(index)`).
+// Java: com/google/devtools/build/lib/packages/Type.java:683 Type.CollectionType.ConversionContext.update
 struct ConversionContext<'a> {
     what: Option<&'a dyn fmt::Display>,
     index: usize,
@@ -899,6 +905,9 @@ fn iterable_elements<'v>(
     }
     // A Java `Dict` is an `Iterable` over its keys (`StarlarkIterable<K>`), so a dict converts
     // to the list of its keys (workerd's ncrypto: `local_defines = {"NAME": select(...)}`).
+    // `iterator()` of a dict is `keySet().iterator()`: a key-tracking dict (`ctx.var`) records
+    // every key (no effect on any other value).
+    starlark::values::dict::dict_record_all_keys_accessed(x);
     if let Some(d) = DictRef::from_value(x) {
         return Ok(Some(d.keys().collect()));
     }
@@ -991,6 +1000,9 @@ fn convert_dict<'v>(
     label_converter: Option<&LabelConverter>,
     heap: Option<Heap<'v>>,
 ) -> Result<AttrValue, ConversionException> {
+    // Java: com/google/devtools/build/lib/packages/Type.java:574 (`o.entrySet()`): a key-tracking
+    // dict (`ctx.var`) records every key.
+    starlark::values::dict::dict_record_all_keys_accessed(x);
     let Some(o) = DictRef::from_value(x) else {
         return Err(ConversionException::of_type(type_, x, what));
     };

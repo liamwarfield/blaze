@@ -143,9 +143,16 @@ impl ParallelVisitor for RBuildFilesVisitor<'_> {
                 if rdep.function_name() == sky_functions::PACKAGE {
                     if self.result_uniquifier.unique(&rdep)? {
                         let Some(package_key) = rdep.downcast::<PackageKey>() else {
-                            // Java casts the argument to PackageIdentifier; a package piece key
-                            // (lazy macro expansion) is not one.
-                            blaze_util::unported!("RBuildFilesVisitor with package piece keys");
+                            // Java: `(PackageIdentifier) rdep.argument()`. A package piece key
+                            // (`PackagePieceIdentifier.ForBuildFile`, lazy macro expansion) has
+                            // function name PACKAGE too and is its own argument, so the cast
+                            // throws and the server crashes.
+                            panic!(
+                                "java.lang.ClassCastException: class \
+                                 com.google.devtools.build.lib.packages.PackagePieceIdentifier$ForBuildFile \
+                                 cannot be cast to class \
+                                 com.google.devtools.build.lib.cmdline.PackageIdentifier ({rdep:?})"
+                            );
                         };
                         keys_to_use_for_result.insert(package_key.0.clone());
                     }

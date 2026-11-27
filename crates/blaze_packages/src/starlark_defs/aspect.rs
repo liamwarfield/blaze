@@ -1159,7 +1159,7 @@ pub fn register_aspect(builder: &mut GlobalsBuilder) {
         if apply_to_generating_rules
             && !sequence_cast(
                 required_providers_arg,
-                "Object",
+                "unknown",
                 |_| true,
                 "required_providers",
             )?
@@ -1240,7 +1240,7 @@ pub fn register_aspect(builder: &mut GlobalsBuilder) {
         let required_providers = build_provider_predicate(
             &sequence_cast(
                 required_providers_arg,
-                "Object",
+                "unknown",
                 |_| true,
                 "required_providers",
             )?,
@@ -1249,7 +1249,7 @@ pub fn register_aspect(builder: &mut GlobalsBuilder) {
         let required_aspect_providers = build_provider_predicate(
             &sequence_cast(
                 required_aspect_providers_arg,
-                "Object",
+                "unknown",
                 |_| true,
                 "required_aspect_providers",
             )?,

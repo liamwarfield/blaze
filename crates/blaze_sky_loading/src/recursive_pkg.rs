@@ -72,6 +72,15 @@ impl ProcessPackageDirectoryException {
 
 /// The key of RECURSIVE_PKG: a directory, its repository and the ignored paths beneath it.
 // Java: com/google/devtools/build/lib/skyframe/RecursivePkgKey.java:28 RecursivePkgKey
+// Java: com/google/devtools/build/lib/skyframe/RecursivePkgKey.java:67 RecursivePkgKey.equals
+// Java: com/google/devtools/build/lib/skyframe/RecursivePkgKey.java:81 RecursivePkgKey.hashCode
+// Java: com/google/devtools/build/lib/skyframe/RecursivePkgSkyKey.java:34 RecursivePkgSkyKey.equals
+// Java: com/google/devtools/build/lib/skyframe/RecursivePkgSkyKey.java:42 RecursivePkgSkyKey.hashCode
+// PORT: the function name of a RecursivePkgSkyKey is its Rust key type (`Key::FUNCTION`), which
+// the evaluator compares with the key; the fields are compared by the derived `PartialEq`.
+// Java: com/google/devtools/build/lib/skyframe/RecursivePkgSkyKey.java:24 RecursivePkgSkyKey.<init>
+// Java: com/google/devtools/build/lib/skyframe/RecursivePkgValue.java:77 RecursivePkgValue.Key.<init>
+// PORT: skipped, the key is a plain struct key (Key::FUNCTION; no interning): RecursivePkgValue.Key.create, RecursivePkgValue.Key.intern, RecursivePkgValue.Key.functionName, RecursivePkgValue.Key.getSkyKeyInterner
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct RecursivePkgKey {
     repository_name: RepositoryName,
@@ -93,27 +102,35 @@ impl RecursivePkgKey {
         }
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePkgKey.java:50 RecursivePkgKey.getRepositoryName
     pub fn get_repository_name(&self) -> &RepositoryName {
         &self.repository_name
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePkgKey.java:54 RecursivePkgKey.getRootedPath
     pub fn get_rooted_path(&self) -> &RootedPath {
         &self.rooted_path
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePkgKey.java:58 RecursivePkgKey.getExcludedPaths
     pub fn get_excluded_paths(&self) -> &IgnoredSubdirectories {
         &self.excluded_paths
     }
 }
 
-// Java: com/google/devtools/build/lib/skyframe/RecursivePkgKey.java:63 RecursivePkgKey.toString
+impl RecursivePkgKey {
+    /// Java `RecursivePkgKey.toString` (the plain key, without a function name).
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePkgKey.java:63 RecursivePkgKey.toString
+    pub fn to_key_string(&self) -> String {
+        format!("rootedPath={}, excludedPaths=<omitted>", self.rooted_path)
+    }
+}
+
+/// As a SkyKey: Java `RecursivePkgSkyKey.toString`, the function name and the key.
+// Java: com/google/devtools/build/lib/skyframe/RecursivePkgSkyKey.java:29 RecursivePkgSkyKey.toString
 impl fmt::Debug for RecursivePkgKey {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "rootedPath={}, excludedPaths=<omitted>",
-            self.rooted_path
-        )
+        write!(f, "{} {}", RECURSIVE_PKG, self.to_key_string())
     }
 }
 
@@ -152,10 +169,12 @@ impl RecursivePkgValue {
         }
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePkgValue.java:64 RecursivePkgValue.getPackages
     pub fn get_packages(&self) -> &[String] {
         &self.packages
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePkgValue.java:68 RecursivePkgValue.hasErrors
     pub fn has_errors(&self) -> bool {
         self.has_errors
     }
@@ -498,6 +517,16 @@ impl RecursivePkgFunction {
         RecursivePkgFunction { directories }
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePkgFunction.java:47 RecursivePkgFunction.compute
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePkgFunction.java:56 RecursivePkgFunction.MyTraversalFunction.<init>
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveDirectoryTraversalFunction.java:53 RecursiveDirectoryTraversalFunction.<init>
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveDirectoryTraversalFunction.java:58 RecursiveDirectoryTraversalFunction.getProcessPackageDirectoryResult
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePkgFunction.java:60 RecursivePkgFunction.MyTraversalFunction.getInitialConsumer
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveDirectoryTraversalFunction.java:77 RecursiveDirectoryTraversalFunction.getInitialConsumer
+    // PORT: the subdirectory keys are RecursivePkgKeys (`get_subdir_deps`); this function and
+    // COLLECT_PACKAGES_UNDER_DIRECTORY wrap them in their own key types.
+    // Java: com/google/devtools/build/lib/skyframe/RecursivePkgFunction.java:65 RecursivePkgFunction.MyTraversalFunction.getSkyKeyForSubdirectory
+    // Java: com/google/devtools/build/lib/skyframe/RecursiveDirectoryTraversalFunction.java:85 RecursiveDirectoryTraversalFunction.getSkyKeyForSubdirectory
     // Java: com/google/devtools/build/lib/skyframe/RecursiveDirectoryTraversalFunction.java:93 RecursiveDirectoryTraversalFunction.visitDirectory
     pub fn compute(
         &self,
@@ -550,6 +579,8 @@ impl RecursivePkgFunction {
                 return Ok(None);
             };
             match &*pkg_error_message_value {
+                // Java: com/google/devtools/build/lib/skyframe/RecursivePkgFunction.java:95 RecursivePkgFunction.MyPackageDirectoryConsumer.notePackage
+                // Java: com/google/devtools/build/lib/skyframe/RecursiveDirectoryTraversalFunction.java:107 RecursiveDirectoryTraversalFunction.PackageDirectoryConsumer.notePackage
                 PackageErrorMessageValue::NoError => {
                     own_package = Some(root_relative_path.get_path_string().to_owned());
                 }
@@ -564,6 +595,8 @@ impl RecursivePkgFunction {
                     // The package had errors, but don't fail-fast as there might be subpackages
                     // below the current directory.
                     env.listener().handle(&Event::error(msg.clone()));
+                    // Java: com/google/devtools/build/lib/skyframe/RecursivePkgFunction.java:100 RecursivePkgFunction.MyPackageDirectoryConsumer.notePackageError
+                    // Java: com/google/devtools/build/lib/skyframe/RecursiveDirectoryTraversalFunction.java:119 RecursiveDirectoryTraversalFunction.PackageDirectoryConsumer.notePackageError
                     has_errors = true;
                 }
             }
@@ -576,6 +609,11 @@ impl RecursivePkgFunction {
 
         // Java aggregateWithSubdirectorySkyValues: the transitive packages of each child, in
         // order, then the directory's own package (NestedSet STABLE_ORDER flattening).
+        // Java: com/google/devtools/build/lib/skyframe/RecursivePkgFunction.java:74 RecursivePkgFunction.MyTraversalFunction.aggregateWithSubdirectorySkyValues
+        // Java: com/google/devtools/build/lib/skyframe/RecursiveDirectoryTraversalFunction.java:95 RecursiveDirectoryTraversalFunction.aggregateWithSubdirectorySkyValues
+        // Java: com/google/devtools/build/lib/skyframe/RecursivePkgFunction.java:105 RecursivePkgFunction.MyPackageDirectoryConsumer.addTransitivePackages
+        // Java: com/google/devtools/build/lib/skyframe/RecursivePkgFunction.java:109 RecursivePkgFunction.MyPackageDirectoryConsumer.addTransitiveErrors
+        // Java: com/google/devtools/build/lib/skyframe/RecursivePkgFunction.java:113 RecursivePkgFunction.MyPackageDirectoryConsumer.createRecursivePkgValue
         let mut packages: indexmap::IndexSet<String> = indexmap::IndexSet::new();
         for key in child_deps {
             let Some(child_value) = dependent_sky_values.get_typed(key) else {

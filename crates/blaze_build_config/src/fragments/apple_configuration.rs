@@ -273,14 +273,8 @@ impl AppleConfiguration {
         }
     }
 
-    // Java: com/google/devtools/build/lib/rules/apple/AppleConfiguration.java:256 AppleConfiguration.getSingleArchPlatform
-    /// Gets the single "effective" platform for this configuration's `PlatformType` and
-    /// architecture.
-    pub fn get_single_arch_platform(&self) -> ! {
-        // ApplePlatform.forTarget(applePlatformType, getPrefixedAppleCpu(...)): the ApplePlatform
-        // enum is not ported.
-        blaze_util::unported!("ApplePlatform.forTarget")
-    }
+    // getSingleArchPlatform and ApplePlatform.forTarget: blaze_rules::fragments::apple_configuration (the
+    // Starlark fragment, with the ApplePlatform enum).
 
     // Java: com/google/devtools/build/lib/rules/apple/AppleConfiguration.java:263 AppleConfiguration.getXcodeVersionFlag
     pub fn get_xcode_version_flag(&self) -> Option<&str> {

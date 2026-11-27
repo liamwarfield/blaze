@@ -177,11 +177,10 @@ fn no_such_thing_message(e: &blaze_skyframe::SkyError) -> Option<String> {
 
 /// TRANSITIVE_TRAVERSAL (Java `TransitiveTraversalFunction` over
 /// `TransitiveBaseTraversalFunction`).
-///
-/// PORT: Java reuses the dep groups of the previous `compute` (`getDepsAfterLastPackageDep`) to
-/// skip the label visitation on a restart; Blaze visits the labels again, which requests the
-/// same keys.
 // Java: com/google/devtools/build/lib/skyframe/TransitiveBaseTraversalFunction.java:92 TransitiveBaseTraversalFunction.compute
+// Java: com/google/devtools/build/lib/skyframe/TransitiveTraversalFunction.java:44 TransitiveTraversalFunction.argumentFromKey
+// Java: com/google/devtools/build/lib/skyframe/TransitiveTraversalFunction.java:49 TransitiveTraversalFunction.getKey
+// (the key's label and `TransitiveTraversalKey::key`)
 pub fn transitive_traversal_function(
     key: &TransitiveTraversalKey,
     env: &mut Environment<'_>,
@@ -200,14 +199,18 @@ pub fn transitive_traversal_function(
 
     // Process deps from attributes. It is essential that the last getValue(s) call we made to
     // skyframe for building this node was for the corresponding PackageValue.
-    let label_dep_keys = get_label_dep_keys(&target_and_error_if_any);
+    let label_dep_keys = transitive_traversal_get_label_dep_keys(env, &target_and_error_if_any);
     let dep_map = env.get_values_and_exceptions(&label_dep_keys)?;
     if env.values_missing() {
         return Ok(None);
     }
     // Process deps from aspects. It is essential that the second-to-last getValue(s) call we
     // made to skyframe for building this node was for the corresponding PackageValue.
-    let label_aspect_keys = get_strict_label_aspect_keys(&target_and_error_if_any.target, &dep_map);
+    let label_aspect_keys = transitive_traversal_get_strict_label_aspect_dep_keys(
+        env,
+        &dep_map,
+        &target_and_error_if_any,
+    );
     if env.values_missing() {
         return Ok(None);
     }
@@ -233,6 +236,63 @@ pub fn transitive_traversal_function(
         &target_and_error_if_any,
         processed_targets,
     )))
+}
+
+// Java: com/google/devtools/build/lib/skyframe/TransitiveTraversalFunction.java:109 TransitiveTraversalFunction.getLabelDepKeys
+fn transitive_traversal_get_label_dep_keys(
+    env: &Environment<'_>,
+    target_and_error_if_any: &TargetAndErrorIfAny,
+) -> Vec<SkyKey> {
+    // As a performance optimization we may already know the deps we are  about to request from
+    // last time #compute was called. By requesting these from the environment, we can avoid
+    // repeating the label visitation step. For TransitiveTraversalFunction#compute, the label deps
+    // dependency group is requested immediately after the package.
+    //
+    // IMPORTANT: No other package values should be requested inside
+    // TransitiveTraversalFunction#compute from this point forward.
+    match get_deps_after_last_package_dep(env, /* offset= */ 1) {
+        Some(old_dep_keys) => old_dep_keys,
+        None => get_label_dep_keys(target_and_error_if_any),
+    }
+}
+
+// Java: com/google/devtools/build/lib/skyframe/TransitiveTraversalFunction.java:124 TransitiveTraversalFunction.getStrictLabelAspectDepKeys
+fn transitive_traversal_get_strict_label_aspect_dep_keys(
+    env: &Environment<'_>,
+    dep_map: &SkyframeLookupResult,
+    target_and_error_if_any: &TargetAndErrorIfAny,
+) -> Vec<SkyKey> {
+    // As a performance optimization we may already know the deps we are  about to request from
+    // last time #compute was called. By requesting these from the environment, we can avoid
+    // repeating the label visitation step. For TransitiveTraversalFunction#compute, the label
+    // aspect deps dependency group is requested two groups after the package.
+    match get_deps_after_last_package_dep(env, /* offset= */ 2) {
+        Some(old_aspect_dep_keys) => old_aspect_dep_keys,
+        None => get_strict_label_aspect_keys(&target_and_error_if_any.target, dep_map),
+    }
+}
+
+// Java: com/google/devtools/build/lib/skyframe/TransitiveTraversalFunction.java:140 TransitiveTraversalFunction.getDepsAfterLastPackageDep
+fn get_deps_after_last_package_dep(env: &Environment<'_>, offset: usize) -> Option<Vec<SkyKey>> {
+    let temporary_direct_deps = env.get_temporary_direct_deps();
+    let last_package_dep_index = get_last_package_value_index(temporary_direct_deps)?;
+    if temporary_direct_deps.num_groups() <= last_package_dep_index + offset {
+        return None;
+    }
+    Some(
+        temporary_direct_deps
+            .get_dep_group(last_package_dep_index + offset)
+            .to_vec(),
+    )
+}
+
+/// The index of the last dep group that is a single PACKAGE key (Java's `-1` is `None`).
+// Java: com/google/devtools/build/lib/skyframe/TransitiveTraversalFunction.java:155 TransitiveTraversalFunction.getLastPackageValueIndex
+fn get_last_package_value_index(direct_deps: &blaze_skyframe::GroupedDeps) -> Option<usize> {
+    (0..direct_deps.num_groups()).rev().find(|&i| {
+        let dep_group = direct_deps.get_dep_group(i);
+        dep_group.len() == 1 && dep_group[0].function_name() == crate::sky_functions::PACKAGE
+    })
 }
 
 // Java: com/google/devtools/build/lib/skyframe/TransitiveBaseTraversalFunction.java:139 TransitiveBaseTraversalFunction.getLabelDepKeys
@@ -306,7 +366,7 @@ fn has_dep_that_satisfies(
             Err(_) => continue,
             Ok(v) => v,
         };
-        // Java TransitiveTraversalFunction.getAdvertisedProviderSet: the value's providers.
+        // Java: com/google/devtools/build/lib/skyframe/TransitiveTraversalFunction.java:92 TransitiveTraversalFunction.getAdvertisedProviderSet
         if let Some(to_val) = to_val
             && AspectDefinition::satisfies(aspect, to_val.get_providers())
         {
@@ -318,6 +378,7 @@ fn has_dep_that_satisfies(
 
 // Java: com/google/devtools/build/lib/skyframe/TransitiveTraversalFunction.java:55 TransitiveTraversalFunction.processTarget
 fn process_target(target_and_error_if_any: &TargetAndErrorIfAny) -> FirstErrorMessageAccumulator {
+    // Java: com/google/devtools/build/lib/skyframe/TransitiveTraversalFunction.java:174 TransitiveTraversalFunction.FirstErrorMessageAccumulator.<init>
     FirstErrorMessageAccumulator {
         first_error_message: target_and_error_if_any
             .error_loading_target
@@ -361,6 +422,7 @@ fn compute_sky_value(
     accumulator: FirstErrorMessageAccumulator,
 ) -> TransitiveTraversalValue {
     let target_loaded_successfully = target_and_error_if_any.error_loading_target.is_none();
+    // Java: com/google/devtools/build/lib/skyframe/TransitiveTraversalFunction.java:186 TransitiveTraversalFunction.FirstErrorMessageAccumulator.getFirstErrorMessage
     let error_message = accumulator.first_error_message;
     if target_loaded_successfully {
         TransitiveTraversalValue::for_target(&target_and_error_if_any.target, error_message)

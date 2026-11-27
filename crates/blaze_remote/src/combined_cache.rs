@@ -18,6 +18,10 @@ use indexmap::IndexSet;
 use parking_lot::{Condvar, Mutex};
 use regex::Regex;
 
+use crate::chunked_blob_downloader::ChunkedBlobDownloader;
+use crate::chunked_blob_uploader::{CacheClients, ChunkedBlobUploader};
+use crate::chunking::ChunkingConfig;
+use crate::common::BlobNotSplittableException;
 use crate::common::cache_not_found_exception::CacheNotFoundException;
 use crate::common::errors::{self, downcast, downcast_ref};
 use crate::common::lazy_file_output_stream::LazyFileOutputStream;
@@ -27,13 +31,11 @@ use crate::common::remote_action_execution_context::RemoteActionExecutionContext
 use crate::common::remote_cache_client::{
     ActionKey, Blob, BytesBlob, RemoteCacheClient, RemoteCacheClientUploads, dedup_upload,
 };
-use crate::chunked_blob_downloader::ChunkedBlobDownloader;
-use crate::chunked_blob_uploader::{CacheClients, ChunkedBlobUploader};
-use crate::chunking::ChunkingConfig;
-use crate::common::BlobNotSplittableException;
 use crate::disk::DiskCacheClient;
 use crate::grpc_cache_client::GrpcCacheClient;
-use crate::reapi::{ActionResult, CacheCapabilities, Digest, ServerCapabilities, chunking_function};
+use crate::reapi::{
+    ActionResult, CacheCapabilities, Digest, ServerCapabilities, chunking_function,
+};
 use crate::runtime::get_from_future;
 use crate::store::Store;
 use crate::util::digest_util::DigestUtil;
@@ -256,12 +258,10 @@ impl CombinedCache {
                         chunking_function::Value::FastCdc2020,
                     )
                 }
-                ChunkingFunctionValue::REP_MAX_CDC => {
-                    ChunkingConfig::from_server_capabilities_for(
-                        &capabilities,
-                        chunking_function::Value::RepMaxCdc,
-                    )
-                }
+                ChunkingFunctionValue::REP_MAX_CDC => ChunkingConfig::from_server_capabilities_for(
+                    &capabilities,
+                    chunking_function::Value::RepMaxCdc,
+                ),
             });
         }
         Ok(chunking.expect("initialized above").is_some())
@@ -835,7 +835,10 @@ impl CombinedCache {
             // committed to that path: chunks are written to `out` as they arrive, so restarting
             // would append the blob to the chunks already written. A missing chunk is reported
             // as a missing blob instead, letting the usual lost input handling regenerate it.
-            return match downloader.download_chunked(context, digest, &mut *out).await {
+            return match downloader
+                .download_chunked(context, digest, &mut *out)
+                .await
+            {
                 Err(e) if BlobNotSplittableException::is(&e) => {
                     self.regular_download_blob_from_remote(context, digest, out, out_path)
                         .await

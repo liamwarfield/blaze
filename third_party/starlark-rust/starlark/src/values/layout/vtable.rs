@@ -526,6 +526,13 @@ impl<'v> AValueDyn<'v> {
         (self.vtable.starlark_value.callable_location)(self.value) // BLAZE PATCH 0066
     } // BLAZE PATCH 0066
 
+    pub(crate) fn java_map_entries( // BLAZE PATCH 0068
+        self, // BLAZE PATCH 0068
+        heap: Heap<'v>, // BLAZE PATCH 0068
+    ) -> Option<crate::Result<Vec<(Value<'v>, Value<'v>)>>> { // BLAZE PATCH 0068
+        (self.vtable.starlark_value.java_map_entries)(self.value, heap) // BLAZE PATCH 0068
+    } // BLAZE PATCH 0068
+
     pub(crate) fn get_attr_fallible( // BLAZE PATCH 0026
         self, // BLAZE PATCH 0026
         attribute: Hashed<&str>, // BLAZE PATCH 0026

@@ -125,6 +125,12 @@ impl CoverageReportAction {
 }
 
 impl Action for CoverageReportAction {
+    fn java_class_name(&self) -> Option<&'static str> {
+        Some(
+            "com.google.devtools.build.lib.bazel.coverage.CoverageReportActionBuilder$CoverageReportAction",
+        )
+    }
+
     fn abstract_action(&self) -> &AbstractAction {
         &self.base
     }

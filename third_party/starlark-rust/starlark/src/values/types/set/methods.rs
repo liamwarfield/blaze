@@ -105,6 +105,10 @@ fn hashable_collection<'v>( // BLAZE PATCH 0007
     if let Some(dict) = DictRef::from_value(other) { // BLAZE PATCH 0007
         return Ok(dict.iter_hashed().map(|(k, _)| k).collect()); // BLAZE PATCH 0007
     } // BLAZE PATCH 0007
+    // Java StarlarkSet.toHashableCollection: any Map gives its keys. // BLAZE PATCH 0068
+    if let Some(entries) = other.get_ref().java_map_entries(heap) { // BLAZE PATCH 0068
+        return entries?.into_iter().map(|(k, _)| k.get_hashed()).collect(); // BLAZE PATCH 0068
+    } // BLAZE PATCH 0068
     let collection = ListRef::from_value(other).is_some() // BLAZE PATCH 0007
         || TupleRef::from_value(other).is_some() // BLAZE PATCH 0007
         || ValueLike::downcast_ref::<Range>(other).is_some(); // BLAZE PATCH 0007

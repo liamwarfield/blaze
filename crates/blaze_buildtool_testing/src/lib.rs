@@ -2,7 +2,8 @@
 //! (`src/test/java/com/google/devtools/build/lib/buildtool/util/BuildIntegrationTestCase.java`)
 //! and of the parts of its `BlazeRuntimeWrapper` the tests use.
 //!
-//! A [`BuildIntegrationTestCase`] is a workspace on disk and one in-process [`BlazeRuntime`]
+//! A [`BuildIntegrationTestCase`] is a workspace on disk (a `MODULE.bazel` with a dependency on
+//! `platforms`) and one in-process [`BlazeRuntime`]
 //! (Bazel's modules, as the `blaze` binary builds it) with one [`BlazeCommandDispatcher`]: every
 //! command of a test runs through the dispatcher on that runtime, so the server state a command
 //! leaves (the Skyframe graph kept between commands, the action cache, the output base) is there
@@ -132,7 +133,18 @@ impl BuildIntegrationTestCase {
              see scripts/oracle)",
             install_base.display()
         );
-        blaze_runtime::bugreport::install_panic_hook();
+        // The runtime's hook records panics for its crash handling; the default hook still
+        // prints, so that a failing assertion shows its message.
+        static PANIC_HOOK: std::sync::Once = std::sync::Once::new();
+        PANIC_HOOK.call_once(|| {
+            let default_hook = std::panic::take_hook();
+            blaze_runtime::bugreport::install_panic_hook();
+            let runtime_hook = std::panic::take_hook();
+            std::panic::set_hook(Box::new(move |info| {
+                default_hook(info);
+                runtime_hook(info);
+            }));
+        });
         // Bazel.main, once per process.
         static BUILD_INFO: std::sync::Once = std::sync::Once::new();
         BUILD_INFO.call_once(|| {
@@ -147,7 +159,15 @@ impl BuildIntegrationTestCase {
         let output_base = root.join("output_base");
         std::fs::create_dir_all(&workspace).unwrap();
         std::fs::create_dir_all(&output_base).unwrap();
-        std::fs::write(workspace.join("MODULE.bazel"), "").unwrap();
+        // PORT: Java's mock client writes a MODULE.bazel whose deps make `@platforms` visible
+        // from the main repository (TestConstants.PRODUCT_SPECIFIC_FLAGS name
+        // `@platforms//host`); here it is the real module, at the version `@bazel_tools` depends
+        // on (embedded_tools/MODULE.bazel), so it comes from the shared repository cache.
+        std::fs::write(
+            workspace.join("MODULE.bazel"),
+            "bazel_dep(name = \"platforms\", version = \"1.0.0\")\n",
+        )
+        .unwrap();
 
         let collector = Arc::new(EventCollector::default());
         let hooks: Arc<Mutex<Vec<BeforeCommandHook>>> = Arc::new(Mutex::new(Vec::new()));

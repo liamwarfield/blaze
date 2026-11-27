@@ -1334,6 +1334,19 @@ pub fn make_label_map(
     Ok(targets_map)
 }
 
+/// The simple name of a `FeatureFlagValue`'s Java class (`Class.getSimpleName`).
+// Java: com/google/devtools/build/lib/rules/config/FeatureFlagValue.java:31 FeatureFlagValue
+pub(crate) fn feature_flag_value_class(
+    v: &blaze_build_config::feature_flag_value::FeatureFlagValue,
+) -> &'static str {
+    use blaze_build_config::feature_flag_value::FeatureFlagValue;
+    match v {
+        FeatureFlagValue::SetValue(_) => "SetValue",
+        FeatureFlagValue::DefaultValue => "DefaultValue",
+        FeatureFlagValue::UnknownValue => "UnknownValue",
+    }
+}
+
 /// Converts a Starlark `build_setting_value` (Java `Object`) to a Starlark value, as the
 /// interpreter converts a `@StarlarkMethod` result (`Starlark.fromJava`): a `java.util.List`
 /// becomes a new mutable list, a `java.util.Set` a new mutable set; a `StarlarkList` or `Tuple`
@@ -1345,11 +1358,14 @@ fn starlark_option_to_value<'v>(v: &StarlarkOptionValue, heap: Heap<'v>) -> Valu
         StarlarkOptionValue::Int(i) => heap.alloc(*i),
         StarlarkOptionValue::Str(s) => heap.alloc_str(s).to_value(),
         StarlarkOptionValue::Label(l) => heap.alloc(LabelValue(l.clone())),
-        // PORT: Starlark.fromJava rejects a FeatureFlagValue (not a Starlark value); not reached
-        // by any ported caller.
-        StarlarkOptionValue::FeatureFlag(v) => {
-            blaze_util::unported!("Starlark.fromJava", "FeatureFlagValue {}", v)
-        }
+        // Starlark.fromJava rejects a FeatureFlagValue (not a Starlark value) with the unchecked
+        // InvalidStarlarkValueException, which ends the server as any uncaught exception.
+        // Java: net/starlark/java/eval/Starlark.java:220 Starlark.fromJava
+        StarlarkOptionValue::FeatureFlag(v) => panic!(
+            "IllegalArgumentException: invalid Starlark value: class \
+             com.google.devtools.build.lib.rules.config.FeatureFlagValue${}",
+            feature_flag_value_class(v)
+        ),
         StarlarkOptionValue::List(items) => {
             let elems: Vec<Value<'v>> = items
                 .iter()

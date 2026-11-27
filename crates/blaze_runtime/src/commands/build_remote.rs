@@ -816,6 +816,58 @@ impl RemoteSupport {
         }
     }
 
+    /// `afterTopLevelTargetAnalysis(env, request, buildOptions, configuredTarget)`: called for
+    /// each top-level target as its analysis concludes (the Skymeld path).
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1035 RemoteModule.afterTopLevelTargetAnalysis
+    pub(crate) fn after_top_level_target_analysis(
+        &self,
+        target: &blaze_analysis::configured_target::ConfiguredTarget,
+        output_groups: &[String],
+    ) {
+        let module = self.module.lock();
+        let Some(checker) = module.get_remote_output_checker() else {
+            return;
+        };
+        let rule_class = target
+            .is_rule_configured_target()
+            .then(|| blaze_analysis::configuredtargets::get_rule_class_string(target));
+        checker.after_top_level_target_analysis(
+            rule_class.as_deref(),
+            &ConfiguredTargetView {
+                target,
+                output_groups,
+            },
+        );
+    }
+
+    /// `afterSingleAspectAnalysis(request, configuredAspect)` (the Skymeld path):
+    /// `remoteOutputChecker.afterAspectAnalysis`, which is not ported (top-level aspects with a
+    /// remote output checker fail loudly).
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1047 RemoteModule.afterSingleAspectAnalysis
+    pub(crate) fn after_single_aspect_analysis(&self) {
+        let module = self.module.lock();
+        if module.get_remote_output_checker().is_some() {
+            blaze_util::unported!("RemoteOutputChecker.afterAspectAnalysis");
+        }
+    }
+
+    /// `afterSingleTestAnalysis(request, configuredTarget)` (the Skymeld path).
+    // Java: com/google/devtools/build/lib/remote/RemoteModule.java:1055 RemoteModule.afterSingleTestAnalysis
+    pub(crate) fn after_single_test_analysis(
+        &self,
+        target: &blaze_analysis::configured_target::ConfiguredTarget,
+    ) {
+        let module = self.module.lock();
+        let Some(checker) = module.get_remote_output_checker() else {
+            return;
+        };
+        checker.after_test_analyzed_event(&TestTargetView {
+            test_provider: target
+                .get_provider::<TestProvider>()
+                .expect("NullPointerException: TestProvider"),
+        });
+    }
+
     /// `afterAnalysis(env, request, buildOptions, analysisResult)` (`merged` false) or, on the
     /// Skymeld path, the `afterTopLevelTargetAnalysis` / `afterTestAnalyzedEvent` calls of each
     /// analyzed top-level target (`merged` true). `output_groups` is the top-level artifact

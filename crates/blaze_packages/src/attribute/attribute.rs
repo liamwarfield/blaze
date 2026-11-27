@@ -225,6 +225,7 @@ pub fn attr(name: &str, type_: Type) -> AttributeBuilder {
 /// An attribute definition without a name, from which attributes are built (Java
 /// `Attribute.ImmutableAttributeFactory`).
 // Java: com/google/devtools/build/lib/packages/Attribute.java:258 Attribute.ImmutableAttributeFactory
+// PORT: skipped, derived PartialEq over the same fields (never a hash key): Attribute.ImmutableAttributeFactory.equals
 #[derive(Debug, Clone, PartialEq)]
 pub struct ImmutableAttributeFactory {
     type_: Type,
@@ -542,6 +543,8 @@ impl AttributeBuilder {
 
     /// Converts `default_value` (a Starlark value) with this attribute's type and sets it.
     // Java: com/google/devtools/build/lib/packages/Attribute.java:699 Attribute.Builder.defaultValue
+    // Java: com/google/devtools/build/lib/packages/Attribute.java:713 Attribute.Builder.defaultValue
+    // Java: com/google/devtools/build/lib/packages/Attribute.java:// (Java's one-argument overload passes no converter and no parameter name: `None, None`)
     pub fn default_value<'v>(
         &mut self,
         default_value: Value<'v>,
@@ -607,6 +610,7 @@ impl AttributeBuilder {
     }
 
     // Java: com/google/devtools/build/lib/packages/Attribute.java:792 Attribute.Builder.allowedRuleClasses
+    // Java: com/google/devtools/build/lib/packages/Attribute.java:835 Attribute.Builder.allowedRuleClasses
     pub fn allowed_rule_classes(&mut self, allowed_rule_classes: &[&str]) -> &mut Self {
         self.allowed_rule_classes_predicate(RuleClassNamePredicate::only(allowed_rule_classes))
     }
@@ -627,6 +631,7 @@ impl AttributeBuilder {
     }
 
     // Java: com/google/devtools/build/lib/packages/Attribute.java:848 Attribute.Builder.allowedFileTypes
+    // Java: com/google/devtools/build/lib/packages/Attribute.java:866 Attribute.Builder.allowedFileTypes
     pub fn allowed_file_types(&mut self, allowed_file_types: FileTypeSet) -> &mut Self {
         blaze_util::check_state!(
             self.type_.get_label_class() == LabelClass::Dependency
@@ -645,6 +650,7 @@ impl AttributeBuilder {
     }
 
     // Java: com/google/devtools/build/lib/packages/Attribute.java:894 Attribute.Builder.allowedRuleClassesWithWarning
+    // Java: com/google/devtools/build/lib/packages/Attribute.java:937 Attribute.Builder.allowedRuleClassesWithWarning
     pub fn allowed_rule_classes_with_warning(
         &mut self,
         allowed_rule_classes: &[&str],
@@ -710,6 +716,7 @@ impl AttributeBuilder {
     }
 
     // Java: com/google/devtools/build/lib/packages/Attribute.java:984 Attribute.Builder.mandatoryProviders
+    // Java: com/google/devtools/build/lib/packages/Attribute.java:991 Attribute.Builder.mandatoryProviders
     pub fn mandatory_providers(&mut self, providers: Vec<StarlarkProviderIdentifier>) -> &mut Self {
         if !providers.is_empty() {
             self.mandatory_providers_list(vec![providers]);
@@ -723,6 +730,7 @@ impl AttributeBuilder {
     }
 
     /// Java `aspect(StarlarkAspect)`: `aspect` is the frozen Starlark aspect value.
+    // PORT: skipped, only `attr.*(aspects = ...)` adds aspects at the pin (StarlarkAttrModule): Attribute.aspect
     // Java: com/google/devtools/build/lib/packages/Attribute.java:1002 Attribute.Builder.aspect
     pub fn aspect(&mut self, aspect: StarlarkCallable) -> Result<&mut Self, EvalException> {
         self.aspects_list_builder.add_starlark_aspect(aspect)?;
@@ -845,6 +853,9 @@ impl AttributeBuilder {
 
 /// A rule or macro attribute definition (Java `Attribute`). Immutable.
 // Java: com/google/devtools/build/lib/packages/Attribute.java:75 Attribute
+// PORT: skipped, derived PartialEq over the same fields (Java's cached hashCode only shortcuts equals; an Attribute is never a hash key here): Attribute.equals, Attribute.hashCode
+// PORT: skipped, no caller at the pin (RuleContext reads the String predicate, get_allowed_rule_classes_for_labels_warning): Attribute.getAllowedRuleClassObjectWarningPredicate
+// PORT: skipped, no caller at the pin: Attribute.fromRuleAndAttributesOnly
 #[derive(Debug, Clone, PartialEq)]
 pub struct Attribute {
     name: String,
@@ -1270,6 +1281,7 @@ impl Attribute {
 
     /// A replica builder of this attribute.
     // Java: com/google/devtools/build/lib/packages/Attribute.java:2395 Attribute.cloneBuilder
+    // Java: com/google/devtools/build/lib/packages/Attribute.java:2413 Attribute.cloneBuilder
     pub fn clone_builder(&self) -> AttributeBuilder {
         AttributeBuilder {
             name: self.name.clone(),

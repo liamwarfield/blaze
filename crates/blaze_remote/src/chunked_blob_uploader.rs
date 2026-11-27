@@ -77,7 +77,10 @@ impl ChunkedUploadTarget for CacheClients {
         context: &'a RemoteActionExecutionContext<'_>,
         digests: &'a [Digest],
     ) -> BoxFuture<'a, io::Result<IndexSet<Digest>>> {
-        Box::pin(self.grpc_cache_client().find_missing_digests(context, digests))
+        Box::pin(
+            self.grpc_cache_client()
+                .find_missing_digests(context, digests),
+        )
     }
 
     fn splice_blob<'a>(
@@ -118,7 +121,7 @@ impl ChunkedUploadTarget for CacheClients {
 /// PORT: Java holds the `GrpcCacheClient` and the `CombinedCache`; its upload runs as the task of
 /// the client's upload deduplication, which outlives the caller, so here the uploader owns its
 /// target ([`ChunkedUploadTarget`], for a cache its [`CacheClients`]).
-// Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:58 ChunkedBlobUploader
+// Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:53 ChunkedBlobUploader
 pub struct ChunkedBlobUploader {
     target: Arc<dyn ChunkedUploadTarget>,
     chunker: Box<dyn ContentDefinedChunker>,
@@ -128,7 +131,7 @@ pub struct ChunkedBlobUploader {
 
 impl ChunkedBlobUploader {
     /// Creates a new uploader with the given chunking configuration.
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:79 ChunkedBlobUploader.<init>
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:73 ChunkedBlobUploader.<init>
     pub fn new(
         target: Arc<dyn ChunkedUploadTarget>,
         config: &ChunkingConfig,
@@ -143,7 +146,7 @@ impl ChunkedBlobUploader {
     }
 
     /// Returns the minimum blob size for chunked upload.
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:92 ChunkedBlobUploader.getChunkingThreshold
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:86 ChunkedBlobUploader.getChunkingThreshold
     pub fn get_chunking_threshold(&self) -> i64 {
         self.chunking_threshold
     }
@@ -156,7 +159,7 @@ impl ChunkedBlobUploader {
     ///   completed uploads of them.
     ///
     /// PORT: the file is chunked on the calling task, as Java chunks it on its virtual thread.
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:105 ChunkedBlobUploader.uploadChunked
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:98 ChunkedBlobUploader.uploadChunked
     pub async fn upload_chunked(
         &self,
         context: &RemoteActionExecutionContext<'_>,
@@ -177,12 +180,10 @@ impl ChunkedBlobUploader {
             .await?;
         self.upload_missing_chunks(context, &missing_digests, &chunk_digests, file, force)
             .await?;
-        match self.target.splice_blob(
-            context,
-            blob_digest,
-            &chunk_digests,
-            self.chunking_function,
-        ) {
+        match self
+            .target
+            .splice_blob(context, blob_digest, &chunk_digests, self.chunking_function)
+        {
             Some(splice) => splice.await,
             // getFromFuture(null): Java's chunking is only negotiated with the option set, which
             // is also what spliceBlob checks.
@@ -190,7 +191,7 @@ impl ChunkedBlobUploader {
         }
     }
 
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:122 ChunkedBlobUploader.uploadMissingChunks
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:115 ChunkedBlobUploader.uploadMissingChunks
     async fn upload_missing_chunks(
         &self,
         context: &RemoteActionExecutionContext<'_>,
@@ -221,7 +222,7 @@ impl ChunkedBlobUploader {
 /// PORT: Java's completion queue of listener callbacks is a `FuturesUnordered` here; dropping
 /// the session (an error, or the caller giving up) drops the uploads still in flight, which is
 /// `cancelAllUploads()` in the `finally` block.
-// Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:135 ChunkedBlobUploader.UploadSession
+// Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:128 ChunkedBlobUploader.UploadSession
 struct UploadSession<'a, 'b> {
     uploader: &'a ChunkedBlobUploader,
     context: &'a RemoteActionExecutionContext<'b>,
@@ -233,7 +234,7 @@ struct UploadSession<'a, 'b> {
 }
 
 impl<'a, 'b> UploadSession<'a, 'b> {
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:159 ChunkedBlobUploader.UploadSession.run
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:150 ChunkedBlobUploader.UploadSession.run
     async fn run(mut self, file: &Path) -> io::Result<()> {
         let mut offset: i64 = 0;
         for chunk_digest in self.chunk_digests {
@@ -254,13 +255,13 @@ impl<'a, 'b> UploadSession<'a, 'b> {
         Ok(())
     }
 
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:182 ChunkedBlobUploader.UploadSession.shouldScheduleUpload
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:173 ChunkedBlobUploader.UploadSession.shouldScheduleUpload
     fn should_schedule_upload(&mut self, chunk_digest: &Digest) -> bool {
         self.missing_digests.contains(chunk_digest)
             && self.scheduled_digests.insert(chunk_digest.clone())
     }
 
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:186 ChunkedBlobUploader.UploadSession.startUpload
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:177 ChunkedBlobUploader.UploadSession.startUpload
     fn start_upload(&mut self, file: &Path, chunk_offset: i64, chunk_digest: &'a Digest) {
         let uploader = self.uploader;
         let context = self.context;
@@ -270,11 +271,15 @@ impl<'a, 'b> UploadSession<'a, 'b> {
             offset: chunk_offset,
             digest: chunk_digest.clone(),
         });
-        self.in_flight_uploads
-            .push(uploader.target.upload_blob(context, chunk_digest, blob, force));
+        self.in_flight_uploads.push(uploader.target.upload_blob(
+            context,
+            chunk_digest,
+            blob,
+            force,
+        ));
     }
 
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:194 ChunkedBlobUploader.UploadSession.drainCompletedUploads
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:185 ChunkedBlobUploader.UploadSession.drainCompletedUploads
     fn drain_completed_uploads(&mut self) -> io::Result<()> {
         loop {
             match self.in_flight_uploads.next().now_or_never() {
@@ -284,7 +289,7 @@ impl<'a, 'b> UploadSession<'a, 'b> {
         }
     }
 
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:204 ChunkedBlobUploader.UploadSession.awaitCompletedUpload
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:195 ChunkedBlobUploader.UploadSession.awaitCompletedUpload
     async fn await_completed_upload(&mut self) -> io::Result<()> {
         if let Some(result) = self.in_flight_uploads.next().await {
             result?;
@@ -294,7 +299,7 @@ impl<'a, 'b> UploadSession<'a, 'b> {
 }
 
 /// The blob of one chunk of a file.
-// Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:221 ChunkedBlobUploader.ChunkBlob
+// Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:213 ChunkedBlobUploader.ChunkBlob
 struct ChunkBlob {
     file: Path,
     offset: i64,
@@ -302,7 +307,7 @@ struct ChunkBlob {
 }
 
 impl Blob for ChunkBlob {
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:233 ChunkedBlobUploader.ChunkBlob.get
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:225 ChunkedBlobUploader.ChunkBlob.get
     fn get(&self) -> io::Result<Box<dyn Read + Send + '_>> {
         let mut input = self.file.get_input_stream()?;
         // seekOrSkip(input, offset): an input shorter than the offset is an EOFException.
@@ -316,7 +321,7 @@ impl Blob for ChunkBlob {
         Ok(Box::new(input.take(self.digest.size_bytes as u64)))
     }
 
-    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:249 ChunkedBlobUploader.ChunkBlob.description
+    // Java: com/google/devtools/build/lib/remote/ChunkedBlobUploader.java:243 ChunkedBlobUploader.ChunkBlob.description
     fn description(&self) -> Option<String> {
         Some(format!(
             "chunk {} at offset {} of file {}",

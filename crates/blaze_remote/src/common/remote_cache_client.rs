@@ -289,11 +289,7 @@ impl<T: RemoteCacheClient + ?Sized + 'static> RemoteCacheClientUploads for Arc<T
         let context = context.detached();
         let task_digest = digest.clone();
         // `Completable.defer(() -> uploadBlobImpl(context, digest, blob))`
-        let upload = async move {
-            client
-                .upload_blob_owned(context, task_digest, blob)
-                .await
-        };
+        let upload = async move { client.upload_blob_owned(context, task_digest, blob).await };
         self.cas_upload_cache()
             .execute(digest.clone(), upload, force)
             .await
