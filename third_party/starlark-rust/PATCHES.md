@@ -1184,3 +1184,19 @@ and users read them).
 - Users: blaze_starlark `label.rs` (`Label.str` reads the `ThreadContext`'s semantics).
 - Test: `patch_0064_current_extra`.
 
+
+## 0065 — function parameters, docstrings and frozen globals for `starlark_doc_extract`
+
+- Gap: Java's `starlark_doc_extract` reads a function's parameters and documentation
+  (`StarlarkFunction.getParameterNames`, `getNumOrdinaryParameters`,
+  `getNumKeywordOnlyParameters`, `hasVarargs`, `hasKwargs`, `getDefaultValue`,
+  `getDocumentation`) and a module's raw docstring and globals; starlark-rust exposes none of
+  them.
+- Fix: `eval/compiler/def.rs`: `DefParameterRole`, `DefParameter`, `DefModule::def_parameters`
+  (Java's order: ordinary, keyword-only, `*args`, `**kwargs`), `DefModule::def_docstring` (the
+  raw docstring) and `DefModule::frozen_globals`; `eval/runtime/params/spec.rs`:
+  `blaze_java_parameters`; `FrozenModule::raw_docstring`; re-exports in `eval.rs`.
+- Users: crate `blaze_starlarkdocextract` (`starlark_function_info_extractor.rs`,
+  `module_info_extractor.rs`).
+- Test: through the ported `StarlarkFunctionInfoExtractorTest` and `ModuleInfoExtractorTest`
+  (written by the implementer of `sweep-2`; entry added by root from its notes).
