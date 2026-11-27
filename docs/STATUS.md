@@ -39,8 +39,9 @@ all-model quota remains; the user watches it and sends the pause.
 
   Failures of the last runs by family: `~/.cache/blaze/work/root-runs/8ecc520-failures/by-family.tsv`
   (one process) and `8ecc520-daemon-failures/by-family.tsv` (server mode).
-- **Referee guard** at checkpoint 40 (label `guard-a673e29`): one process 13,852 matching,
-  regressed 0; daemon 13,858 of 13,860, regressed 0. Not rerun at `8ecc520` yet.
+- **Referee guard** at checkpoint 46 (labels `guard-8ecc520`, `guardd-8ecc520`, the commit's own
+  binary): one process 13,852 matching of 13,858, regressed 0; daemon 13,858 of 13,860,
+  regressed 0.
 - **Coverage map after checkpoint 39** (`docs/coverage/README.md`): about 86k ± 15k lines of
   needed Java not ported or not marked, 13k of them out of scope. To be regenerated.
 
@@ -98,7 +99,7 @@ all-model quota remains; the user watches it and sends the pause.
 | Bzlmod, repositories, downloader, client | 4 | PASS |
 | Analysis, configuration, cquery/aquery | 3 | PASS |
 | Execution, sandbox, build driver | 4 (at ef66f55) | PASS |
-| Remote cache and execution, HTTP cache, downloader, repo contents cache | 8 (at dad60f0) | STOP: H1 (HTTP upload reads the response late); round 9 running at 8ecc520 |
+| Remote cache and execution, HTTP cache, downloader, repo contents cache | 9 (at 8ecc520) | STOP: J1 (connection closed after an early answer where Java pools it; ruling: port as Java) |
 | Comparison tools; referee batches 3 and 3b | 2026-11-26 | PASS |
 | Byte strings | 2 (at 780fceb) | PASS |
 | Incremental evaluator I1; key equality I2 | at 5f68157 | PASS |
@@ -113,6 +114,8 @@ all-model quota remains; the user watches it and sends the pause.
 | Coverage | 2 (at e476a59) | PASS |
 | Query formatters, genquery, SkyQuery | 4 (at 8ecc520) | PASS |
 | Action rewinding, include scanning, `testing.analysis_test` | 3 (at 8ecc520) | STOP: IS-2 (order of used header modules; one line changed by root, re-check owed) |
+| Hash functions; `starlark_doc_extract`; `--proto:rule_classes`, Android and J2ObjC fragments, feature flags; auto output filter | 1 (at 8ecc520) | PASS |
+| WebAssembly in repository rules | 1 (at 8ecc520) | STOP: W-1 (text-format modules accepted), W-2 (memory limits) |
 | Interpreter patches 0066-0068 | 1 (at 8ecc520) | STOP: P1-1, P1-2 (patch 0068: `dict == view`, `json.encode` of a view) |
 | Multi-command test fixture, ConfigCommandTest, DumpCommandTest, `dump` over a kept graph | 1 (at 8ecc520) | PASS |
 

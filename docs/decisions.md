@@ -750,3 +750,8 @@ Each entry: date, decision, why, who decided.
   flags PASS; auto output filter PASS; WebAssembly in repository rules STOP on W-1 (text-format
   modules accepted) and W-2 (module's own memory limits kept instead of the computed ones).
   With the sweep thread. Root.
+- 2026-11-27, 01:32. Referee guard at 8ecc520 (the commit's own binary, brotli and re2, base
+  `corpus/scores/blaze-ef66f55e904e.referee3b.json`): one process 13,852 matching, 58 allowed,
+  of 13,858, regressed 0 (label `guard-8ecc520`); daemon 13,858 matching, 56 allowed, of 13,860,
+  regressed 0 (label `guardd-8ecc520`). Same figures as at a673e29. (The two entries above
+  carry times root estimated too late; they were written between 01:15 and 01:30.) Root.
