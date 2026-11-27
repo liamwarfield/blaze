@@ -595,3 +595,11 @@ Each entry: date, decision, why, who decided.
   default is the server may not, before finding C1 is closed. Once a daemon-mode score is the
   base the ratchet does not go back to one-process recordings (C3). The next extractor change
   takes A5-A8, C1, C2 and the start-line decision together, with one renormalisation. Root.
+- 2026-11-26. Remote round 7: STOP at a673e29 on N1 (a lost file of a cache-served repository
+  loses the REMOTE_FILE_EVICTED detail, so no retry), N2 (a command other than build/test
+  without a cache never evicts in-memory repositories) and T8. The certificate verifier's T7
+  fix, H1, C3 and M1 are accepted; the repo contents cache serves nothing stale. D16
+  generalised for T8: for a certificate the user supplies as its own trust file and the server
+  presents byte for byte, Blaze makes the structural check after the key and nothing more;
+  every other reason the JDK's parser refuses that file is a declared lenient case, pinned by a
+  fixture per class. No certificate from anyone else can take that route. Root.
