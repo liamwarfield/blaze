@@ -120,8 +120,10 @@ Windows and macOS; JVM-only features (heap `info` keys, thread dumps); remote an
 
 - **Bazel's own integration suite** (`docs/upstream-tests.md`): at tag v0.1.0, 63 of 211 targets
   and 1,401 of 2,878 test functions that pass on Bazel pass on Blaze (label `blaze-v0.1.0-r3`).
-  At `374c631`: 159 targets and 2,619 functions. At `a673e29` (2026-11-26): 163 of 211 targets
-  and 2,679 of 2,878 functions (label `blaze-a673e29`).
+  At `a673e29` (2026-11-26), one process per command, the default: 163 of 211 targets and
+  2,679 of 2,878 functions (label `blaze-a673e29`). At `38cd662` with the persistent server
+  switched on (`BLAZE_SERVER_MODE=daemon`, opt-in until its review passes): 190 targets and
+  2,803 functions (label `blaze-38cd662-daemon`).
 - **Error and UI transcripts** (`scripts/w4/probe`, binary of `e8b79c0`): 777 steps of 42
   scenarios. Of 664 that run the binary: 30 identical; 249 equal only after the masks for the
   warm server and the critical path; 2 equal only as sorted messages; 256 are failing steps

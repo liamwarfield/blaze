@@ -65,6 +65,19 @@
 > shard's output overflow 22; JVM-only items 21; SkyQuery 20; the rest in groups of four or
 > fewer. A daemon-mode run of `ce81d5a` was stopped unfinished and gives no total
 > (docs/decisions.md, 2026-11-26 17:00).
+>
+> **Commit `38cd662` (checkpoint 41) in server mode, label `blaze-38cd662-daemon`** (2026-11-26
+> 18:33, suite mode, 237 of 237 targets ran, 3,098 s; binary sha256 `1fd5357d…`, debug build
+> from a clean checkout of the commit, run through the wrapper of `scripts/server/ut-wrapper`,
+> which sets `BLAZE_SERVER_MODE=daemon`: the persistent server with the kept graph, which is
+> not the default yet): **190 of 211 targets and 2,803 of 2,878 functions** (lost 21 targets
+> and 49 functions; 26 absent). Against the one-process run of `a673e29`: 132 functions gained,
+> 1 lost, 16 absent (12 in `build_event_stream_test`, whose shard stops after
+> `test_cached_test_results`; the rest in `bazel_proto_library_test` and `bazel_clean_test`).
+> What remains, by cause: functions not measured after a shard's output overflow 25; JVM-only
+> items 20; functions that need the graph kept with a remote cache (discarded today by the
+> fail-safe ruling) about 10; four TLS functions with X.509 v1 chains (declared gap, D16);
+> sixteen single causes. The one-process figure for this commit was not measured.
 
 
 First full run of Bazel's own shell and Python integration tests (237 targets) against Blaze,

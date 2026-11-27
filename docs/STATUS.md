@@ -42,8 +42,9 @@ threads. The list below is what a resumption after any later pause needs.
   | `5f68157` | `blaze-5f68157` | 140 | 2,411 |
   | `374c631` | `blaze-374c631` | 159 | 2,619 |
   | `a673e29` | `blaze-a673e29` | 163 | 2,679 |
+  | `38cd662`, server mode (opt-in) | `blaze-38cd662-daemon` | 190 | 2,803 |
 
-  Failures of the last run by family: `~/.cache/blaze/work/root-runs/a673e29-failures/by-family.tsv`.
+  Failures of the last run by family: `~/.cache/blaze/work/root-runs/38cd662-daemon-failures/by-family.tsv (server mode) and a673e29-failures/ (one process)`.
 - **Referee guard** at checkpoint 38 (label `guard-374c631`, the commit's own binary): rows 39,
   gained 2, regressed 0.
 - **Coverage map at `e8b79c0`** (`docs/coverage/README.md`): about 106k ± 15k lines of needed

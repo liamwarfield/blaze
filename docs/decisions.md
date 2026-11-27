@@ -639,3 +639,8 @@ Each entry: date, decision, why, who decided.
   reports a JVM heap number). Open in the BES client: an aborted stream is seen by the server
   as a normal half-close, because the gRPC streaming call cannot be cancelled; with the remote
   implementer. Root.
+- 2026-11-26, 19:30. Outer measure in server mode at checkpoint 41 (38cd662, its own binary,
+  `BLAZE_SERVER_MODE=daemon` through scripts/server/ut-wrapper; full run, 3,098 s, the slice
+  stayed under its memory limit): 190 of 211 targets, 2,803 of 2,878 functions. The server is
+  still opt-in: the I3 review is STOP on three stale paths (round 2). Of the 75 functions not
+  passing, 20 are JVM-only and 4 are the declared TLS gap. Root.
