@@ -1,31 +1,17 @@
 # Status
 
-Updated 2026-11-26, 14:30 (root). Running again: the pause of 14:20 was withdrawn by the user
-(the threshold is 20% of the weekly quota remaining, not used; the user watches the quota from
-another thread and sends the pause instruction). The six implementers were restarted in their
-threads. The list below is what a resumption after any later pause needs.
+Updated 2026-11-26, 22:20 (root). Running. Numbers cite their evidence; history is in
+`git log` and `docs/decisions.md`. Quota rule (user, 2026-11-26): pause when 20% of the weekly
+all-model quota remains; the user watches it and sends the pause.
 
-## To resume
+## To resume after a pause
 
-1. `scripts/cpu-cap apply` (CPU and memory limits are runtime settings), then start the keeper
-   loop (`scripts/reap-idle-servers` every three minutes, `scripts/clean-target` below 95 GB).
-2. The working tree holds the uncommitted work of six implementers that were cancelled mid-run
-   (snapshot on the local branch `wip/pause-2026-11-26`; it does not compile: the half-written
-   `crates/blaze_exec/tests/dynamic_spawn_strategy_unit_test.rs`). Resume each by a message to
-   its thread ("continue where you stopped; first check your files"); thread ids are in the
-   session transcript and in T3's thread list under these titles: "Incremental builds: I3",
-   "Server: idle tasks, info items, default-switch preparation", "Workers: hardened sandbox,
-   unit tests, then dynamic execution" (first: make the tree compile), "Java rules and config"
-   (now path mapping), "Commands" (now the sweep of small families), "Remote: repo contents
-   cache" (first: the silent failure with the cache on).
-3. Then checkpoint 38 (tree compiles, clean-checkout build), referee guard, a full-suite run
-   (unit name `root-suite-5f68157`, which the agents' briefs watch; pass
-   `--slice=app-t3code-agents-jobs.slice`), and the re-review of remote round 5 (D16) plus first
-   reviews of vendor mode, extra actions and metrics, the query formatters and genquery
-   (`blaze_analysis::skyframe_env` has one `unsafe` block), credential helpers follow-ups.
-4. Queued for free builder slots (at most six): the Build Event Service client, the
-   key-tracking `ctx.var` dict (a starlark-rust patch, approved) and SkyQuery, the remaining
-   profiler sites and `--starlark_cpu_profile`, include scanning, action rewinding.
+1. `scripts/cpu-cap apply` (CPU and memory limits are runtime settings), then the keeper loop
+   (`scripts/reap-idle-servers` every three minutes, `scripts/clean-target` below 90 GB).
+2. Each implementer continues in its own thread with a message ("continue where you stopped;
+   first check your files"); the threads are listed under "Running".
+3. A checkpoint: tree compiles, protected paths staged out, clean-checkout check, exact binary
+   from a worktree, `scripts/incremental/reuse-check` on it; then the reviews owed.
 
 ## State
 
@@ -52,42 +38,39 @@ threads. The list below is what a resumption after any later pause needs.
 - **Coverage map at `e8b79c0`** (`docs/coverage/README.md`): about 106k ± 15k lines of needed
   Java not ported, 13k of them out of scope. To be regenerated at the next checkpoint.
 
-## Running (Opus implementers; no reviewer at the moment)
+## Running (Opus implementers, one thread each)
 
-| Task | First items (review findings) | Then |
+| Thread | Doing now | Then |
 | --- | --- | --- |
-| Query | | cquery `starlark`/`transitions`, config fragments, `genquery`, SkyQuery, aquery skyframe state |
-| Incremental builds, I3 | I2 review S2-1: functions that read files outside the graph; TimestampGranularityMonitor | invalidation, diff awareness, kept graph in daemon mode, randomized incremental-against-clean test |
-| Server | review round 2 leftovers (evidence on the commit's binary, loud handles) | `info` items (D15), idle tasks, default-switch preparation |
-| Workers | execution round 2 (E2-9, E2-11), cgroups (C1) | hardened worker sandbox, 81 unit tests, dynamic execution |
-| Remote | round 4 (Q1: certificate verifier) | repo contents cache, other commands, HTTP cache, credential helpers |
-| Extra actions, metrics | reporting round 2 (R2-1) | extra actions and `print_action`, artifact metrics, status lines, Build Event Service client |
-| Commands | round 2 (R1: `Analyzed 0 targets`) | vendor mode |
-| Loading | round 2 leftovers (regex lazy counts, parameter-type table, load-bound names) | traceback locations |
-| Path mapping | Java/config round 2 R1; coverage V3 | execution under `strip`, `testing.analysis_test`, native aspects |
+| Incremental builds (I3) | round-2 review findings: repeated `--invocation_id`, two `--watchfs` paths | remote sequences against the oracle, then lifting the fail-safe; heap handles (D7); the randomized test |
+| Execution, now Skymeld | per-build effects of the build driver in a server's later commands (the server-mode regression of checkpoint 43) | merged analysis and execution as Java has it |
+| Remote | HTTP cache upload (review H1), two suite regressions | chunking, lease extension, the remote cluster of the map |
+| Query | `ctx.var` key tracking inside the cast helpers (review P63-1) | C++ rules cluster |
+| Metrics, analysis | BES follow-ups | analysis-core cluster, feature flags, `map_directory` |
+| Rewinding, configuration | review S2 items; include scanning for tree artifacts and header modules | configuration cluster |
+| Server, packages | two interpreter patches (provider tracebacks, lambda repr) | packages-and-loading cluster |
+| Sweep | in-process multi-command test fixture | `dump` over a kept graph, small clusters |
 
 ## Next, in this order
 
-1. As each implementer reports: checkpoint (tree compiles, protected paths staged out, clean
-   checkout build), referee guard, full-suite run when the machine is free, then the area's
-   re-review. Reviews go two areas to one Fable agent, at most three at once, medium effort.
-2. Probe owed by root: `build --noexperimental_merged_skyframe_analysis_execution` on the next
-   checkpoint binary (finding V1, fixed by root in `commands/build.rs`).
-3. Not started: include scanning, action rewinding, Docker sandbox, `mobile-install`, Apple and
-   Android rules, the remaining files of the clusters in `docs/coverage/README.md`.
-4. Server as the default: after I3 passes review, the soak on the commit's binary, and the
-   audited referee change for cold and warm sequences.
-5. New accepted commit when every area has a PASS: clean-checkout score including workerd, test
-   gate with name maps, auditor approval, baseline move. Referee batch owed with it: mask
-   `--install_md5`, compare the deterministic fields of `buildMetrics`.
-6. Process rules: at most three Fable agents (the usage limit was hit on 2026-11-25); builders
-   as the machine allows (nine today); nothing but small notes under `/tmp`; delete only what
-   you created; agents do not run `scripts/upstream-tests/run`; a number from a comparison tool
-   enters README or this file only in the auditor's wording.
+1. Re-reviews owed: incremental builds round 3, remote round 9, query round 4 (each when its
+   implementer reports); first reviews of include scanning's remainder, SkyQuery passed with
+   S2 items, Skymeld when it lands.
+2. A suite run in both modes on the first checkpoint after the Skymeld regression is fixed.
+   Server mode at `38cd662` is the best measured: 2,803 of 2,878.
+3. The server as the default: after the incremental review passes, plus referee finding C1.
+4. The next extractor change of the referee (A5-A8, C1, C2), with one renormalisation, and a
+   harness batch (functions left unmeasured after an output overflow rerun one by one).
+5. A new accepted commit when every area has a PASS: clean-checkout score in daemon mode
+   including workerd, test gate with name maps, auditor approval, baseline move.
+6. Process rules: at most three Fable agents; implementers under the CPU, memory and Cargo-slot
+   limits; nothing but small notes under `/tmp`; delete only what you created; agents do not
+   run `scripts/upstream-tests/run` and do not touch the git index; a number from a comparison
+   tool enters README or this file only in the auditor's wording.
 
 ## Waiting on the user
 
-- Whether to delete the remote lead's old run directories (about 160 GB under
+- Whether to delete the remote lead's old run directories (133 GB in `oracle-out/ur-remote`; about 160 GB under
   `~/.cache/blaze/oracle-out/ur-remote` and `~/.cache/blaze/work/remote`; keep-list in the
   lead's report). (The leftover remote-worker processes ended with the reboot.) Disk was at
   116 GB free on 2026-11-25 before a target cleanup (150 GB after).
@@ -109,19 +92,21 @@ threads. The list below is what a resumption after any later pause needs.
 | Bzlmod, repositories, downloader, client | 4 | PASS |
 | Analysis, configuration, cquery/aquery | 3 | PASS |
 | Execution, sandbox, build driver | 4 (at ef66f55) | PASS |
-| Remote cache and execution | 5 (at e476a59) | STOP: T1-T5; verifier rewritten to ruling D16, re-review owed |
-| Comparison tools | audit round 3 (2026-11-26) | PASS; committed c99a912 |
+| Remote cache and execution, HTTP cache, downloader, repo contents cache | 8 (at dad60f0) | STOP: H1 (HTTP upload reads the response late) |
+| Comparison tools; referee batches 3 and 3b | 2026-11-26 | PASS |
 | Byte strings | 2 (at 780fceb) | PASS |
-| Incremental evaluator, package I1 | 1 (at e8b79c0) | PASS |
-| Incremental builds, package I2 | 1 (at 5f68157) | PASS; S2-1 must be closed inside I3 |
-| Server and client | 2 (at 5f68157) | PASS; items owed before the default switch |
-| Loading, macros, Starlark front end | 2 (at 5f68157) | PASS; three S2 open |
-| Java rules and configuration | 2 (at 5f68157) | PASS; one S2 open |
-| Commands and options | 3 (at e476a59) | PASS |
-| Execution: workers, tests, templates | 3 (at e476a59) | PASS; S2 items open |
-| Reporting, build events, query outputs | 3 (at e476a59) | PASS |
+| Incremental evaluator I1; key equality I2 | at 5f68157 | PASS |
+| Incremental builds I3 (kept graph, `--watchfs`) | 2 (at 38cd662) | STOP: S1-A, S1-B, S1-C |
+| Server and client; idle tasks, `info`, binary identity | at ce81d5a | PASS |
+| Loading, macros, Starlark front end | 2 (at 5f68157) | PASS |
+| Java rules and configuration; path mapping, analysis failures, validation aspect | at ce81d5a | PASS |
+| Commands and options; vendor | at e476a59 / 374c631 | PASS |
+| Execution: workers, tests, cgroups, sandboxes, dynamic execution | at a673e29 | PASS |
+| Reporting, build events, metrics; extra actions | at 38cd662 | PASS |
+| Build Event Service client | 2 (at dad60f0) | PASS |
 | Coverage | 2 (at e476a59) | PASS |
-| Cgroups, hardened worker sandbox | 2 (at e476a59) | PASS |
+| Query formatters, genquery, SkyQuery | 3 (at b216603) | STOP: P63-1 (two more whole-dict readers) |
+| Action rewinding, include scanning, `testing.analysis_test` | 2 (at b216603) | STOP on AT-1 only (fixed by root at c434f6c, re-check owed) |
 
 Open items the reviewers left as non-blocking are listed at the end of each report.
 
