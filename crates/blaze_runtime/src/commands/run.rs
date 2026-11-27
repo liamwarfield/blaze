@@ -451,6 +451,7 @@ where
             targets: targets_to_build,
             validator: &validator,
             repo_precomputed: Default::default(),
+            post_build_callback: None,
             after_build: Box::new(move |outcome: RunBuildOutcome<'_>| {
                 if !outcome.build_result.get_success() {
                     outcome
@@ -509,7 +510,7 @@ fn run_command_exception_exit_code(e: &RunCommandException) -> blaze_util::ExitC
 }
 
 /// The `ConfiguredTarget` behind one of the build result's views (the same lookup key).
-fn configured_target_of(
+pub(crate) fn configured_target_of(
     analyzed_targets: &[ConfiguredTarget],
     view: &blaze_buildtool::buildtool::build_result::ConfiguredTargetRef,
 ) -> ConfiguredTarget {

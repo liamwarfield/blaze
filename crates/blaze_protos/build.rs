@@ -33,6 +33,8 @@ const PROTOS: &[&str] = &[
     "src/main/protobuf/test_status.proto",
     "src/main/protobuf/strategy_policy.proto",
     "src/main/java/com/google/devtools/build/lib/packages/metrics/package_load_metrics.proto",
+    // The Starlark debugger's protocol (`--experimental_skylark_debug`).
+    "src/main/java/com/google/devtools/build/lib/starlarkdebug/proto/starlark_debugging.proto",
     "src/main/protobuf/worker_protocol.proto",
     "src/main/protobuf/command_server.proto",
     "src/main/protobuf/crosstool_config.proto",

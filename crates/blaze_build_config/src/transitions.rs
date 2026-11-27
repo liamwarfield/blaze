@@ -41,6 +41,7 @@ pub fn test_trimming_required_fragments() -> Vec<FragmentOptionsClass> {
     vec![&CORE_OPTIONS, &TEST_OPTIONS]
 }
 
+// PORT: skipped, a cache of TestTrimmingLogic.trim per input options (the result is computed each time; not observable): BuildOptionsCache.CacheRetrievalFunction.apply, BuildOptionsCache.<init>, BuildOptionsCache.applyTransition, BuildOptionsCache.CacheKey.<init>, BuildOptionsCache.CacheKey.create
 // Java: com/google/devtools/build/lib/analysis/test/TestTrimmingLogic.java:61 TestTrimmingLogic.trim
 /// Returns a new `BuildOptions` instance with test configuration removed.
 ///

@@ -195,6 +195,24 @@ pub(crate) struct RunBuild<'a> {
     /// The precomputed values the command injected into `env.getSkyframeExecutor()` before the
     /// build (`fetch --force`'s FORCE_FETCH); the default for `run`.
     pub(crate) repo_precomputed: blaze_repo_rules::registration::RepoPrecomputedValues,
+    /// `BuildTool.processRequest(request, validator, postBuildCallback, ...)`: called with the
+    /// build's successful targets once `buildTargets` returned normally, before `stopRequest`;
+    /// its failure detail becomes `BuildResult.getPostBuildCallbackFailureDetail()` (Java
+    /// `PostBuildCallback.process`). `None` for the commands that pass `null`.
+    pub(crate) post_build_callback: Option<PostBuildCallback<'a>>,
+}
+
+/// `BuildTool.PostBuildCallback.process(successfulTargets)`: `None` on success.
+// Java: com/google/devtools/build/lib/buildtool/BuildTool.java:1215 BuildTool.PostBuildCallback
+pub(crate) type PostBuildCallback<'a> =
+    Box<dyn FnOnce(PostBuildContext<'_>) -> Option<FailureDetail> + 'a>;
+
+/// What a [`PostBuildCallback`] sees: the command's environment, `result.getSuccessfulTargets()`
+/// (`None` when the execution phase was not attempted) and `env.getSkyframeExecutor()`.
+pub(crate) struct PostBuildContext<'b> {
+    pub(crate) env: &'b mut CommandEnvironment,
+    pub(crate) successful_targets: Option<Vec<ConfiguredTarget>>,
+    pub(crate) skyframe_executor: &'b SkyframeExecutor,
 }
 
 /// What `BuildTool.processRequest` leaves to `RunCommand`: its `BuildResult` and the command's
@@ -410,7 +428,12 @@ fn run_build_with_bep(
             validator,
             after_build,
             repo_precomputed,
-        }) => (targets, Some((validator, after_build)), repo_precomputed),
+            post_build_callback,
+        }) => (
+            targets,
+            Some((validator, after_build, post_build_callback)),
+            repo_precomputed,
+        ),
         None => match target_patterns_helper::read_from(env, options) {
             Ok(targets) => (targets, None, Default::default()),
             Err(e) => {
@@ -855,7 +878,7 @@ fn run_build_with_bep(
     let build_tool = build_tool.with_aquery_dump_after_build(&aquery_dump_after_build);
     // BuildTool.processRequest(request, validator, ...): RunCommand's TargetValidator.
     let build_tool = match &run {
-        Some((validator, _)) => build_tool.with_target_validator(*validator),
+        Some((validator, _, _)) => build_tool.with_target_validator(*validator),
         None => build_tool,
     };
     // The build event stream's loading and analysis posting points.
@@ -965,6 +988,30 @@ fn run_build_with_bep(
     if collector.executor_initialized() {
         collector.execution_phase_finish();
     }
+    // BuildTool.processRequest: `if (postBuildCallback != null)
+    // result.setPostBuildCallbackFailureDetail(postBuildCallback.process(
+    // result.getSuccessfulTargets()))`, only when buildTargets returned normally.
+    // Java: com/google/devtools/build/lib/buildtool/BuildTool.java:911 BuildTool.processRequest
+    let mut run = run;
+    if let Some((_, _, post_build_callback)) = run.as_mut()
+        && let Some(post_build_callback) = post_build_callback.take()
+        && detailed_exit_code.is_success()
+    {
+        let analyzed_targets = build_result_listener.get_analyzed_targets();
+        let successful_targets = build_result.get_successful_targets().map(|views| {
+            views
+                .iter()
+                .map(|view| crate::commands::run::configured_target_of(&analyzed_targets, view))
+                .collect()
+        });
+        if let Some(failure_detail) = post_build_callback(PostBuildContext {
+            env: &mut *env,
+            successful_targets,
+            skyframe_executor: &skyframe_executor,
+        }) {
+            build_result.set_post_build_callback_failure_detail(failure_detail);
+        }
+    }
     build_result.set_detailed_exit_code(Arc::new(to_util_detailed_exit_code(&detailed_exit_code)));
     // The stop time has to be captured before we send the BuildCompleteEvent.
     build_result.set_stop_time(JavaClock.current_time_millis());
@@ -1033,7 +1080,7 @@ fn run_build_with_bep(
     // RunCommand.exec after BuildTool.processRequest returned; the modules' afterCommand below
     // runs after the command (BlazeRuntime.afterCommand), with the ExecRequest kept.
     // Java: com/google/devtools/build/lib/runtime/commands/RunCommand.java:415 RunCommand.runBuild
-    let run_result = run.map(|(_, after_build)| {
+    let run_result = run.map(|(_, after_build, _)| {
         let analyzed_targets = build_result_listener.get_analyzed_targets();
         after_build(RunBuildOutcome {
             env: &mut *env,

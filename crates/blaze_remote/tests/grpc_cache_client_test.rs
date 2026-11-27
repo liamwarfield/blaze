@@ -34,6 +34,7 @@ use blaze_protos::JavaMessage;
 use blaze_remote::authandtls::{CallCredentialsProvider, new_cache_headers_interceptor};
 use blaze_remote::chunker::Chunker;
 use blaze_remote::combined_cache::CombinedCache;
+use blaze_remote::common::blob_not_splittable_exception::BlobNotSplittableException;
 use blaze_remote::common::errors;
 use blaze_remote::common::remote_path_resolver;
 use blaze_remote::common::{
@@ -52,7 +53,8 @@ use blaze_remote::reapi::bytestream::{
 use blaze_remote::reapi::{
     Action, ActionResult, Command, Digest, Directory, DirectoryNode, FileNode,
     FindMissingBlobsRequest, FindMissingBlobsResponse, GetActionResultRequest, OutputDirectory,
-    OutputFile, ServerCapabilities, Tree, UpdateActionResultRequest, digest_function,
+    OutputFile, ServerCapabilities, Tree, UpdateActionResultRequest, chunking_function,
+    digest_function,
 };
 use blaze_remote::remote_retrier::{
     EXPERIMENTAL_GRPC_RESULT_CLASSIFIER, ExponentialBackoff, RemoteRetrier,
@@ -1844,8 +1846,39 @@ fn is_remote_cache_options_when_remote_cache_disabled() {
     assert!(!GrpcCacheClient::is_remote_cache_options(&options));
 }
 
+// Java: com/google/devtools/build/lib/remote/GrpcCacheClientTest.java:1700 GrpcCacheClientTest.splitBlob_serverCannotSplit_failsWithBlobNotSplittable
+fn split_blob_server_cannot_split_fails_with_blob_not_splittable(code: tonic::Code) {
+    let mut f = Fixture::set_up();
+    let mut options = RemoteOptions::default();
+    options.experimental_remote_cache_chunking = true;
+    let digest = digest_util().compute_as_utf8("abcdefg");
+    f.fake_server
+        .service_registry
+        .add_content_addressable_storage(FakeContentAddressableStorage {
+            split_blob: Some(Box::new(move |_request| {
+                Err(Status::new(code, String::new()))
+            })),
+            ..Default::default()
+        });
+    f.fake_server.start();
+    let client = f.new_client_with_options(&options);
+
+    let e = block_on(
+        client
+            .split_blob(&f.context, &digest, chunking_function::Value::FastCdc2020)
+            .expect("chunking is enabled"),
+    )
+    .unwrap_err();
+    assert!(BlobNotSplittableException::is(&e), "{e:?}");
+}
+
+/// `@TestParameter({"NOT_FOUND", "UNIMPLEMENTED"}) Status.Code code`.
 #[test]
-#[ignore = "GrpcCacheClient.splitBlob (content-defined chunking, --experimental_remote_cache_chunking) and BlobNotSplittableException are not ported"]
-fn split_blob_server_cannot_split_fails_with_blob_not_splittable() {
-    panic!("not ported: GrpcCacheClient.splitBlob");
+fn split_blob_server_cannot_split_fails_with_blob_not_splittable_not_found() {
+    split_blob_server_cannot_split_fails_with_blob_not_splittable(tonic::Code::NotFound);
+}
+
+#[test]
+fn split_blob_server_cannot_split_fails_with_blob_not_splittable_unimplemented() {
+    split_blob_server_cannot_split_fails_with_blob_not_splittable(tonic::Code::Unimplemented);
 }

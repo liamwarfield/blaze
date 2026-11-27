@@ -17,10 +17,11 @@ use crate::cpp::cpp_compile_action_template::CppCompileActionTemplate;
 use crate::python::py_builtins::CopyWithoutCachingAction;
 
 /// Registers the `ExecutableAction` implementation of every action class of this crate
-/// (idempotent): `CppCompileAction` and `PyBuiltins.CopyWithoutCachingAction`; and of its
+/// (idempotent): `CppCompileAction`, `LtoBackendAction` and `PyBuiltins.CopyWithoutCachingAction`; and of its
 /// action templates (`blaze_exec::actions::ActionTemplate`): `CppCompileActionTemplate`.
 pub fn register_executable_actions() {
     register_executable_action::<CppCompileAction>();
+    register_executable_action::<crate::cpp::lto_backend_action::LtoBackendAction>();
     register_executable_action::<CopyWithoutCachingAction>();
     register_executable_action::<crate::genquery::QueryResultAction>();
     register_executable_action::<crate::java::java_compile_action::JavaCompileAction>();

@@ -152,8 +152,10 @@ pub struct FragmentClassInfo {
     /// `@StarlarkBuiltin(name = ...)` of the class, if any (`ctx.fragments.<name>`).
     pub starlark_name: Option<&'static str>,
     /// `@RequiresOptions(options = {...})`, in declaration order.
+    // Java: com/google/devtools/build/lib/analysis/config/RequiresOptions.java:32 RequiresOptions.options
     pub required_options: fn() -> Vec<FragmentOptionsClass>,
     /// `@RequiresOptions(starlark = true)`.
+    // Java: com/google/devtools/build/lib/analysis/config/RequiresOptions.java:35 RequiresOptions.starlark
     pub requires_starlark_options: bool,
     pub constructor: FragmentConstructor,
 }
@@ -215,6 +217,11 @@ pub fn options_class<T: OptionsClass>() -> FragmentOptionsClass {
 
 // Java: com/google/devtools/build/lib/analysis/config/FragmentClassSet.java:38 FragmentClassSet
 /// Sorted set of fragment classes (`LEXICAL_FRAGMENT_SORTER`: by class name).
+// Java: com/google/devtools/build/lib/analysis/config/FragmentClassSet.java:88 FragmentClassSet.equals
+// Java: com/google/devtools/build/lib/analysis/config/FragmentClassSet.java:99 FragmentClassSet.hashCode
+// PORT: Java compares the cached hash code, then the sorted sets: the derived comparison of the
+// sorted list is the same.
+// PORT: skipped, no caller at the pin (the debug form is the derived Debug): FragmentClassSet.trim, FragmentClassSet.toString
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FragmentClassSet(Vec<FragmentClass>);
 
@@ -231,10 +238,12 @@ impl FragmentClassSet {
         FragmentClassSet(v)
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/FragmentClassSet.java:83 FragmentClassSet.iterator
     pub fn iter(&self) -> impl Iterator<Item = FragmentClass> + '_ {
         self.0.iter().copied()
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/FragmentClassSet.java:70 FragmentClassSet.contains
     pub fn contains(&self, f: FragmentClass) -> bool {
         self.0.contains(&f)
     }
@@ -243,6 +252,7 @@ impl FragmentClassSet {
         other.0.iter().all(|f| self.contains(f))
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/FragmentClassSet.java:65 FragmentClassSet.size
     pub fn len(&self) -> usize {
         self.0.len()
     }
@@ -337,7 +347,7 @@ impl FragmentFactory {
         Self::make_fragment(&trimmed_options, fragment_class)
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/FragmentFactory.java:39 FragmentFactory.trimToRequiredOptions
+    // Java: com/google/devtools/build/lib/analysis/config/FragmentFactory.java:70 FragmentFactory.trimToRequiredOptions
     fn trim_to_required_options(original: &BuildOptions, fragment: FragmentClass) -> BuildOptions {
         let mut trimmed = BuildOptions::builder();
         let required = required_options(fragment);

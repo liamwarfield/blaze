@@ -526,6 +526,7 @@ impl TargetFetcher {
                 targets,
                 validator: &validator,
                 repo_precomputed,
+                post_build_callback: None,
                 after_build: Box::new(|outcome: RunBuildOutcome<'_>| {
                     let reporter = outcome.env.get_reporter().clone();
                     if !outcome.build_result.get_success() {

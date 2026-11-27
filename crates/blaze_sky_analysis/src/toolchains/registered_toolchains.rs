@@ -45,6 +45,7 @@ const TARGET_SETTING_ATTR: &str = "target_settings";
 /// are the toolchain type labels, column keys are toolchain target (not implementation) labels,
 /// and cells are the reason. Only present if the key's `debug` is true.
 // Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredToolchainsValue.java:42 RegisteredToolchainsValue
+// Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredToolchainsValue.java:121 RegisteredToolchainsValue.create
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegisteredToolchainsValue {
     pub registered_toolchains: Vec<DeclaredToolchainInfo>,
@@ -53,6 +54,9 @@ pub struct RegisteredToolchainsValue {
 
 /// A SkyKey for [`RegisteredToolchainsValue`].
 // Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredToolchainsValue.java:57 RegisteredToolchainsValue.Key
+// Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredToolchainsValue.java:102 RegisteredToolchainsValue.Key.equals
+// Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredToolchainsValue.java:111 RegisteredToolchainsValue.Key.hashCode
+// PORT: skipped, key interning (the keys are plain values here): RegisteredToolchainsValue.Key.intern, RegisteredToolchainsValue.Key.getSkyKeyInterner
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct RegisteredToolchainsKey {
     configuration_key: BuildConfigurationKey,
@@ -62,6 +66,7 @@ pub struct RegisteredToolchainsKey {
 impl RegisteredToolchainsKey {
     /// Returns the SkyKey for [`RegisteredToolchainsValue`]s.
     // Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredToolchainsValue.java:51 RegisteredToolchainsValue.key
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredToolchainsValue.java:68 RegisteredToolchainsValue.Key.of
     pub fn key(configuration_key: BuildConfigurationKey, debug: bool) -> Self {
         RegisteredToolchainsKey {
             configuration_key,
@@ -69,10 +74,12 @@ impl RegisteredToolchainsKey {
         }
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredToolchainsValue.java:83 RegisteredToolchainsValue.Key.getConfigurationKey
     pub fn get_configuration_key(&self) -> &BuildConfigurationKey {
         &self.configuration_key
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredToolchainsValue.java:87 RegisteredToolchainsValue.Key.debug
     pub fn debug(&self) -> bool {
         self.debug
     }
@@ -91,8 +98,9 @@ impl fmt::Debug for RegisteredToolchainsKey {
 
 impl Key for RegisteredToolchainsKey {
     type Value = RegisteredToolchainsValue;
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredToolchainsValue.java:79 RegisteredToolchainsValue.Key.functionName
     const FUNCTION: SkyFunctionName = REGISTERED_TOOLCHAINS;
-    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:142 SkyFunctions.REGISTERED_TOOLCHAINS (createHermetic)
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:141 SkyFunctions.REGISTERED_TOOLCHAINS (createHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
     /// Java: a record of the declared toolchains (a list; `DeclaredToolchainInfo` by value) and the nullable rejected toolchains (a table, equal as cell sets).
     // Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredToolchainsValue.java:42 RegisteredToolchainsValue

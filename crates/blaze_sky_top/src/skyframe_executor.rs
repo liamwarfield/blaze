@@ -699,11 +699,7 @@ impl SkyframeExecutor {
             },
         ));
         // Java: com/google/devtools/build/lib/skyframe/SkyframeExecutor.java:3092 SkyframeExecutor.createCyclesReporter
-        // PORT: of the seven reporters TargetCycleReporter, ActionArtifactCycleReporter,
-        // RegisteredToolchainsCycleReporter and RegisteredExecutionPlatformsCycleReporter are
-        // registered, then BzlLoadCycleReporter and BzlmodRepoCycleReporter (TestExpansion is
-        // not ported); CyclesReporter fails loudly for a cycle none of them reports (see
-        // cycles_reporter.rs). The order is Java's.
+        // The seven reporters, in Java's order.
         let cycle_reporters: Vec<Box<dyn SingleCycleReporter>> = vec![
             Box::new(TargetCycleReporter::new(package_manager.clone())),
             Box::new(
@@ -711,6 +707,9 @@ impl SkyframeExecutor {
                     package_manager.clone(),
                 ),
             ),
+            Box::new(crate::cycles_reporter::TestExpansionCycleReporter::new(
+                package_manager.clone(),
+            )),
             Box::new(crate::toolchain_cycle_reporters::RegisteredToolchainsCycleReporter),
             Box::new(crate::toolchain_cycle_reporters::RegisteredExecutionPlatformsCycleReporter),
             // TODO(ulfjack): The BzlLoadCycleReporter swallows previously reported cycles

@@ -49,6 +49,7 @@ const REQUIRED_SETTINGS_ATTR: &str = "required_settings";
 /// keys are the platform label, and the value is the rejection reason. Only present if the key's
 /// `debug` is true.
 // Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredExecutionPlatformsValue.java:42 RegisteredExecutionPlatformsValue
+// Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredExecutionPlatformsValue.java:120 RegisteredExecutionPlatformsValue.create
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegisteredExecutionPlatformsValue {
     pub registered_execution_platform_keys: Vec<ConfiguredTargetKey>,
@@ -57,6 +58,9 @@ pub struct RegisteredExecutionPlatformsValue {
 
 /// SkyKey implementation used for [`registered_execution_platforms_function`].
 // Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredExecutionPlatformsValue.java:58 RegisteredExecutionPlatformsValue.Key
+// Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredExecutionPlatformsValue.java:93 RegisteredExecutionPlatformsValue.Key.equals
+// Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredExecutionPlatformsValue.java:102 RegisteredExecutionPlatformsValue.Key.hashCode
+// PORT: skipped, key interning (the keys are plain values here): RegisteredExecutionPlatformsValue.Key.intern, RegisteredExecutionPlatformsValue.Key.getSkyKeyInterner
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct RegisteredExecutionPlatformsKey {
     configuration_key: BuildConfigurationKey,
@@ -66,6 +70,7 @@ pub struct RegisteredExecutionPlatformsKey {
 impl RegisteredExecutionPlatformsKey {
     /// Returns the SkyKey for [`RegisteredExecutionPlatformsValue`]s.
     // Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredExecutionPlatformsValue.java:51 RegisteredExecutionPlatformsValue.key
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredExecutionPlatformsValue.java:69 RegisteredExecutionPlatformsValue.Key.of
     pub fn key(configuration_key: BuildConfigurationKey, debug: bool) -> Self {
         RegisteredExecutionPlatformsKey {
             configuration_key,
@@ -73,10 +78,12 @@ impl RegisteredExecutionPlatformsKey {
         }
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredExecutionPlatformsValue.java:84 RegisteredExecutionPlatformsValue.Key.configurationKey
     pub fn configuration_key(&self) -> &BuildConfigurationKey {
         &self.configuration_key
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredExecutionPlatformsValue.java:88 RegisteredExecutionPlatformsValue.Key.debug
     pub fn debug(&self) -> bool {
         self.debug
     }
@@ -95,8 +102,9 @@ impl fmt::Debug for RegisteredExecutionPlatformsKey {
 
 impl Key for RegisteredExecutionPlatformsKey {
     type Value = RegisteredExecutionPlatformsValue;
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredExecutionPlatformsValue.java:80 RegisteredExecutionPlatformsValue.Key.functionName
     const FUNCTION: SkyFunctionName = REGISTERED_EXECUTION_PLATFORMS;
-    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:140 SkyFunctions.REGISTERED_EXECUTION_PLATFORMS (createHermetic)
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:139 SkyFunctions.REGISTERED_EXECUTION_PLATFORMS (createHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
     /// Java: a record of the platform keys (a list) and the nullable rejection reasons (a map).
     // Java: com/google/devtools/build/lib/skyframe/toolchains/RegisteredExecutionPlatformsValue.java:42 RegisteredExecutionPlatformsValue

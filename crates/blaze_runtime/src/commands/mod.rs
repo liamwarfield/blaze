@@ -15,6 +15,7 @@ pub mod bep;
 pub mod build;
 pub mod coverage;
 mod exclusive_test_order;
+pub mod mobile_install;
 pub mod mod_command;
 pub mod target_patterns_helper;
 // run.

@@ -22,6 +22,7 @@ impl BuildConfigurationKey {
         BuildConfigurationKey { options }
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKey.java:49 BuildConfigurationKey.getOptions
     pub fn get_options(&self) -> &Arc<BuildOptions> {
         &self.options
     }
@@ -32,12 +33,15 @@ impl BuildConfigurationKey {
     }
 }
 
+// Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKey.java:63 BuildConfigurationKey.equals
 impl PartialEq for BuildConfigurationKey {
     fn eq(&self, other: &Self) -> bool {
         *self.options == *other.options
     }
 }
 impl Eq for BuildConfigurationKey {}
+// Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKey.java:74 BuildConfigurationKey.hashCode
+// PORT: skipped, key interning and the serialization codec (remote analysis caching, not ported): BuildConfigurationKey.getSkyKeyInterner, BuildConfigurationKey.codec, BuildConfigurationKey.CodecHolder.<init>
 impl Hash for BuildConfigurationKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.options.hash(state)
@@ -69,6 +73,7 @@ pub struct BuildConfigurationKeyValueKey {
 }
 
 impl BuildConfigurationKeyValueKey {
+    // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyValue.java:37 BuildConfigurationKeyValue.Key.create
     pub fn create(build_options: Arc<BuildOptions>) -> Self {
         BuildConfigurationKeyValueKey {
             build_options,
@@ -95,6 +100,7 @@ impl BuildConfigurationKeyValueKey {
         }
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyValue.java:53 BuildConfigurationKeyValue.Key.buildOptions
     pub fn build_options(&self) -> &Arc<BuildOptions> {
         &self.build_options
     }
@@ -104,12 +110,17 @@ impl BuildConfigurationKeyValueKey {
     }
 }
 
+// Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyValue.java:63 BuildConfigurationKeyValue.Key.equals
+// PORT: Java compares the options only; the producer label is part of the request here (see
+// `producer_label`).
 impl PartialEq for BuildConfigurationKeyValueKey {
     fn eq(&self, other: &Self) -> bool {
         *self.build_options == *other.build_options && self.producer_label == other.producer_label
     }
 }
 impl Eq for BuildConfigurationKeyValueKey {}
+// Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyValue.java:75 BuildConfigurationKeyValue.Key.hashCode
+// PORT: skipped, key interning (the keys are plain values here): BuildConfigurationKeyValue.Key.intern, BuildConfigurationKeyValue.Key.getSkyKeyInterner
 impl Hash for BuildConfigurationKeyValueKey {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.build_options.hash(state);

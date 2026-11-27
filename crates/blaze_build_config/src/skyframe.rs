@@ -34,8 +34,9 @@ use crate::platform::{PlatformValueKey, SharedPlatformValueProvider};
 
 impl Key for BuildConfigurationKey {
     type Value = BuildConfigurationValue;
+    // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKey.java:54 BuildConfigurationKey.functionName
     const FUNCTION: SkyFunctionName = SkyFunctionName("BUILD_CONFIGURATION");
-    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:111 SkyFunctions.BUILD_CONFIGURATION (createHermetic)
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:110 SkyFunctions.BUILD_CONFIGURATION (createHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
     /// Java: the build options, workspace name, sibling repository layout and mnemonic.
     // Java: com/google/devtools/build/lib/analysis/config/BuildConfigurationValue.java:341 BuildConfigurationValue.equals
@@ -47,8 +48,9 @@ impl Key for BuildConfigurationKey {
 impl Key for BuildConfigurationKeyValueKey {
     /// `BuildConfigurationKeyValue.buildConfigurationKey()`.
     type Value = BuildConfigurationKey;
+    // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyValue.java:58 BuildConfigurationKeyValue.Key.functionName
     const FUNCTION: SkyFunctionName = SkyFunctionName("BUILD_CONFIGURATION_KEY");
-    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:113 SkyFunctions.BUILD_CONFIGURATION_KEY (createHermetic)
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:112 SkyFunctions.BUILD_CONFIGURATION_KEY (createHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
     /// Java: the `BuildConfigurationKey`, which compares its options.
     // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyValue.java:105 BuildConfigurationKeyValue.equals
@@ -85,7 +87,7 @@ impl Key for BaselineOptionsKey {
     /// `BaselineOptionsValue.toOptions()`.
     type Value = Arc<BuildOptions>;
     const FUNCTION: SkyFunctionName = SkyFunctionName("BASELINE_OPTIONS");
-    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:116 SkyFunctions.BASELINE_OPTIONS (createNonHermetic)
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:115 SkyFunctions.BASELINE_OPTIONS (createNonHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
     /// Java: a record of the `BuildOptions` (`BuildOptions.equals`, by checksum).
     // Java: com/google/devtools/build/lib/analysis/config/transitions/BaselineOptionsValue.java:50 BaselineOptionsValue
@@ -111,7 +113,7 @@ impl fmt::Debug for PlatformMappingSkyKey {
 impl Key for PlatformMappingSkyKey {
     type Value = PlatformMappingValue;
     const FUNCTION: SkyFunctionName = SkyFunctionName("PLATFORM_MAPPING");
-    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:131 SkyFunctions.PLATFORM_MAPPING (createHermetic)
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:130 SkyFunctions.PLATFORM_MAPPING (createHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
     /// Java: both mappings as maps, and the options classes (a server constant, not kept here). PORT: `flags_to_platforms` is compared in order; a reordered mappings file is unequal here, so Rust prunes less, never more.
     // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingValue.java:162 PlatformMappingValue.equals
@@ -151,7 +153,7 @@ impl PlatformMappingValue {
         Self::new(IndexMap::new(), Vec::new())
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingValue.java:103 PlatformMappingValue.map
+    // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingValue.java:102 PlatformMappingValue.map
     /// Maps one `BuildOptions` to another's `BuildConfigurationKey` by way of mappings provided
     /// in a file.
     ///
@@ -370,7 +372,7 @@ fn persistent(e: impl Into<ConfigurationError>) -> ComputeError {
 /// message, code), Location.BUILTIN))`.
 // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:353 PlatformMappingFunction.PlatformMappingFunctionException.<init>
 fn platform_mapping_function_exception_missing_input_file(message: String) -> ComputeError {
-    // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingException.java:22 PlatformMappingException.<init>
+    // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingException.java:21 PlatformMappingException.<init>
     // `super(cause)`: the message is the cause's toString().
     persistent(ConfigurationError::PlatformMapping(format!(
         "com.google.devtools.build.lib.actions.MissingInputFileException: {message}"
@@ -475,6 +477,19 @@ fn compute_platform_mapping(
 
 // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyFunction.java:42 BuildConfigurationKeyFunction.compute
 /// Delegates to `BuildConfigurationKeyProducer` ([`build_configuration_key_producer`]).
+///
+/// PORT: Java's `Sink` collects the producer's result or error and `checkErrors` rethrows the
+/// error; here the producer returns it, so the sink's methods are the producer's return value.
+// Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyFunction.java:87 BuildConfigurationKeyFunction.Sink.acceptBuildOptionsScopeFunctionError
+// Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyFunction.java:92 BuildConfigurationKeyFunction.Sink.acceptOptionsParsingError
+// Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyFunction.java:97 BuildConfigurationKeyFunction.Sink.acceptPlatformMappingError
+// Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyFunction.java:102 BuildConfigurationKeyFunction.Sink.acceptPlatformFlagsError
+// Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyFunction.java:107 BuildConfigurationKeyFunction.Sink.acceptTransitionedConfigurations
+// Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyFunction.java:112 BuildConfigurationKeyFunction.Sink.checkErrors
+// Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyFunction.java:132 BuildConfigurationKeyFunction.Sink.getKey
+// Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyValue.java:90 BuildConfigurationKeyValue.create
+// Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyValue.java:100 BuildConfigurationKeyValue.buildConfigurationKey
+// PORT: skipped, the value is the BuildConfigurationKey itself (Key::Value), which has its own equals, hashCode and toString: BuildConfigurationKeyValue.<init>, BuildConfigurationKeyValue.hashCode, BuildConfigurationKeyValue.toString
 fn compute_build_configuration_key(
     key: &BuildConfigurationKeyValueKey,
     env: &mut Environment<'_>,
@@ -539,8 +554,14 @@ pub fn build_configuration_key_producer(
                 Ok(Some(target_platform_value)) => target_platform_value,
                 // Java: BuildConfigurationKeyProducer.checkTargetPlatformFlags, "Error.": DONE.
                 Ok(None) => return Ok(None),
-                // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyFunction.java:72 BuildConfigurationKeyFunction.compute
+                // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyFunction.java:42 BuildConfigurationKeyFunction.compute
                 // `throw new BuildConfigurationKeyFunctionException(e)` (Transience.PERSISTENT).
+                // PORT: the four constructors differ only in the cause's type; each is a
+                // persistent SkyFunctionException of its cause, as here.
+                // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyFunction.java:143 BuildConfigurationKeyFunction.BuildConfigurationKeyFunctionException.<init>
+                // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyFunction.java:147 BuildConfigurationKeyFunction.BuildConfigurationKeyFunctionException.<init>
+                // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyFunction.java:152 BuildConfigurationKeyFunction.BuildConfigurationKeyFunctionException.<init>
+                // Java: com/google/devtools/build/lib/skyframe/config/BuildConfigurationKeyFunction.java:157 BuildConfigurationKeyFunction.BuildConfigurationKeyFunctionException.<init>
                 Err(invalid_platform_exception) => {
                     return Err(SkyFunctionException::from_cause(
                         invalid_platform_exception,
@@ -666,20 +687,20 @@ impl fmt::Display for PlatformMappingParsingException {
     }
 }
 
-// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:350 PlatformMappingFunction.parsingException
+// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:321 PlatformMappingFunction.parsingException
 fn parsing_exception(message: String) -> PlatformMappingParsingException {
     PlatformMappingParsingException::new(message)
 }
 
 /// Simple data holder to make testing easier. Only for use internal to this file/tests thereof.
-// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:362 PlatformMappingFunction.Mappings
+// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:333 PlatformMappingFunction.Mappings
 pub struct Mappings {
     pub platforms_to_flags: IndexMap<Label, Arc<ParsedFlagsValue>>,
     pub flags_to_platforms: Vec<(Arc<ParsedFlagsValue>, Label)>,
 }
 
 impl Mappings {
-    // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:374 PlatformMappingFunction.Mappings.toPlatformMappingValue
+    // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:344 PlatformMappingFunction.Mappings.toPlatformMappingValue
     fn to_platform_mapping_value(self) -> PlatformMappingValue {
         PlatformMappingValue::new(self.platforms_to_flags, self.flags_to_platforms)
     }
@@ -785,7 +806,7 @@ pub fn parse(
 }
 
 /// `Label.RepoContext.rootPackage()` of `RepoContext.of(RepositoryName.MAIN, mapping)`.
-// Java: com/google/devtools/build/lib/cmdline/Label.java:125 Label.RepoContext.rootPackage
+// Java: com/google/devtools/build/lib/cmdline/Label.java:127 Label.RepoContext.rootPackage
 fn main_root_package(main_repo_mapping: &RepositoryMapping) -> blaze_cmdline::LabelPackageContext {
     blaze_cmdline::LabelPackageContext::of(
         &blaze_cmdline::PackageIdentifier::create(
@@ -796,7 +817,7 @@ fn main_root_package(main_repo_mapping: &RepositoryMapping) -> blaze_cmdline::La
     )
 }
 
-// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:211 PlatformMappingFunction.parseFlags
+// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:208 PlatformMappingFunction.parseFlags
 /// Converts a set of native and Starlark flag settings to a `ParsedFlagsValue`, or returns
 /// `None` if not all Skyframe deps are ready.
 fn parse_flags(
@@ -820,7 +841,7 @@ fn parse_flags(
     }
 }
 
-// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:233 PlatformMappingFunction.readPlatformsToFlags
+// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:230 PlatformMappingFunction.readPlatformsToFlags
 /// Returns a parsed `platform -> flags setting`, or `None` if not all Skyframe deps are ready.
 fn read_platforms_to_flags(
     it: &mut LineIterator,
@@ -861,7 +882,7 @@ fn read_platforms_to_flags(
     Ok(Ok(Some(result)))
 }
 
-// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:264 PlatformMappingFunction.readFlagsToPlatforms
+// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:262 PlatformMappingFunction.readFlagsToPlatforms
 /// Returns a parsed `flags -> platform setting`, or `None` if not all Skyframe deps are ready.
 fn read_flags_to_platforms(
     it: &mut LineIterator,
@@ -904,7 +925,7 @@ fn read_flags_to_platforms(
     Ok(Ok(Some(flags_to_platforms)))
 }
 
-// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:296 PlatformMappingFunction.readPlatform
+// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:290 PlatformMappingFunction.readPlatform
 fn read_platform(
     it: &mut LineIterator,
     main_repo_mapping: &RepositoryMapping,
@@ -924,7 +945,7 @@ fn read_platform(
         .map_err(|_| parsing_exception(format!("Expected platform label but got {}", line)))
 }
 
-// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:311 PlatformMappingFunction.readFlags
+// Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingFunction.java:304 PlatformMappingFunction.readFlags
 fn read_flags(it: &mut LineIterator) -> Result<Vec<String>, PlatformMappingParsingException> {
     let mut flags = Vec::new();
     // Note: Short form flags are not supported.
@@ -1684,7 +1705,7 @@ impl EventHandler for ErrorSensing<'_> {
 }
 
 impl Hash for PlatformMappingValue {
-    // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingValue.java:174 PlatformMappingValue.hashCode
+    // Java: com/google/devtools/build/lib/skyframe/config/PlatformMappingValue.java:175 PlatformMappingValue.hashCode
     fn hash<H: Hasher>(&self, state: &mut H) {
         for (flags, platform) in &self.flags_to_platforms {
             flags.hash(state);

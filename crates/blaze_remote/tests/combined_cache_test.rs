@@ -26,12 +26,23 @@ use blaze_exec::actions::{
 };
 use blaze_exec::exec::{ProgressStatus, SpawnExecutionContext};
 use blaze_exec::util::FileOutErr;
+use blaze_optdefs::misc::remote_options::{ChunkingFunctionValue, RemoteOptions};
+use blaze_remote::authandtls::NO_CREDENTIALS;
 use blaze_remote::combined_cache::CombinedCache;
+use blaze_remote::common::CacheNotFoundException;
 use blaze_remote::common::errors::{self, io_exception};
 use blaze_remote::common::{
     ActionKey, Blob, MissingDigestsFinder, RemoteActionExecutionContext, RemoteCacheClient,
 };
-use blaze_remote::reapi::{ActionResult, Digest, RequestMetadata, ServerCapabilities};
+use blaze_remote::grpc::ReferenceCountedChannel;
+use blaze_remote::grpc::channel::CapabilitiesFetcher;
+use blaze_remote::grpc_cache_client::GrpcCacheClient;
+use blaze_remote::reapi::{
+    ActionResult, CacheCapabilities, Digest, FastCdc2020Params, FindMissingBlobsResponse,
+    RequestMetadata, ServerCapabilities, SpliceBlobResponse, SplitBlobResponse,
+};
+use blaze_remote::remote_retrier::{EXPERIMENTAL_GRPC_RESULT_CLASSIFIER, RemoteRetrier};
+use blaze_remote::retrier::{ALLOW_ALL_CALLS, TokioRetryScheduler};
 use blaze_remote::runtime::{block_on, get_from_future};
 use blaze_remote::util::DigestUtil;
 use blaze_remote::util::async_task_cache::AsyncTaskCacheNoResult;
@@ -42,6 +53,8 @@ use futures::future::BoxFuture;
 use indexmap::{IndexMap, IndexSet};
 use parking_lot::Mutex;
 
+use tonic::Status;
+use util::grpc_server::{FakeByteStream, FakeContentAddressableStorage, FakeServer, read_response};
 use util::in_memory_cache_client::{InMemoryCacheClient, InMemoryCombinedCache};
 
 /// An `InputMetadataProvider` mock.
@@ -712,34 +725,359 @@ fn shutdown_now_cancel_in_progress_uploads() {
     });
 }
 
+/// `chunkingCapabilities()`: FastCDC 2020 with an average chunk size of 1024 (a chunking
+/// threshold of 4 * 1024).
+// Java: com/google/devtools/build/lib/remote/CombinedCacheTest.java:1157 CombinedCacheTest.chunkingCapabilities
+fn chunking_capabilities() -> ServerCapabilities {
+    ServerCapabilities {
+        cache_capabilities: Some(CacheCapabilities {
+            fast_cdc_2020_params: Some(FastCdc2020Params {
+                avg_chunk_size_bytes: 1024,
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        ..Default::default()
+    }
+}
+
+/// `newChunkingGrpcCacheClient()`.
+///
+/// PORT: Java spies on a `GrpcCacheClient` over a mocked channel and stubs `splitBlob`,
+/// `spliceBlob`, `findMissingDigests` and `downloadBlob`; here a real client calls a fake server
+/// (started with the services registered so far) whose handlers give the same answers, with
+/// `--experimental_remote_cache_chunking` set so that `splitBlob` and `spliceBlob` make their
+/// calls (the stubs replace those methods whole in Java). The capabilities are
+/// `chunkingCapabilities()`, as the stubbed `getServerCapabilities`. No retries (Java's retrier
+/// is a mock the stubbed methods never reach).
+// Java: com/google/devtools/build/lib/remote/CombinedCacheTest.java:1105 CombinedCacheTest.newChunkingGrpcCacheClient
+fn new_chunking_grpc_cache_client(server: &mut FakeServer) -> Arc<GrpcCacheClient> {
+    server.start();
+    let capabilities_fetcher: CapabilitiesFetcher = Arc::new(
+        |_channel: ReferenceCountedChannel| -> BoxFuture<'static, io::Result<ServerCapabilities>> {
+            Box::pin(async { Ok(chunking_capabilities()) })
+        },
+    );
+    let channel = server.channel(vec![], Some(capabilities_fetcher));
+    let mut options = RemoteOptions::default();
+    options.experimental_remote_cache_chunking = true;
+    options.remote_max_retry_attempts = 0;
+    let retrier = Arc::new(RemoteRetrier::new(
+        &options,
+        EXPERIMENTAL_GRPC_RESULT_CLASSIFIER.clone(),
+        Arc::new(TokioRetryScheduler),
+        ALLOW_ALL_CALLS.clone(),
+    ));
+    Arc::new(GrpcCacheClient::new(
+        channel,
+        NO_CREDENTIALS.clone(),
+        &options,
+        retrier,
+        DigestUtil::new(DigestHashFunction::Sha256),
+    ))
+}
+
+/// `newChunkingCombinedCache(grpcCacheClient)`.
+// Java: com/google/devtools/build/lib/remote/CombinedCacheTest.java:1121 CombinedCacheTest.newChunkingCombinedCache
+fn new_chunking_combined_cache(grpc_cache_client: &Arc<GrpcCacheClient>) -> CombinedCache {
+    let client: Arc<dyn RemoteCacheClient> = grpc_cache_client.clone();
+    CombinedCache::new(
+        Some(client),
+        /* diskCacheClient= */ None,
+        /* symlinkTemplate= */ None,
+        DigestUtil::new(DigestHashFunction::Sha256),
+        /* chunkingFunction= */ Some(ChunkingFunctionValue::FAST_CDC_2020),
+    )
+}
+
+/// The ByteStream `Read` of the fake server: `reads` answers by blob hash (a missing hash is
+/// `NOT_FOUND`, as a `CacheNotFoundException` of the stubbed `downloadBlob`); each read is
+/// counted by hash. `wait_for` delays the answer for a hash until the flag is set.
+fn chunk_byte_stream(
+    reads: HashMap<String, Vec<u8>>,
+    read_counts: Arc<Mutex<HashMap<String, usize>>>,
+    wait_for: Option<(String, Arc<AtomicBool>)>,
+) -> FakeByteStream {
+    FakeByteStream {
+        read: Some(Box::new(move |request| {
+            let resource_name = request.into_inner().resource_name;
+            // "blobs/<hash>/<size>"
+            let hash = resource_name
+                .split('/')
+                .nth(1)
+                .expect("a blob resource name")
+                .to_string();
+            *read_counts.lock().entry(hash.clone()).or_insert(0) += 1;
+            let answer = match reads.get(&hash) {
+                Some(data) => Ok(read_response(data.clone())),
+                None => Err(Status::not_found(format!("{hash} not found"))),
+            };
+            let wait = wait_for
+                .as_ref()
+                .filter(|(waiting_hash, _)| *waiting_hash == hash)
+                .map(|(_, flag)| flag.clone());
+            Box::pin(futures::stream::once(async move {
+                if let Some(flag) = wait {
+                    while !flag.load(Ordering::SeqCst) {
+                        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                    }
+                }
+                answer
+            }))
+        })),
+        ..Default::default()
+    }
+}
+
+/// `new ContentAddressableStorageImplBase() { splitBlob(...) }` answering `chunk_digests` for
+/// `blob_digest`.
+fn split_blob_cas(
+    blob_digest: Digest,
+    chunk_digests: Vec<Digest>,
+) -> FakeContentAddressableStorage {
+    FakeContentAddressableStorage {
+        split_blob: Some(Box::new(move |request| {
+            assert_eq!(request.get_ref().blob_digest.as_ref(), Some(&blob_digest));
+            Ok(SplitBlobResponse {
+                chunk_digests: chunk_digests.clone(),
+                ..Default::default()
+            })
+        })),
+        ..Default::default()
+    }
+}
+
+/// A `ByteArrayOutputStream` that sets `written` once it holds any bytes.
+struct SignallingOutputStream {
+    data: Arc<Mutex<Vec<u8>>>,
+    written: Arc<AtomicBool>,
+}
+
+impl Write for SignallingOutputStream {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.data.lock().extend_from_slice(buf);
+        if !buf.is_empty() {
+            self.written.store(true, Ordering::SeqCst);
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 #[test]
-#[ignore = "content-defined chunking is not ported"]
+// Java: com/google/devtools/build/lib/remote/CombinedCacheTest.java:895 CombinedCacheTest.uploadFile_chunkedUpload_deduplicatesRemoteUpload
 fn upload_file_chunked_upload_deduplicates_remote_upload() {
-    blaze_util::unported!(
-        "GrpcCacheClient.spliceBlob, ChunkedBlobUploader (content-defined chunking)"
-    );
+    let f = Fixture::set_up();
+    let context = f.remote_action_execution_context();
+    let mut server = FakeServer::new();
+    let find_missing_calls = Arc::new(AtomicI32::new(0));
+    let splice_calls = Arc::new(AtomicI32::new(0));
+    let splice_started = Arc::new(AtomicBool::new(false));
+    // spliceFuture: the splice call answers once this is set.
+    let splice_released = Arc::new(AtomicBool::new(false));
+    {
+        let find_missing_calls = find_missing_calls.clone();
+        let splice_calls = splice_calls.clone();
+        let splice_started = splice_started.clone();
+        let splice_released = splice_released.clone();
+        server
+            .service_registry
+            .add_content_addressable_storage(FakeContentAddressableStorage {
+                // findMissingDigests: immediateFuture(ImmutableSet.of())
+                find_missing_blobs: Some(Box::new(move |_request| {
+                    find_missing_calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(FindMissingBlobsResponse::default())
+                })),
+                splice_blob: Some(Box::new(move |_request| {
+                    splice_calls.fetch_add(1, Ordering::SeqCst);
+                    splice_started.store(true, Ordering::SeqCst);
+                    // The handler is synchronous; it holds its server thread until released.
+                    tokio::task::block_in_place(|| {
+                        while !splice_released.load(Ordering::SeqCst) {
+                            std::thread::sleep(std::time::Duration::from_millis(5));
+                        }
+                    });
+                    Ok(SpliceBlobResponse::default())
+                })),
+                ..Default::default()
+            });
+    }
+    let grpc_cache_client = new_chunking_grpc_cache_client(&mut server);
+    let combined_cache = new_chunking_combined_cache(&grpc_cache_client);
+    let data = vec![0u8; 8192];
+    let file = f.exec_root.get_relative_str("chunked-output");
+    std::fs::write(file.get_path_string(), &data).unwrap();
+    let digest = f.digest_util.compute(&data);
+
+    block_on(async {
+        let mut first_upload = Box::pin(combined_cache.upload_file(&context, &digest, &file));
+        // assertThat(spliceStarted.await(1, TimeUnit.SECONDS)).isTrue()
+        // PORT: a Java future runs as soon as it is made; drive this one until the server has the
+        // splice call.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !splice_started.load(Ordering::SeqCst) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the splice did not start"
+            );
+            if let Poll::Ready(result) = futures::poll!(first_upload.as_mut()) {
+                panic!("the upload finished before the splice was answered: {result:?}");
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        let mut second_upload = Box::pin(combined_cache.upload_file(&context, &digest, &file));
+        assert!(futures::poll!(second_upload.as_mut()).is_pending());
+
+        assert_eq!(grpc_cache_client.get_upload_subscriber_count(&digest), 2);
+        assert_eq!(find_missing_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(splice_calls.load(Ordering::SeqCst), 1);
+
+        // spliceFuture.set(null)
+        splice_released.store(true, Ordering::SeqCst);
+        let (first, second) = futures::join!(first_upload, second_upload);
+        first.unwrap();
+        second.unwrap();
+    });
+    combined_cache.release();
 }
 
 #[test]
-#[ignore = "content-defined chunking is not ported"]
+// Java: com/google/devtools/build/lib/remote/CombinedCacheTest.java:957 CombinedCacheTest.downloadBlob_chunkMissingAfterPartialWrite_doesNotRestartIntoSameStream
 fn download_blob_chunk_missing_after_partial_write_does_not_restart_into_same_stream() {
-    blaze_util::unported!(
-        "GrpcCacheClient.splitBlob, ChunkedBlobDownloader (content-defined chunking)"
+    let f = Fixture::set_up();
+    let context = f.remote_action_execution_context();
+    // Larger than the chunking threshold (4 * 1024, derived from the advertised average chunk size
+    // of 1024) so that the download is chunked, with chunks small enough not to be chunked again.
+    let chunk1_data = vec![1u8; 4096];
+    let chunk2_data = vec![2u8; 4096];
+    let blob_data = [chunk1_data.clone(), chunk2_data.clone()].concat();
+    let blob_digest = f.digest_util.compute(&blob_data);
+    let chunk1_digest = f.digest_util.compute(&chunk1_data);
+    let chunk2_digest = f.digest_util.compute(&chunk2_data);
+
+    let mut server = FakeServer::new();
+    server
+        .service_registry
+        .add_content_addressable_storage(split_blob_cas(
+            blob_digest.clone(),
+            vec![chunk1_digest.clone(), chunk2_digest.clone()],
+        ));
+    let read_counts = Arc::new(Mutex::new(HashMap::new()));
+    let written = Arc::new(AtomicBool::new(false));
+    // The second chunk was evicted between SplitBlob and the read of the chunk itself. Its
+    // answer waits until the first chunk is written (Java's stubs answer synchronously, in
+    // order). The whole blob is only reached if the whole-blob fallback is (incorrectly)
+    // attempted, in which case `out` ends up holding the first chunk followed by the entire blob.
+    server.service_registry.add_byte_stream(chunk_byte_stream(
+        HashMap::from([
+            (chunk1_digest.hash.clone(), chunk1_data.clone()),
+            (blob_digest.hash.clone(), blob_data.clone()),
+        ]),
+        read_counts.clone(),
+        Some((chunk2_digest.hash.clone(), written.clone())),
+    ));
+    let grpc_cache_client = new_chunking_grpc_cache_client(&mut server);
+    let combined_cache = new_chunking_combined_cache(&grpc_cache_client);
+    let out_data = Arc::new(Mutex::new(Vec::new()));
+    let mut out = SignallingOutputStream {
+        data: out_data.clone(),
+        written,
+    };
+
+    let e =
+        block_on(combined_cache.download_blob_to(&context, &blob_digest, &mut out)).unwrap_err();
+    assert!(
+        errors::downcast_ref::<CacheNotFoundException>(&e).is_some(),
+        "{e:?}"
     );
+
+    // Falling back to a whole-blob download here would append the blob to the chunks already
+    // written, silently producing a blob longer than its digest claims.
+    assert_eq!(read_counts.lock().get(&blob_digest.hash), None);
+    assert_eq!(*out_data.lock(), chunk1_data);
+    combined_cache.release();
 }
 
 #[test]
-#[ignore = "content-defined chunking is not ported"]
+// Java: com/google/devtools/build/lib/remote/CombinedCacheTest.java:1024 CombinedCacheTest.downloadBlob_firstChunkMissing_doesNotFallBackToWholeBlobDownload
 fn download_blob_first_chunk_missing_does_not_fall_back_to_whole_blob_download() {
-    blaze_util::unported!(
-        "GrpcCacheClient.splitBlob, ChunkedBlobDownloader (content-defined chunking)"
+    let f = Fixture::set_up();
+    let context = f.remote_action_execution_context();
+    let chunk1_data = vec![1u8; 4096];
+    let chunk2_data = vec![2u8; 4096];
+    let blob_data = [chunk1_data.clone(), chunk2_data.clone()].concat();
+    let blob_digest = f.digest_util.compute(&blob_data);
+    let chunk1_digest = f.digest_util.compute(&chunk1_data);
+    let chunk2_digest = f.digest_util.compute(&chunk2_data);
+
+    let mut server = FakeServer::new();
+    server
+        .service_registry
+        .add_content_addressable_storage(split_blob_cas(
+            blob_digest.clone(),
+            vec![chunk1_digest.clone(), chunk2_digest.clone()],
+        ));
+    let read_counts = Arc::new(Mutex::new(HashMap::new()));
+    // The first chunk is missing (CacheNotFoundException); the whole blob is there.
+    // PORT: Java leaves the second chunk unstubbed (the spy's real method on a mocked channel);
+    // the fake server answers NOT_FOUND for it too.
+    server.service_registry.add_byte_stream(chunk_byte_stream(
+        HashMap::from([(blob_digest.hash.clone(), blob_data.clone())]),
+        read_counts.clone(),
+        None,
+    ));
+    let grpc_cache_client = new_chunking_grpc_cache_client(&mut server);
+    let combined_cache = new_chunking_combined_cache(&grpc_cache_client);
+    let mut out: Vec<u8> = Vec::new();
+
+    // Nothing has been written yet, so restarting would be safe, but the blob is genuinely
+    // incomplete in the CAS. Report it as missing and let lost input handling regenerate it
+    // rather than papering over it, which also keeps the behavior independent of which chunk
+    // happens to be missing.
+    let e =
+        block_on(combined_cache.download_blob_to(&context, &blob_digest, &mut out)).unwrap_err();
+    assert!(
+        errors::downcast_ref::<CacheNotFoundException>(&e).is_some(),
+        "{e:?}"
     );
+
+    assert_eq!(read_counts.lock().get(&blob_digest.hash), None);
+    combined_cache.release();
 }
 
 #[test]
-#[ignore = "content-defined chunking is not ported"]
+// Java: com/google/devtools/build/lib/remote/CombinedCacheTest.java:1078 CombinedCacheTest.downloadBlob_blobNotSplittable_fallsBackToWholeBlobDownload
 fn download_blob_blob_not_splittable_falls_back_to_whole_blob_download() {
-    blaze_util::unported!(
-        "GrpcCacheClient.splitBlob, BlobNotSplittableException, ChunkedBlobDownloader (content-defined chunking)"
-    );
+    let f = Fixture::set_up();
+    let context = f.remote_action_execution_context();
+    let blob_data = vec![1u8; 8192];
+    let blob_digest = f.digest_util.compute(&blob_data);
+
+    let mut server = FakeServer::new();
+    // What GrpcCacheClient#splitBlob reports when the server answers NOT_FOUND or UNIMPLEMENTED.
+    // PORT: Java stubs splitBlob to fail with BlobNotSplittableException; the fake server answers
+    // NOT_FOUND, which the real splitBlob turns into it.
+    server
+        .service_registry
+        .add_content_addressable_storage(FakeContentAddressableStorage {
+            split_blob: Some(Box::new(|_request| Err(Status::not_found("no chunks")))),
+            ..Default::default()
+        });
+    server.service_registry.add_byte_stream(chunk_byte_stream(
+        HashMap::from([(blob_digest.hash.clone(), blob_data.clone())]),
+        Arc::new(Mutex::new(HashMap::new())),
+        None,
+    ));
+    let grpc_cache_client = new_chunking_grpc_cache_client(&mut server);
+    let combined_cache = new_chunking_combined_cache(&grpc_cache_client);
+    let mut out: Vec<u8> = Vec::new();
+
+    block_on(combined_cache.download_blob_to(&context, &blob_digest, &mut out)).unwrap();
+
+    assert_eq!(out, blob_data);
+    combined_cache.release();
 }

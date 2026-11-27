@@ -29,6 +29,9 @@ pub type UnloadedToolchainContextSupplier<'a> =
 /// [`UnloadedToolchainContextsInputs`]. Returns `Ok(None)` when a dependency is missing (Java:
 /// the state machine does not complete).
 // Java: com/google/devtools/build/lib/analysis/producers/UnloadedToolchainContextsProducer.java:63 UnloadedToolchainContextsProducer.<init>
+// Java: com/google/devtools/build/lib/analysis/producers/UnloadedToolchainContextsProducer.java:37 UnloadedToolchainContextsProducer.ResultSink.acceptUnloadedToolchainContexts
+// Java: com/google/devtools/build/lib/analysis/producers/UnloadedToolchainContextsProducer.java:40 UnloadedToolchainContextsProducer.ResultSink.acceptUnloadedToolchainContextsError
+// PORT: the result sink is the return value.
 pub fn produce_unloaded_toolchain_contexts(
     env: &mut Environment<'_>,
     unloaded_toolchain_contexts_inputs: &UnloadedToolchainContextsInputs,
@@ -39,6 +42,7 @@ pub fn produce_unloaded_toolchain_contexts(
 /// [`produce_unloaded_toolchain_contexts`] with the aspect function's
 /// `baseTargetPrerequisitesSupplier`.
 // Java: com/google/devtools/build/lib/analysis/producers/UnloadedToolchainContextsProducer.java:89 UnloadedToolchainContextsProducer.step
+// Java: com/google/devtools/build/lib/analysis/producers/UnloadedToolchainContextsProducer.java:77 UnloadedToolchainContextsProducer.<init>
 pub fn produce_unloaded_toolchain_contexts_with_supplier(
     env: &mut Environment<'_>,
     unloaded_toolchain_contexts_inputs: &UnloadedToolchainContextsInputs,
@@ -75,6 +79,7 @@ pub fn produce_unloaded_toolchain_contexts_with_supplier(
         );
     let mut toolchain_contexts_error: Option<ToolchainException> = None;
 
+    // Java: com/google/devtools/build/lib/analysis/producers/UnloadedToolchainContextsProducer.java:129 UnloadedToolchainContextsProducer.lookupToolchainContext
     // Java: lookupToolchainContext. Contexts the supplier provides are accepted directly; the
     // others are looked up together (Tasks.lookUp).
     let mut supplied: Vec<Option<Arc<UnloadedToolchainContext>>> = Vec::new();
@@ -90,6 +95,7 @@ pub fn produce_unloaded_toolchain_contexts_with_supplier(
     let results = env.get_values_and_exceptions(&sky_keys)?;
 
     for ((exec_group_name, key), supplied) in lookups.iter().zip(supplied) {
+        // Java: com/google/devtools/build/lib/analysis/producers/UnloadedToolchainContextsProducer.java:153 UnloadedToolchainContextsProducer.ToolchainContextLookupCallback.<init>
         // Java: ToolchainContextLookupCallback.acceptValueOrException.
         let value_or_error: Result<Option<Arc<UnloadedToolchainContext>>, ToolchainException> =
             match supplied {
@@ -114,7 +120,7 @@ pub fn produce_unloaded_toolchain_contexts_with_supplier(
         }
     }
 
-    // Java: buildToolchainContexts.
+    // Java: com/google/devtools/build/lib/analysis/producers/UnloadedToolchainContextsProducer.java:185 UnloadedToolchainContextsProducer.buildToolchainContexts
     if let Some(error) = toolchain_contexts_error {
         return Ok(Some(Err(error)));
     }

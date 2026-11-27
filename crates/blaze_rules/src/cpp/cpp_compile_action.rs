@@ -1394,7 +1394,7 @@ fn put_or_throw(map: &mut IndexMap<String, String>, key: &str, value: String) {
 /// `FileSystemUtils.readLinesAsLatin1(path)`: the lines of the file, split at `\n`, `\r` and
 /// `\r\n` (Guava `CharSource.readLines`).
 // Java: com/google/devtools/build/lib/vfs/FileSystemUtils.java:794 FileSystemUtils.readLinesAsLatin1
-fn read_lines_as_latin1(path: &Path) -> std::io::Result<Vec<String>> {
+pub(crate) fn read_lines_as_latin1(path: &Path) -> std::io::Result<Vec<String>> {
     use std::io::Read;
     let mut bytes = Vec::new();
     path.get_input_stream()?.read_to_end(&mut bytes)?;

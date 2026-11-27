@@ -16,7 +16,7 @@ use blaze_events::{Event, EventHandler};
 use indexmap::{IndexMap, IndexSet};
 
 /// The three indentation levels used in `debugMessage`.
-// Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:124 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.IndentLevel
+// Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:121 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.IndentLevel
 #[derive(Clone, Copy)]
 enum IndentLevel {
     TargetPlatformLevel,
@@ -25,6 +25,7 @@ enum IndentLevel {
 }
 
 impl IndentLevel {
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:132 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.IndentLevel.indent
     fn indent(self) -> &'static str {
         match self {
             IndentLevel::TargetPlatformLevel => "",
@@ -34,7 +35,7 @@ impl IndentLevel {
     }
 }
 
-// Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:33 SingleToolchainResolutionDebugPrinter
+// Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:34 SingleToolchainResolutionDebugPrinter
 /// A helper for printing debug messages from single toolchain resolution.
 pub struct SingleToolchainResolutionDebugPrinter {
     /// `EventHandlerImpl` when true, `NoopPrinter` when false.
@@ -43,7 +44,9 @@ pub struct SingleToolchainResolutionDebugPrinter {
 }
 
 impl SingleToolchainResolutionDebugPrinter {
-    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:34 SingleToolchainResolutionDebugPrinter.create
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:35 SingleToolchainResolutionDebugPrinter.create
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:75 SingleToolchainResolutionDebugPrinter.NoopPrinter.<init>
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:140 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.<init>
     pub fn create(debug: bool) -> Self {
         SingleToolchainResolutionDebugPrinter {
             enabled: debug,
@@ -51,7 +54,7 @@ impl SingleToolchainResolutionDebugPrinter {
         }
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:149 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.debugMessage
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:145 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.debugMessage
     fn debug_message(&mut self, indent: IndentLevel, message: String) {
         let padding = if self.resolution_trace.is_empty() {
             String::new()
@@ -66,7 +69,9 @@ impl SingleToolchainResolutionDebugPrinter {
         ));
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:156 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.finishDebugging
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:152 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.finishDebugging
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:43 SingleToolchainResolutionDebugPrinter.finishDebugging
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:78 SingleToolchainResolutionDebugPrinter.NoopPrinter.finishDebugging
     pub fn finish_debugging(&self, event_handler: &dyn EventHandler) {
         if !self.enabled {
             return;
@@ -74,7 +79,9 @@ impl SingleToolchainResolutionDebugPrinter {
         event_handler.handle(&Event::info(self.resolution_trace.join("\n")));
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:161 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.describeRejectedToolchains
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:157 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.describeRejectedToolchains
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:45 SingleToolchainResolutionDebugPrinter.describeRejectedToolchains
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:81 SingleToolchainResolutionDebugPrinter.NoopPrinter.describeRejectedToolchains
     pub fn describe_rejected_toolchains(&mut self, rejected_toolchains: &IndexMap<Label, String>) {
         if !self.enabled {
             return;
@@ -87,7 +94,9 @@ impl SingleToolchainResolutionDebugPrinter {
         }
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:173 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.startToolchainResolution
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:169 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.startToolchainResolution
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:47 SingleToolchainResolutionDebugPrinter.startToolchainResolution
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:84 SingleToolchainResolutionDebugPrinter.NoopPrinter.startToolchainResolution
     pub fn start_toolchain_resolution(&mut self, toolchain_type: &Label, target_platform: &Label) {
         if !self.enabled {
             return;
@@ -101,7 +110,9 @@ impl SingleToolchainResolutionDebugPrinter {
         );
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:182 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.reportCompatibleTargetPlatform
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:178 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.reportCompatibleTargetPlatform
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:49 SingleToolchainResolutionDebugPrinter.reportCompatibleTargetPlatform
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:87 SingleToolchainResolutionDebugPrinter.NoopPrinter.reportCompatibleTargetPlatform
     pub fn report_compatible_target_platform(
         &mut self,
         target_label: &Label,
@@ -119,7 +130,9 @@ impl SingleToolchainResolutionDebugPrinter {
         );
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:192 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.reportSkippedExecutionPlatformSeen
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:188 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.reportSkippedExecutionPlatformSeen
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:51 SingleToolchainResolutionDebugPrinter.reportSkippedExecutionPlatformSeen
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:90 SingleToolchainResolutionDebugPrinter.NoopPrinter.reportSkippedExecutionPlatformSeen
     pub fn report_skipped_execution_platform_seen(&mut self, execution_platform: &Label) {
         if !self.enabled {
             return;
@@ -133,7 +146,9 @@ impl SingleToolchainResolutionDebugPrinter {
         );
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:200 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.reportSkippedExecutionPlatformDisallowed
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:196 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.reportSkippedExecutionPlatformDisallowed
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:53 SingleToolchainResolutionDebugPrinter.reportSkippedExecutionPlatformDisallowed
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:93 SingleToolchainResolutionDebugPrinter.NoopPrinter.reportSkippedExecutionPlatformDisallowed
     pub fn report_skipped_execution_platform_disallowed(
         &mut self,
         execution_platform: &Label,
@@ -151,7 +166,9 @@ impl SingleToolchainResolutionDebugPrinter {
         );
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:211 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.reportCompatibleExecutionPlatform
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:207 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.reportCompatibleExecutionPlatform
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:55 SingleToolchainResolutionDebugPrinter.reportCompatibleExecutionPlatform
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:97 SingleToolchainResolutionDebugPrinter.NoopPrinter.reportCompatibleExecutionPlatform
     pub fn report_compatible_execution_platform(&mut self, execution_platform: &Label) {
         if !self.enabled {
             return;
@@ -162,7 +179,9 @@ impl SingleToolchainResolutionDebugPrinter {
         );
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:219 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.reportResolvedToolchains
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:215 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.reportResolvedToolchains
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:57 SingleToolchainResolutionDebugPrinter.reportResolvedToolchains
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:100 SingleToolchainResolutionDebugPrinter.NoopPrinter.reportResolvedToolchains
     pub fn report_resolved_toolchains(
         &mut self,
         resolved_toolchains: &IndexMap<ConfiguredTargetKey, Label>,
@@ -202,6 +221,8 @@ impl SingleToolchainResolutionDebugPrinter {
     }
 
     // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:242 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.reportMismatchedSettings
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:62 SingleToolchainResolutionDebugPrinter.reportMismatchedSettings
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:106 SingleToolchainResolutionDebugPrinter.NoopPrinter.reportMismatchedSettings
     pub fn report_mismatched_settings(
         &mut self,
         toolchain_constraints: &ConstraintCollection,
@@ -264,7 +285,9 @@ impl SingleToolchainResolutionDebugPrinter {
         }
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:282 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.reportDone
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:285 SingleToolchainResolutionDebugPrinter.EventHandlerImpl.reportDone
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:70 SingleToolchainResolutionDebugPrinter.reportDone
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/SingleToolchainResolutionDebugPrinter.java:115 SingleToolchainResolutionDebugPrinter.NoopPrinter.reportDone
     pub fn report_done(&mut self, toolchain_type: &Label) {
         if !self.enabled {
             return;
@@ -279,7 +302,7 @@ impl SingleToolchainResolutionDebugPrinter {
     }
 }
 
-// Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:30 ToolchainResolutionDebugPrinter
+// Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:31 ToolchainResolutionDebugPrinter
 /// A helper for printing debug messages from toolchain resolution.
 ///
 /// PORT: Java's `EventHandlerImpl` keeps `env.getListener()`; the callers hold the Skyframe
@@ -291,24 +314,30 @@ pub struct ToolchainResolutionDebugPrinter {
 }
 
 impl ToolchainResolutionDebugPrinter {
-    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:32 ToolchainResolutionDebugPrinter.create
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:33 ToolchainResolutionDebugPrinter.create
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:57 ToolchainResolutionDebugPrinter.NoopPrinter.<init>
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:88 ToolchainResolutionDebugPrinter.EventHandlerImpl.<init>
     pub fn create(debug: bool) -> Self {
         ToolchainResolutionDebugPrinter { enabled: debug }
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:84 ToolchainResolutionDebugPrinter.EventHandlerImpl.debugEnabled
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:82 ToolchainResolutionDebugPrinter.EventHandlerImpl.debugEnabled
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:40 ToolchainResolutionDebugPrinter.debugEnabled
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:60 ToolchainResolutionDebugPrinter.NoopPrinter.debugEnabled
     pub fn debug_enabled(&self) -> bool {
         self.enabled
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:94 ToolchainResolutionDebugPrinter.EventHandlerImpl.debugMessage
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:93 ToolchainResolutionDebugPrinter.EventHandlerImpl.debugMessage
     fn debug_message(&self, event_handler: &dyn EventHandler, message: String) {
         if self.enabled {
             event_handler.handle(&Event::info(message));
         }
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:99 ToolchainResolutionDebugPrinter.EventHandlerImpl.reportSelectedToolchains
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:98 ToolchainResolutionDebugPrinter.EventHandlerImpl.reportSelectedToolchains
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:43 ToolchainResolutionDebugPrinter.reportSelectedToolchains
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:65 ToolchainResolutionDebugPrinter.NoopPrinter.reportSelectedToolchains
     /// Report on which toolchains were selected. `toolchain_type_to_resolved` is the entries of
     /// the `ImmutableSetMultimap`, in its order.
     pub fn report_selected_toolchains(
@@ -335,7 +364,9 @@ impl ToolchainResolutionDebugPrinter {
         );
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:116 ToolchainResolutionDebugPrinter.EventHandlerImpl.reportRemovedExecutionPlatform
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:115 ToolchainResolutionDebugPrinter.EventHandlerImpl.reportRemovedExecutionPlatform
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:49 ToolchainResolutionDebugPrinter.reportRemovedExecutionPlatform
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:71 ToolchainResolutionDebugPrinter.NoopPrinter.reportRemovedExecutionPlatform
     /// Report on an execution platform that was skipped due to constraint mismatches.
     pub fn report_removed_execution_platform(
         &self,
@@ -359,6 +390,8 @@ impl ToolchainResolutionDebugPrinter {
     }
 
     // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:129 ToolchainResolutionDebugPrinter.EventHandlerImpl.reportRejectedExecutionPlatforms
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:52 ToolchainResolutionDebugPrinter.reportRejectedExecutionPlatforms
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainResolutionDebugPrinter.java:75 ToolchainResolutionDebugPrinter.NoopPrinter.reportRejectedExecutionPlatforms
     pub fn report_rejected_execution_platforms(
         &self,
         event_handler: &dyn EventHandler,

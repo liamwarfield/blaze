@@ -166,6 +166,7 @@ impl PrintActionRunner {
                 targets: targets.clone(),
                 validator: &validator,
                 repo_precomputed: Default::default(),
+                post_build_callback: None,
                 after_build: Box::new(|outcome: RunBuildOutcome<'_>| {
                     // summaryBuilder = ExtraActionSummary.newBuilder()
                     let mut summary = ExtraActionSummary::default();

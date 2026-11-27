@@ -201,6 +201,17 @@ pub struct GrpcCacheClient {
 }
 
 impl GrpcCacheClient {
+    /// `getServerCapabilities()` for a caller on the remote runtime (`CombinedCache`'s chunking
+    /// check runs inside an upload or a download).
+    ///
+    /// PORT: Java blocks on `channel.getServerCapabilities()` on any thread; a blocking call is
+    /// refused on the remote runtime, and the capabilities may still be in flight there (the
+    /// channel starts fetching them in the background), so the future is awaited instead.
+    // Java: com/google/devtools/build/lib/remote/GrpcCacheClient.java:390 GrpcCacheClient.getServerCapabilities
+    pub async fn get_server_capabilities_async(&self) -> io::Result<ServerCapabilities> {
+        self.channel.get_server_capabilities_async().await
+    }
+
     // Java: com/google/devtools/build/lib/remote/GrpcCacheClient.java:137 GrpcCacheClient.shouldVerifyDownloads
     pub fn should_verify_downloads(&self) -> bool {
         self.options.remote_verify_downloads

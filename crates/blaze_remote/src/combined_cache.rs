@@ -234,37 +234,38 @@ impl CombinedCache {
 
     /// `Chunking.supported()`: delays the initialization of the chunking support logic until
     /// first use to avoid blocking on a server capabilities check at construction time.
+    ///
+    /// PORT: async, and the capabilities come from the client's future (Java blocks in
+    /// `synchronized`): the check runs inside an upload or a download on the remote runtime,
+    /// which refuses blocking calls. The state is not held across the await; two first callers
+    /// may both fetch, and both get the channel's one cached answer.
     // Java: com/google/devtools/build/lib/remote/CombinedCache.java:122 CombinedCache.Chunking.supported
-    fn chunking_supported(&self) -> io::Result<bool> {
+    async fn chunking_supported(&self) -> io::Result<bool> {
         let Some(chunking_function) = self.chunking_function else {
             return Ok(false);
         };
-        if self.grpc_cache_client().is_none() {
+        let Some(grpc_cache_client) = self.grpc_cache_client() else {
             // `!(remoteCacheClient instanceof GrpcCacheClient)`.
             return Ok(false);
+        };
+        if let Some(initialized) = *self.chunking.lock() {
+            return Ok(initialized.is_some());
         }
+        // A failure leaves the state uninitialized, as Java's `initialized` stays false.
+        let capabilities = grpc_cache_client.get_server_capabilities_async().await?;
+        let config = match chunking_function {
+            ChunkingFunctionValue::AUTO => ChunkingConfig::from_server_capabilities(&capabilities),
+            ChunkingFunctionValue::FAST_CDC_2020 => ChunkingConfig::from_server_capabilities_for(
+                &capabilities,
+                chunking_function::Value::FastCdc2020,
+            ),
+            ChunkingFunctionValue::REP_MAX_CDC => ChunkingConfig::from_server_capabilities_for(
+                &capabilities,
+                chunking_function::Value::RepMaxCdc,
+            ),
+        };
         let mut chunking = self.chunking.lock();
-        if chunking.is_none() {
-            // synchronized (this): the capabilities are fetched once; a failure leaves the
-            // state uninitialized, as Java's `initialized` stays false.
-            let capabilities = self.get_remote_server_capabilities()?;
-            *chunking = Some(match chunking_function {
-                ChunkingFunctionValue::AUTO => {
-                    ChunkingConfig::from_server_capabilities(&capabilities)
-                }
-                ChunkingFunctionValue::FAST_CDC_2020 => {
-                    ChunkingConfig::from_server_capabilities_for(
-                        &capabilities,
-                        chunking_function::Value::FastCdc2020,
-                    )
-                }
-                ChunkingFunctionValue::REP_MAX_CDC => ChunkingConfig::from_server_capabilities_for(
-                    &capabilities,
-                    chunking_function::Value::RepMaxCdc,
-                ),
-            });
-        }
-        Ok(chunking.expect("initialized above").is_some())
+        Ok(chunking.get_or_insert(config).is_some())
     }
 
     /// `Chunking.config()`.
@@ -546,7 +547,7 @@ impl CombinedCache {
 
         // PORT: Java has already started the disk cache upload when this check fails (it is not
         // awaited then); here it has not started yet.
-        let chunking_supported = self.chunking_supported()?;
+        let chunking_supported = self.chunking_supported().await?;
 
         let remote_cache_future = async {
             if let Some(remote_cache_client) = &self.remote_cache_client
@@ -820,7 +821,7 @@ impl CombinedCache {
                 && context.get_read_cache_policy().allow_remote_cache()
         );
 
-        let chunking_supported = self.chunking_supported()?;
+        let chunking_supported = self.chunking_supported().await?;
 
         if chunking_supported && digest.size_bytes > self.chunking_config().chunking_threshold() {
             let downloader = ChunkedBlobDownloader::new(

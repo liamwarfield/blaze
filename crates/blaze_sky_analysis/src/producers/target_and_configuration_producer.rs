@@ -41,7 +41,12 @@ use crate::producers::errors::{
 use crate::producers::transition_applier::{Produced, apply_transition};
 
 /// Tagged union of possible errors (Java `TargetAndConfigurationProducer.TargetAndConfigurationError`).
-// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:76 TargetAndConfigurationProducer.TargetAndConfigurationError
+// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:81 TargetAndConfigurationProducer.TargetAndConfigurationError
+// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:89 TargetAndConfigurationProducer.TargetAndConfigurationError.kind
+// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:91 TargetAndConfigurationProducer.TargetAndConfigurationError.configuredValueCreation
+// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:93 TargetAndConfigurationProducer.TargetAndConfigurationError.noSuchThing
+// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:95 TargetAndConfigurationProducer.TargetAndConfigurationError.inconsistentNullConfig
+// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:97 TargetAndConfigurationProducer.TargetAndConfigurationError.of
 #[derive(Clone, Debug)]
 pub enum TargetAndConfigurationError {
     ConfiguredValueCreation(ConfiguredValueCreationException),
@@ -50,6 +55,9 @@ pub enum TargetAndConfigurationError {
 }
 
 /// What `TargetAndConfigurationProducer.ResultSink` receives.
+// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:72 TargetAndConfigurationProducer.ResultSink.acceptTargetAndConfiguration
+// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:74 TargetAndConfigurationProducer.ResultSink.acceptTargetAndConfigurationDelegatedValue
+// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:76 TargetAndConfigurationProducer.ResultSink.acceptTargetAndConfigurationError
 #[derive(Clone, Debug)]
 pub enum TargetAndConfigurationResult {
     /// `acceptTargetAndConfiguration(value, fullKey)`.
@@ -66,7 +74,7 @@ pub enum TargetAndConfigurationResult {
 /// evaluation of the target with the new configuration. This re-evaluation can inadvertently
 /// lead to the rule transition being applied twice. To prevent this, the `ConfiguredTargetKey`
 /// includes a `shouldApplyRuleTransition` flag, set false when the result is `NON_IDEMPOTENT`.
-// Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:105 RuleTransitionApplier.IdempotencyState
+// Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:102 RuleTransitionApplier.IdempotencyState
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdempotencyState {
     /// The transition was a no-op.
@@ -80,6 +88,7 @@ pub enum IdempotencyState {
 /// Computes the `Target` and configuration of a `ConfiguredTargetKey`, applying the rule
 /// transition (Java `TargetAndConfigurationProducer`, driven to completion).
 // Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:147 TargetAndConfigurationProducer.step
+// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:129 TargetAndConfigurationProducer.<init>
 pub fn produce_target_and_configuration(
     env: &mut Environment<'_>,
     services: &AnalysisServices,
@@ -95,6 +104,7 @@ pub fn produce_target_and_configuration(
     )? {
         None => return Ok(None),
         Some(Err(e)) => return Ok(Some(TargetAndConfigurationResult::Error(e))),
+        // Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:156 TargetAndConfigurationProducer.acceptTarget
         Some(Ok(t)) => t,
     };
     determine_configuration(
@@ -107,7 +117,7 @@ pub fn produce_target_and_configuration(
     )
 }
 
-// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:193 TargetAndConfigurationProducer.determineConfiguration
+// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:197 TargetAndConfigurationProducer.determineConfiguration
 fn determine_configuration(
     env: &mut Environment<'_>,
     services: &AnalysisServices,
@@ -160,6 +170,12 @@ fn determine_configuration(
     }
 
     // RuleTransitionApplier, then computeTargetAndConfigurationOrDelegatedValue.
+    // Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:173 TargetAndConfigurationProducer.getPreRuleTransitionKey
+    // Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:178 TargetAndConfigurationProducer.getTrimmingTransitionFactory
+    // Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:183 TargetAndConfigurationProducer.getToolchainTaggedTrimmingTransition
+    // Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:188 TargetAndConfigurationProducer.getTransitionCache
+    // Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:193 TargetAndConfigurationProducer.getTransitiveState
+    // PORT: the TargetAndConfigurationData accessors are the arguments of apply_rule_transition.
     let (configuration_key, idempotency_state) = match apply_rule_transition(
         env,
         services,
@@ -169,6 +185,7 @@ fn determine_configuration(
         event_handler,
     )? {
         None => return Ok(None),
+        // Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:286 TargetAndConfigurationProducer.acceptErrorMessage
         Some(Err((message, location, exit_code))) => {
             return Ok(Some(TargetAndConfigurationResult::Error(emit_error(
                 pre_rule_transition_key,
@@ -178,6 +195,7 @@ fn determine_configuration(
                 exit_code,
             ))));
         }
+        // Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:279 TargetAndConfigurationProducer.acceptConfiguration
         Some(Ok(r)) => r,
     };
 
@@ -210,18 +228,19 @@ fn determine_configuration(
     delegate_to(env, key_builder.build())
 }
 
-// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:241 TargetAndConfigurationProducer.delegateTo
+// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:244 TargetAndConfigurationProducer.delegateTo
 fn delegate_to(
     env: &mut Environment<'_>,
     delegate: ConfiguredTargetKey,
 ) -> Produced<TargetAndConfigurationResult> {
     match env.get_value(delegate)? {
         None => Ok(None),
+        // Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:249 TargetAndConfigurationProducer.accept
         Some(value) => Ok(Some(TargetAndConfigurationResult::DelegatedValue(value))),
     }
 }
 
-// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:250 TargetAndConfigurationProducer.lookUpConfigurationValue
+// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:253 TargetAndConfigurationProducer.lookUpConfigurationValue
 fn look_up_configuration_value(
     env: &mut Environment<'_>,
     pre_rule_transition_key: &ConfiguredTargetKey,
@@ -229,7 +248,7 @@ fn look_up_configuration_value(
     target: Target,
     full_key: &ConfiguredTargetKey,
 ) -> Produced<TargetAndConfigurationResult> {
-    // Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:258 TargetAndConfigurationProducer.acceptValueOrException
+    // Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:261 TargetAndConfigurationProducer.acceptValueOrException
     let result = env.get_value_or_throw_with(configuration_key.clone(), |e| {
         e.downcast_ref::<blaze_build_config::skyframe::ConfigurationError>()
             .and_then(|c| match c {
@@ -263,7 +282,7 @@ fn look_up_configuration_value(
     }
 }
 
-// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:313 TargetAndConfigurationProducer.emitError
+// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:320 TargetAndConfigurationProducer.emitError
 fn emit_error(
     pre_rule_transition_key: &ConfiguredTargetKey,
     target: &Target,
@@ -296,7 +315,7 @@ fn emit_error(
 
 /// Loads the target of `label` (Java `TargetProducer`). `Ok(Some(Ok(None)))` is never
 /// produced; a target error is reported to `event_handler` and returned.
-// Java: com/google/devtools/build/lib/analysis/producers/TargetProducer.java:67 TargetProducer.step
+// Java: com/google/devtools/build/lib/analysis/producers/TargetProducer.java:73 TargetProducer.step
 pub fn produce_target(
     env: &mut Environment<'_>,
     label: &Label,
@@ -317,7 +336,7 @@ pub fn produce_target(
         }
     };
 
-    // Java: com/google/devtools/build/lib/analysis/producers/TargetProducer.java:89 TargetProducer.unwrapTarget
+    // Java: com/google/devtools/build/lib/analysis/producers/TargetProducer.java:92 TargetProducer.unwrapTarget
     let target = match pkg.get_target(label.get_name()) {
         Ok(t) => t.clone(),
         Err(e) => {
@@ -382,7 +401,8 @@ pub type ErrorMessage = (String, Option<Location>, Option<DetailedExitCode>);
 
 /// Applies any requested rule transition before producing the final configuration (Java
 /// `RuleTransitionApplier`).
-// Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:150 RuleTransitionApplier.step
+// Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:142 RuleTransitionApplier.step
+// Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:128 RuleTransitionApplier.<init>
 pub fn apply_rule_transition(
     env: &mut Environment<'_>,
     services: &AnalysisServices,
@@ -391,6 +411,7 @@ pub fn apply_rule_transition(
     transitive_state: &mut TransitiveDependencyState,
     event_handler: &StoredEventHandler,
 ) -> Produced<Result<(BuildConfigurationKey, IdempotencyState), ErrorMessage>> {
+    // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:400 RuleTransitionApplier.emitErrorMessage
     let emit_error_message = |message: String| -> ErrorMessage {
         (
             message,
@@ -438,14 +459,16 @@ pub fn apply_rule_transition(
                 .get_command_line_flag_aliases(),
         )? {
             None => return Ok(None),
+            // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:314 RuleTransitionApplier.acceptPlatformValue
             Some(Ok(info)) => Some(info),
+            // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:319 RuleTransitionApplier.acceptPlatformInfoError
             Some(Err(e)) => return Ok(Some(Err(emit_error_message(e.to_string())))),
         }
     } else {
         None
     };
 
-    // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:217 RuleTransitionApplier.computeConfigConditions
+    // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:221 RuleTransitionApplier.computeConfigConditions
     // TODO @aranguyen b/297077082
     let config_conditions: ConfigConditions = match produce_config_conditions(
         env,
@@ -456,11 +479,13 @@ pub fn apply_rule_transition(
         transitive_state,
     )? {
         None => return Ok(None),
+        // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:242 RuleTransitionApplier.acceptConfigConditionsError
         Some(Err(e)) => return Ok(Some(Err(emit_error_message(e.get_message().to_owned())))),
+        // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:237 RuleTransitionApplier.acceptConfigConditions
         Some(Ok(c)) => c,
     };
 
-    // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:243 RuleTransitionApplier.computeTransition
+    // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:247 RuleTransitionApplier.computeTransition
     // Keep in sync with CqueryTransitionResolver.getRuleTransition.
     let rule = target
         .get_associated_rule()
@@ -484,11 +509,17 @@ pub fn apply_rule_transition(
         event_handler,
     )? {
         None => return Ok(None),
+        // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:278 RuleTransitionApplier.acceptBuildOptionsScopeFunctionError
+        // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:294 RuleTransitionApplier.acceptTransitionError
+        // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:299 RuleTransitionApplier.acceptOptionsParsingError
+        // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:304 RuleTransitionApplier.acceptPlatformMappingError
+        // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:309 RuleTransitionApplier.acceptPlatformFlagsError
         Some(Err(message)) => return Ok(Some(Err(emit_error_message(message)))),
+        // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:283 RuleTransitionApplier.acceptTransitionedConfigurations
         Some(Ok(k)) => k,
     };
 
-    // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:332 RuleTransitionApplier.processTransitionedKey
+    // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:323 RuleTransitionApplier.processTransitionedKey
     let parent_configuration = configuration_key;
     if configuration_key_after == *parent_configuration {
         // This key owns the configuration and the computation completes normally.
@@ -504,7 +535,8 @@ pub fn apply_rule_transition(
         ),
     ));
 
-    // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:349 RuleTransitionApplier.IdempotencyChecker
+    // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:341 RuleTransitionApplier.IdempotencyChecker
+    // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:346 RuleTransitionApplier.IdempotencyChecker.step
     let configuration_key2 = match apply_and_take_patch(
         env,
         services,
@@ -514,7 +546,13 @@ pub fn apply_rule_transition(
         event_handler,
     )? {
         None => return Ok(None),
+        // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:358 RuleTransitionApplier.IdempotencyChecker.acceptBuildOptionsScopeFunctionError
+        // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:380 RuleTransitionApplier.IdempotencyChecker.acceptTransitionError
+        // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:385 RuleTransitionApplier.IdempotencyChecker.acceptOptionsParsingError
+        // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:390 RuleTransitionApplier.IdempotencyChecker.acceptPlatformMappingError
+        // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:395 RuleTransitionApplier.IdempotencyChecker.acceptPlatformFlagsError
         Some(Err(message)) => return Ok(Some(Err(emit_error_message(message)))),
+        // Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:363 RuleTransitionApplier.IdempotencyChecker.acceptTransitionedConfigurations
         Some(Ok(k)) => k,
     };
     let idempotency_state = if configuration_key_after == configuration_key2 {
@@ -560,7 +598,7 @@ fn apply_and_take_patch(
 
 /// The toolchain context's options are the parent rule's options with manual trimming
 /// auto-applied. This means toolchains don't inherit feature flags.
-// Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:190 RuleTransitionApplier.computeToolchainConfigurationKey
+// Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:187 RuleTransitionApplier.computeToolchainConfigurationKey
 pub fn compute_toolchain_configuration_key(
     build_options: &BuildOptions,
     services: &AnalysisServices,

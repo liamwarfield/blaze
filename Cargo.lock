@@ -1137,6 +1137,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "blaze_starlarkdebug"
+version = "0.1.0"
+dependencies = [
+ "blaze_events",
+ "blaze_protos",
+ "blaze_starlark",
+ "blaze_util",
+ "parking_lot",
+ "prost",
+ "starlark",
+ "starlark_syntax",
+]
+
+[[package]]
 name = "blaze_starlarkdocextract"
 version = "0.1.0"
 dependencies = [

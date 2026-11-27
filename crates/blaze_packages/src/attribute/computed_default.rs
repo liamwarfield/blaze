@@ -286,6 +286,7 @@ impl StarlarkComputedDefaultTemplate {
                     .get_attribute_by_name_maybe(dependency);
                 let Some(attribute) = attribute else {
                     // Java: AttributeNotFoundException
+                    // Java: com/google/devtools/build/lib/packages/Attribute.java:1503 Attribute.StarlarkComputedDefaultTemplate.AttributeNotFoundException.<init>
                     return Err(format!(
                         "No such attribute {} in rule {}",
                         dependency,
@@ -466,6 +467,7 @@ pub enum LateBoundDefaultKind {
 /// `Attribute.LateBoundDefault`). The loading phase only needs its default value; the analysis
 /// resolver is not ported yet.
 // Java: com/google/devtools/build/lib/packages/Attribute.java:1616 Attribute.LateBoundDefault
+// PORT: skipped, an abstract base whose one subclass, StarlarkLateBoundDefault (`configuration_field`), is a `Label`-kind default here (starlark_defs/bzl_globals.rs): Attribute.AbstractLabelLateBoundDefault.<init>
 #[derive(Clone)]
 pub struct LateBoundDefault {
     /// Java `Class<FragmentT>`: the simple name of the configuration fragment class, `None` for

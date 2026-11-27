@@ -73,28 +73,39 @@ use blaze_analysis::base_target_prerequisites_supplier::BaseTargetPrerequisitesS
 // PrerequisiteParameters.
 
 /// Common parameters for computing prerequisites (Java `PrerequisiteParameters`).
-// Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:38 PrerequisiteParameters
+// Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:40 PrerequisiteParameters
 pub struct PrerequisiteParameters<'a> {
+    /// PORT: `transitionCache()` is `services`' Starlark transition cache.
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:141 PrerequisiteParameters.transitionCache
     pub services: &'a AnalysisServices,
     pub configured_target_key: &'a ConfiguredTargetKey,
     /// PORT: Java's `MissingEdgeError`s go through the result sink to
     /// `DependencyResolver.State`, which emits them with its `TargetAndConfiguration`; the node
     /// is carried here so they are emitted where they are accepted.
     pub target_and_configuration: &'a TargetAndConfiguration,
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:127 PrerequisiteParameters.aspects
     pub aspects: &'a [Aspect],
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:132 PrerequisiteParameters.loadExecAspectsKey
     /// This is the key for loading the aspects passed to the --exec_aspects flag, which get
     /// attached to targets in the exec configuration.
     pub load_exec_aspects_key: Option<&'a LoadAspectsKey>,
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:137 PrerequisiteParameters.starlarkTransitionProvider
     /// The Starlark exec transition provider (`None` if Bazel uses native logic).
     pub starlark_transition_provider: Option<Arc<StarlarkAttributeTransitionProvider>>,
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:146 PrerequisiteParameters.toolchainContexts
     pub toolchain_contexts: Option<&'a ToolchainCollection<UnloadedToolchainContext>>,
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:151 PrerequisiteParameters.attributeMap
     /// Non-null for rules (and output files when there are aspects that apply to files).
     pub attribute_map: Option<&'a ConfiguredAttributeMapper>,
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:174 PrerequisiteParameters.transitiveState
     pub transitive_state: &'a mut TransitiveDependencyState,
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:178 PrerequisiteParameters.eventHandler
     pub event_handler: &'a StoredEventHandler,
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:105 PrerequisiteParameters.baseTargetPrerequisitesSupplier
     /// Cache for `ConfiguredTargetValue` and `BuildConfigurationValue` (see
     /// `AspectFunction`'s `baseTargetPrerequisitesSupplier`).
     pub base_target_prerequisites_supplier: Option<&'a BaseTargetPrerequisitesSupplier>,
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:100 PrerequisiteParameters.baseTargetToolchainContexts
     /// The `UnloadedToolchainContext`s for the base target of the aspect under evaluation.
     ///
     /// This is only non-null during aspect evaluation if the aspects path can propagate to
@@ -106,10 +117,12 @@ pub struct PrerequisiteParameters<'a> {
 }
 
 impl PrerequisiteParameters<'_> {
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:109 PrerequisiteParameters.label
     pub fn label(&self) -> &Label {
         self.configured_target_key.get_label()
     }
 
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:113 PrerequisiteParameters.target
     pub fn target(&self) -> &Target {
         self.target_and_configuration.get_target()
     }
@@ -119,20 +132,22 @@ impl PrerequisiteParameters<'_> {
         self.target().get_associated_rule()
     }
 
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:123 PrerequisiteParameters.configurationKey
     pub fn configuration_key(&self) -> Option<&BuildConfigurationKey> {
         self.configured_target_key.get_configuration_key()
     }
 
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:155 PrerequisiteParameters.location
     pub fn location(&self) -> blaze_starlark::Location {
         self.target().get_location()
     }
 
-    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:151 PrerequisiteParameters.eventId
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:159 PrerequisiteParameters.eventId
     pub fn event_id(&self) -> Option<String> {
         configuration_id_of_key(self.configuration_key())
     }
 
-    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:156 PrerequisiteParameters.getExecutionPlatformLabel
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisiteParameters.java:164 PrerequisiteParameters.getExecutionPlatformLabel
     pub fn get_execution_platform_label(
         &self,
         exec_group: &str,
@@ -168,7 +183,7 @@ impl PrerequisiteParameters<'_> {
 // AttributeConfiguration.
 
 /// The configuration(s) of a dependency edge (Java `AttributeConfiguration`).
-// Java: com/google/devtools/build/lib/analysis/producers/AttributeConfiguration.java:24 AttributeConfiguration
+// Java: com/google/devtools/build/lib/analysis/producers/AttributeConfiguration.java:23 AttributeConfiguration
 #[derive(Clone, Debug)]
 enum AttributeConfiguration {
     /// This is a visibility dependency: null configuration, must be a `PackageGroup`.
@@ -201,7 +216,7 @@ struct ErrorState {
 }
 
 impl ErrorState {
-    // Java: com/google/devtools/build/lib/analysis/producers/DependencyMapProducer.java:461 DependencyMapProducer.emitErrorIfMostImportant
+    // Java: com/google/devtools/build/lib/analysis/producers/DependencyMapProducer.java:466 DependencyMapProducer.emitErrorIfMostImportant
     fn accept_dependency_error(&mut self, error: DependencyError) {
         match &self.last_error {
             Some(last) if !DependencyError::is_second_error_more_important(last, &error) => {}
@@ -218,7 +233,7 @@ fn is_for_dependency_resolution(dependency_kind: &DependencyKind) -> bool {
 }
 
 /// Computes the configured target dependency map (Java `DependencyMapProducer`).
-// Java: com/google/devtools/build/lib/analysis/producers/DependencyMapProducer.java:339 DependencyMapProducer.step
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyMapProducer.java:344 DependencyMapProducer.step
 pub fn produce_dependency_map(
     env: &mut Environment<'_>,
     parameters: &mut PrerequisiteParameters<'_>,
@@ -255,7 +270,7 @@ pub fn produce_dependency_map(
     // Java: attributeResolutionStep(tasks, forMaterializers=true, ...), then
     // attributeResolutionStep(tasks, forMaterializers=false, ...).
     for for_materializers in [true, false] {
-        // Java: com/google/devtools/build/lib/analysis/producers/DependencyMapProducer.java:285 DependencyMapProducer.attributeResolutionStep
+        // Java: com/google/devtools/build/lib/analysis/producers/DependencyMapProducer.java:275 DependencyMapProducer.attributeResolutionStep
         let mut pending: Vec<PendingPrerequisites<'_>> = Vec::new();
         let mut index = 0;
         for (kind, labels) in dependency_labels {
@@ -427,7 +442,7 @@ pub fn produce_dependency_map(
         }
     }
 
-    // Java: com/google/devtools/build/lib/analysis/producers/DependencyMapProducer.java:428 DependencyMapProducer.buildAndEmitResult
+    // Java: com/google/devtools/build/lib/analysis/producers/DependencyMapProducer.java:441 DependencyMapProducer.buildAndEmitResult
     let dependency_map_error = errors.last_error;
     if dependency_map_error.is_some() || parameters.transitive_state.has_root_cause() {
         return Ok(Some(DependencyMapOutcome {
@@ -554,7 +569,7 @@ enum PlannedDependency {
 /// The part of `DependencyProducer` before `computePrerequisites` (Java `DependencyProducer.step`,
 /// `TransitionApplier` and `processTransitionResult`): the configuration(s) of one dependency
 /// edge.
-// Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:132 DependencyProducer.step
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:143 DependencyProducer.step
 // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:125 DependencyProducer.<init>
 // PORT: skipped, the state machine's result sink is the return value of the synchronous port (the dependency's PrerequisiteMap entry or the DependencyError the caller collects): DependencyProducer.ResultSink.acceptDependencyValues, DependencyProducer.ResultSink.acceptMaterializerTarget, DependencyProducer.ResultSink.acceptDependencyError
 // PORT: skipped, materializer rules (dormant dependencies) are not ported (see the module documentation): DependencyProducer.MaterializerRuleDependencySink.acceptTransition, DependencyProducer.MaterializerRuleDependencySink.acceptDependencyValues, DependencyProducer.MaterializerRuleDependencySink.acceptMaterializerTarget, DependencyProducer.MaterializerRuleDependencySink.acceptDependencyError
@@ -635,7 +650,7 @@ fn plan_dependency(
         ExecutionPlatformResult::NullLabel => transition_data.execution_platform = None,
         ExecutionPlatformResult::Skip => return Ok(PlannedDependency::Skipped),
         ExecutionPlatformResult::Error(message) => {
-            // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:617 ExecGroupErrorEmitter
+            // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:613 ExecGroupErrorEmitter
             // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:625 ExecGroupErrorEmitter.step
             // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:633 ExecGroupErrorEmitter.accept
             // The configuration value should already exist as a dependency so this lookup is
@@ -678,8 +693,8 @@ fn plan_dependency(
                 return Ok(PlannedDependency::Error);
             }
         };
-    // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:212 DependencyProducer.computeTransition
-    // (sink.acceptTransition(kind, toLabel, attributeTransition)).
+    // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:143 DependencyProducer.step
+    // (line 212: sink.acceptTransition(kind, toLabel, attributeTransition)).
     if let Some(collector) = &parameters.transition_collector {
         collector(kind, to_label, &attribute_transition);
     }
@@ -695,13 +710,13 @@ fn plan_dependency(
         Some(Ok(t)) => t,
         Some(Err(e)) => {
             let error = match e {
-                // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:262 DependencyProducer.acceptTransitionError
+                // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:230 DependencyProducer.acceptTransitionError
                 TransitionApplierError::Transition(t) => {
                     DependencyError::DependencyTransition(TransitionException(
                         get_message_with_edge_transition_info(parameters, kind, to_label, &t.0),
                     ))
                 }
-                // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:268 DependencyProducer.acceptOptionsParsingError
+                // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:236 DependencyProducer.acceptOptionsParsingError
                 TransitionApplierError::OptionsParsing(m) => {
                     DependencyError::DependencyOptionsParsing(
                         get_message_with_edge_transition_info(parameters, kind, to_label, &m),
@@ -722,7 +737,7 @@ fn plan_dependency(
     };
 
     // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:224 DependencyProducer.acceptTransitionedConfigurations
-    // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:306 DependencyProducer.processTransitionResult
+    // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:268 DependencyProducer.processTransitionResult
     let mut is_nonconfigurable_target_in_same_package = false;
     match get_target_in_same_package_without_skyframe(env, parameters.target(), to_label)? {
         SamePackageTarget::Missing => return Ok(PlannedDependency::Missing),
@@ -805,7 +820,7 @@ fn plan_dependency(
     })
 }
 
-// Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:294 DependencyProducer.getMessageWithEdgeTransitionInfo
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:258 DependencyProducer.getMessageWithEdgeTransitionInfo
 fn get_message_with_edge_transition_info(
     parameters: &PrerequisiteParameters<'_>,
     kind: &DependencyKind,
@@ -838,7 +853,7 @@ enum SamePackageTarget {
 ///
 /// PORT: Blaze's targets do not point back to their package; the parent's package (already
 /// computed by the parent's `TargetProducer`) is read from PACKAGE.
-// Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:583 DependencyProducer.getTargetInSamePackageWithoutSkyframe
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:586 DependencyProducer.getTargetInSamePackageWithoutSkyframe
 fn get_target_in_same_package_without_skyframe(
     env: &mut Environment<'_>,
     parent_target: &Target,
@@ -862,7 +877,7 @@ fn get_target_in_same_package_without_skyframe(
 }
 
 /// `computePrerequisites` followed by `evaluateMaterializerTargets` and `emitResults`.
-// Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:389 DependencyProducer.computePrerequisites
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:336 DependencyProducer.computePrerequisites
 // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:374 DependencyProducer.acceptPrerequisitesValue
 // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:567 DependencyProducer.emitResults
 fn compute_prerequisites(
@@ -895,14 +910,15 @@ fn compute_prerequisites(
         Some(Err(errs)) => {
             for e in errs {
                 match e {
-                    // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:433 DependencyProducer.acceptPrerequisitesError
+                    // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:379 DependencyProducer.acceptPrerequisitesError
                     PrerequisitesError::NoSuchThing(error) => parameters.accept_missing_edge(
                         MissingEdgeError::new(kind.clone(), to_label.clone(), error),
                     ),
+                    // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:384 DependencyProducer.acceptPrerequisitesError
                     PrerequisitesError::InvalidVisibility(label) => {
                         errors.accept_dependency_error(DependencyError::InvalidVisibility(label))
                     }
-                    // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:443 DependencyProducer.acceptPrerequisitesCreationError
+                    // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:389 DependencyProducer.acceptPrerequisitesCreationError
                     PrerequisitesError::Creation(error) => {
                         // Cases where the child target cannot be loaded at all are propagated as
                         // `NoSuchThingException`. In some cases, child target loading completes
@@ -940,7 +956,7 @@ fn compute_prerequisites(
         }
     };
 
-    // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:465 DependencyProducer.evaluateMaterializerTargets
+    // Java: com/google/devtools/build/lib/analysis/producers/DependencyProducer.java:416 DependencyProducer.evaluateMaterializerTargets
     // If the target this DependencyProducer is producing dependencies for is an alias, then do
     // not expand materializer targets.
     if let Some(rule) = parameters.target().get_associated_rule() {
@@ -1005,7 +1021,7 @@ enum PrerequisitesError {
 
 /// The configured target lookups of one dependency edge (Java `PrerequisitesProducer.step` and
 /// `getPrerequisiteKey`), in the order the ConfiguredTargetAndDataProducers are enqueued.
-// Java: com/google/devtools/build/lib/analysis/producers/PrerequisitesProducer.java:131 PrerequisitesProducer.step
+// Java: com/google/devtools/build/lib/analysis/producers/PrerequisitesProducer.java:127 PrerequisitesProducer.step
 fn prerequisite_requests(
     label: &Label,
     execution_platform_label: Option<&Label>,
@@ -1043,7 +1059,7 @@ fn prerequisite_requests(
 }
 
 /// Computes the configured targets of one dependency edge (Java `PrerequisitesProducer`).
-// Java: com/google/devtools/build/lib/analysis/producers/PrerequisitesProducer.java:131 PrerequisitesProducer.step
+// Java: com/google/devtools/build/lib/analysis/producers/PrerequisitesProducer.java:127 PrerequisitesProducer.step
 fn produce_prerequisites(
     env: &mut Environment<'_>,
     parameters: &mut PrerequisiteParameters<'_>,
@@ -1072,7 +1088,7 @@ fn produce_prerequisites(
             Some(Err(ConfiguredTargetLookupError::NoSuchThing(e))) => {
                 errors.push(PrerequisitesError::NoSuchThing(e))
             }
-            // Java: com/google/devtools/build/lib/analysis/producers/PrerequisitesProducer.java:194 PrerequisitesProducer.acceptConfiguredTargetAndDataError
+            // Java: com/google/devtools/build/lib/analysis/producers/PrerequisitesProducer.java:182 PrerequisitesProducer.acceptConfiguredTargetAndDataError
             Some(Err(ConfiguredTargetLookupError::InconsistentNullConfig(e))) => {
                 if matches!(configuration, AttributeConfiguration::Visibility) {
                     // The target was configurable, but used as a visibility dependency. This is
@@ -1098,7 +1114,7 @@ fn produce_prerequisites(
         return Ok(None);
     }
 
-    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisitesProducer.java:213 PrerequisitesProducer.computeConfiguredAspects
+    // Java: com/google/devtools/build/lib/analysis/producers/PrerequisitesProducer.java:208 PrerequisitesProducer.computeConfiguredAspects
     if matches!(configuration, AttributeConfiguration::Visibility) {
         // Verifies that the dependency is a `package_group`. The value is always at index 0
         // because the `VISIBILITY` configuration is always unary.

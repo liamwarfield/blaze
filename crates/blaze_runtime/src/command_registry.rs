@@ -813,13 +813,8 @@ pub use crate::commands::cquery::CqueryCommand;
 pub use crate::commands::config::ConfigCommand;
 // cmds implementer: implemented in crate::commands::license.
 pub use crate::commands::license::LicenseCommand;
-unported_command!(
-    /// Implementation of the 'mobile-install' command.
-    // Java: com/google/devtools/build/lib/runtime/mobileinstall/MobileInstallCommand.java:79 MobileInstallCommand
-    MobileInstallCommand,
-    MOBILE_INSTALL_COMMAND,
-    "MobileInstallCommand.exec"
-);
+// Implemented in crate::commands::mobile_install.
+pub use crate::commands::mobile_install::MobileInstallCommand;
 // cmds implementer: implemented in crate::commands::fetch.
 pub use crate::commands::fetch::FetchCommand;
 // Integration lead: implemented in crate::commands::mod_command.

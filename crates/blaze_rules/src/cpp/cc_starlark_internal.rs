@@ -1399,29 +1399,77 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] imports: Value<'v>,
         #[starlark(require = named)] outputs: Value<'v>,
         #[starlark(require = named)] env: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<NoneType> {
-        let _ = (
-            this,
-            actions,
-            feature_configuration,
-            build_variables,
-            use_pic,
-            inputs,
-            all_bitcode_files,
-            imports,
-            outputs,
-            env,
-        );
-        // Needs LtoBackendAction (a SpawnAction subclass with its own key, input discovery from
-        // the imports file and allowed derived inputs: a new blaze_actions SpawnActionClass) and
-        // LtoBackendArtifacts. Reached only with a toolchain that has an `lto-backend`
-        // action_config: rules_cc's lto_backends.bzl fails before calling this otherwise ("Thinlto
-        // build is requested, but the C++ toolchain doesn't define an action_config for
-        // 'lto-backend' action."), as with the auto-configured gcc toolchain of brotli and re2.
-        blaze_util::unported!(
-            "CcStarlarkInternal.createLtoBackendAction",
-            "LtoBackendAction (ThinLTO with a toolchain that defines the lto-backend action)"
-        )
+        let _ = this;
+        const F: &str = "create_lto_backend_action";
+        let handle = super::wrapped_action_factory::actions_rule_context(actions, F, "actions")?;
+        let feature_configuration =
+            feature_configuration_param(feature_configuration, F, "feature_configuration")?
+                .get_feature_configuration()
+                .clone();
+        let build_variables = variables_param(build_variables, F, "build_variables")?;
+        // Java: allowedTypes = {Depset, NoneType}.
+        let bitcode_files = if all_bitcode_files.is_none() {
+            None
+        } else if blaze_starlark::depset::Depset::from_value(all_bitcode_files).is_some() {
+            Some(Arc::new(super::lto_backend_action::BitcodeFiles::new(
+                depset_cast_artifacts(all_bitcode_files, "bitcode_files")?,
+            )))
+        } else {
+            return Err(errorf(format!(
+                "in call to {F}(), parameter 'all_bitcode_files' got value of type '{}', want \
+                 'depset or NoneType'",
+                all_bitcode_files.get_type()
+            )));
+        };
+        // Java: allowedTypes = {Artifact, NoneType}; `imports instanceof Artifact ? ... : null`.
+        let imports = if imports.is_none() {
+            None
+        } else {
+            match blaze_actions::analysis::starlark::starlark_file::artifact_from_value(imports) {
+                Some(artifact) => Some(artifact),
+                None => {
+                    return Err(errorf(format!(
+                        "in call to {F}(), parameter 'imports' got value of type '{}', want \
+                         'File or NoneType'",
+                        imports.get_type()
+                    )));
+                }
+            }
+        };
+        let inputs = depset_cast_artifacts(inputs, "inputs")?;
+        // ImmutableSet.copyOf(Sequence.cast(outputs, Artifact.class, "outputs")).
+        let mut output_set: indexmap::IndexSet<blaze_actions::Artifact> = indexmap::IndexSet::new();
+        for output in sequence_cast_artifacts(outputs, "outputs", eval.heap())? {
+            output_set.insert(output);
+        }
+        // ActionEnvironment.create(ImmutableMap.copyOf(Dict.cast(env, String.class,
+        // String.class, "env"))).
+        let env = Arc::new(blaze_actions::ActionEnvironment::create_fixed(
+            super::util::dict_cast_string_string(env, "env")?,
+        ));
+        let action = {
+            let rc = handle.borrow();
+            let configuration =
+                blaze_analysis::rule::config_util::ConfigurationSpawnActionConfiguration(
+                    rc.get_configuration().clone(),
+                );
+            super::lto_backend_action::create_lto_backend_action_for_starlark(
+                rc.get_action_owner(),
+                Some(&configuration),
+                feature_configuration,
+                build_variables,
+                use_pic,
+                inputs,
+                bitcode_files,
+                imports,
+                output_set.into_iter().collect(),
+                env,
+            )
+        };
+        register_action(eval, Arc::new(action))?;
+        Ok(NoneType)
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CcStarlarkInternal.java:1130 CcStarlarkInternal.createLtoBackendActionTemplate

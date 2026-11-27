@@ -161,22 +161,27 @@ impl OptionsDiff {
         &self.differing_options
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/OptionsDiff.java:155 OptionsDiff.getFirst
     pub fn get_first(&self) -> &IndexMap<OptionDefinitionRef, Option<Value>> {
         &self.first
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/OptionsDiff.java:159 OptionsDiff.getSecond
     pub fn get_second(&self) -> &IndexMap<OptionDefinitionRef, Vec<Option<Value>>> {
         &self.second
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/OptionsDiff.java:146 OptionsDiff.getExtraFirstFragmentClassesForTesting
     pub fn get_extra_first_fragment_classes(&self) -> &[FragmentOptionsClass] {
         &self.extra_first_fragments
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/OptionsDiff.java:151 OptionsDiff.getExtraSecondFragmentsForTesting
     pub fn get_extra_second_fragments(&self) -> &[FragmentOptionsClass] {
         &self.extra_second_fragments
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/OptionsDiff.java:163 OptionsDiff.addDiff
     fn add_diff(
         &mut self,
         fragment_options_class: FragmentOptionsClass,
@@ -194,18 +199,21 @@ impl OptionsDiff {
         }
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/OptionsDiff.java:173 OptionsDiff.addExtraFirstFragment
     fn add_extra_first_fragment(&mut self, options: FragmentOptionsClass) {
         if !self.extra_first_fragments.contains(&options) {
             self.extra_first_fragments.push(options);
         }
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/OptionsDiff.java:177 OptionsDiff.addExtraSecondFragment
     fn add_extra_second_fragment(&mut self, options: FragmentOptionsClass) {
         if !self.extra_second_fragments.contains(&options) {
             self.extra_second_fragments.push(options);
         }
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/OptionsDiff.java:181 OptionsDiff.putStarlarkDiff
     fn put_starlark_diff(
         &mut self,
         build_setting: &Label,
@@ -219,12 +227,14 @@ impl OptionsDiff {
         self.has_starlark_options = true;
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/OptionsDiff.java:187 OptionsDiff.addExtraFirstStarlarkOption
     fn add_extra_first_starlark_option(&mut self, build_setting: &Label) {
         self.extra_starlark_options_first
             .push(build_setting.clone());
         self.has_starlark_options = true;
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/OptionsDiff.java:192 OptionsDiff.addExtraSecondStarlarkOption
     fn add_extra_second_starlark_option(
         &mut self,
         build_setting: &Label,
@@ -247,18 +257,22 @@ impl OptionsDiff {
         result
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/OptionsDiff.java:211 OptionsDiff.getStarlarkFirstForTesting
     pub fn get_starlark_first_for_testing(&self) -> &IndexMap<Label, StarlarkOptionValue> {
         &self.starlark_first
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/OptionsDiff.java:216 OptionsDiff.getStarlarkSecondForTesting
     pub fn get_starlark_second_for_testing(&self) -> &IndexMap<Label, StarlarkOptionValue> {
         &self.starlark_second
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/OptionsDiff.java:221 OptionsDiff.getExtraStarlarkOptionsFirstForTesting
     pub fn get_extra_starlark_options_first_for_testing(&self) -> &[Label] {
         &self.extra_starlark_options_first
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/OptionsDiff.java:226 OptionsDiff.getExtraStarlarkOptionsSecondForTesting
     pub fn get_extra_starlark_options_second_for_testing(
         &self,
     ) -> &IndexMap<Label, StarlarkOptionValue> {
@@ -290,7 +304,7 @@ impl OptionsDiff {
         to_return
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/OptionsDiff.java:248 OptionsDiff.getPrettyPrintList
+    // Java: com/google/devtools/build/lib/analysis/config/OptionsDiff.java:254 OptionsDiff.getPrettyPrintList
     pub fn get_pretty_print_list(&self) -> Vec<String> {
         let mut to_return = Vec::new();
         for (option, value) in &self.first {

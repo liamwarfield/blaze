@@ -102,8 +102,10 @@ impl fmt::Debug for ToolchainContextKey {
 
 impl Key for ToolchainContextKey {
     type Value = UnloadedToolchainContextImpl;
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainContextKey.java:44 ToolchainContextKey.functionName
+    // PORT: skipped, key interning (the keys are plain values here): ToolchainContextKey.getSkyKeyInterner
     const FUNCTION: SkyFunctionName = TOOLCHAIN_RESOLUTION;
-    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:146 SkyFunctions.TOOLCHAIN_RESOLUTION (createHermetic)
+    // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:145 SkyFunctions.TOOLCHAIN_RESOLUTION (createHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Hermetic;
     /// Java: an AutoValue (key, both platforms by `PlatformInfo.equals`, toolchain types, resolved toolchains, requested labels, error data). PORT: the toolchain types and resolved toolchains are compared in order (Java: a set and a set multimap): Rust prunes less, never more.
     // Java: com/google/devtools/build/lib/skyframe/toolchains/UnloadedToolchainContextImpl.java:32 UnloadedToolchainContextImpl
@@ -138,11 +140,14 @@ fn dedup<T: PartialEq + Clone>(items: impl IntoIterator<Item = T>) -> Vec<T> {
 }
 
 impl ToolchainContextKeyBuilder {
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainContextKey.java:66 ToolchainContextKey.Builder.configurationKey
     pub fn configuration_key(&mut self, key: BuildConfigurationKey) -> &mut Self {
         self.configuration_key = Some(key);
         self
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainContextKey.java:68 ToolchainContextKey.Builder.toolchainTypes
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainContextKey.java:70 ToolchainContextKey.Builder.toolchainTypes
     pub fn toolchain_types(
         &mut self,
         toolchain_types: impl IntoIterator<Item = ToolchainTypeRequirement>,
@@ -151,6 +156,8 @@ impl ToolchainContextKeyBuilder {
         self
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainContextKey.java:72 ToolchainContextKey.Builder.execConstraintLabels
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainContextKey.java:74 ToolchainContextKey.Builder.execConstraintLabels
     pub fn exec_constraint_labels(
         &mut self,
         exec_constraint_labels: impl IntoIterator<Item = Label>,
@@ -159,11 +166,13 @@ impl ToolchainContextKeyBuilder {
         self
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainContextKey.java:76 ToolchainContextKey.Builder.debugTarget
     pub fn debug_target(&mut self, flag: bool) -> &mut Self {
         self.debug_target = flag;
         self
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/ToolchainContextKey.java:78 ToolchainContextKey.Builder.forceExecutionPlatform
     pub fn force_execution_platform(&mut self, exec_platform: Label) -> &mut Self {
         self.force_execution_platform = Some(exec_platform);
         self

@@ -31,8 +31,8 @@ the three sides and compares:
     Starlark interpreter's error texts differ by the user's decision (starlark-rust).
 
 Round-2 review additions: a fixed --invocation_id on stretches of rounds (all sides; while it
-is on, the clean build is the judge: Bazel 9.3.2 gives stale results or crashes on a repeated
-id, so differences against the oracle are printed and not counted); --watchfs on
+is on, differences against the oracle are printed and not counted: Bazel 9.3.2 gives stale
+results or crashes on a repeated id); --watchfs on
 stretches of rounds with directory renames, re-creations and removals; writes racing the start of
 A's command (the racing round is not compared; the next build of all sides is, with no edit in
 between); SIGINT during A's build (the same). Interrupts and races apply to A only.
@@ -785,12 +785,13 @@ def cmd_run(a):
         bba, bbo, bbb = side_a.bazel_bin(), side_o.bazel_bin(), side_b.bazel_bin()
         ta, to, tb = output_tree(side_a, bba), output_tree(side_o, bbo), output_tree(side_b, bbb)
         vs_o, vs_b, notes = [], [], []
-        # With a repeated --invocation_id Bazel's own result is stale (Skymeld's BuildDriver
+        # With a repeated --invocation_id Bazel's own result can be stale (Skymeld's BuildDriver
         # nodes depend on BUILD_ID only) or a crash (an NPE in ExecutionProgressReceiver when
-        # two builds in a row have the same id): the clean build is the judge, the oracle's
-        # differences are printed only.
+        # two builds in a row have the same id): the oracle's differences are printed only.
+        # A difference against the clean build is still excused where A equals the oracle (a
+        # state Bazel keeps too, such as a deleted runfiles entry).
         id_reused = "invocation_id" in editor.opts
-        oracle_agrees = (lambda same: same and not id_reused)
+        oracle_agrees = (lambda same: same)
         if ca != co:
             vs_o.append("exit %d (A) vs %d (oracle)" % (ca, co))
         for p in compare_trees(ta, to, True):

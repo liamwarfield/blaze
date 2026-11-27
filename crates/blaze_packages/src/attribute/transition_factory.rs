@@ -37,7 +37,7 @@ pub enum TransitionFactory {
         is_split: bool,
     },
     /// Java `ComposingTransitionFactory`: `first`, then `second`.
-    // Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:99 ComposingTransitionFactory.create
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:103 ComposingTransitionFactory.create
     Composing {
         first: Box<TransitionFactory>,
         second: Box<TransitionFactory>,
@@ -45,7 +45,10 @@ pub enum TransitionFactory {
     /// Java `ConfigFeatureFlagTransitionFactory(attributeName)`
     /// (`config_common.config_feature_flag_transition(attribute)`): a rule transition that sets
     /// exactly the feature flag values of the rule's `attribute_name` attribute.
-    // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTransitionFactory.java:42 ConfigFeatureFlagTransitionFactory
+    // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTransitionFactory.java:45 ConfigFeatureFlagTransitionFactory
+    // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTransitionFactory.java:156 ConfigFeatureFlagTransitionFactory.getAttributeName
+    // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTransitionFactory.java:161 ConfigFeatureFlagTransitionFactory.equals
+    // PORT: skipped, TransitionFactory is never hashed here and no output prints a factory at the pin: ConfigFeatureFlagTransitionFactory.hashCode, ConfigFeatureFlagTransitionFactory.toString
     ConfigFeatureFlag { attribute_name: String },
     /// A native transition factory, named by its Java class simple name.
     Native {
@@ -142,7 +145,7 @@ impl TransitionFactory {
 
 /// Data a transition factory uses to create an attribute transition (Java
 /// `AttributeTransitionData`).
-// Java: com/google/devtools/build/lib/packages/AttributeTransitionData.java:34 AttributeTransitionData
+// Java: com/google/devtools/build/lib/packages/AttributeTransitionData.java:33 AttributeTransitionData
 pub struct AttributeTransitionData<'a> {
     pub attributes: Option<&'a dyn AttributeMap>,
     pub execution_platform: Option<Label>,

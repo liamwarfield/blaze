@@ -26,7 +26,11 @@ use crate::producers::transition_applier::Produced;
 
 /// Computes the config conditions (`select()` keys) of a target in its configuration (Java
 /// `ConfigConditionsProducer`, driven to completion).
-// Java: com/google/devtools/build/lib/analysis/producers/ConfigConditionsProducer.java:97 ConfigConditionsProducer.step
+// Java: com/google/devtools/build/lib/analysis/producers/ConfigConditionsProducer.java:92 ConfigConditionsProducer.step
+// Java: com/google/devtools/build/lib/analysis/producers/ConfigConditionsProducer.java:70 ConfigConditionsProducer.<init>
+// Java: com/google/devtools/build/lib/analysis/producers/ConfigConditionsProducer.java:44 ConfigConditionsProducer.ResultSink.acceptConfigConditions
+// Java: com/google/devtools/build/lib/analysis/producers/ConfigConditionsProducer.java:46 ConfigConditionsProducer.ResultSink.acceptConfigConditionsError
+// PORT: the result sink is the return value.
 pub fn produce_config_conditions(
     env: &mut Environment<'_>,
     target: &Target,
@@ -70,12 +74,16 @@ pub fn produce_config_conditions(
                 missing = true;
                 prerequisites.push(None);
             }
+            // Java: com/google/devtools/build/lib/analysis/producers/ConfigConditionsProducer.java:119 ConfigConditionsProducer.acceptConfiguredTargetAndData
             Some(Ok(v)) => prerequisites.push(Some(v)),
             Some(Err(e)) => {
                 prerequisites.push(None);
                 let new_exit_code = match &e {
+                    // Java: com/google/devtools/build/lib/analysis/producers/ConfigConditionsProducer.java:124 ConfigConditionsProducer.acceptConfiguredTargetAndDataError
                     ConfiguredTargetLookupError::Creation(c) => c.get_detailed_exit_code().clone(),
+                    // Java: com/google/devtools/build/lib/analysis/producers/ConfigConditionsProducer.java:129 ConfigConditionsProducer.acceptConfiguredTargetAndDataError
                     ConfiguredTargetLookupError::NoSuchThing(n) => n.get_detailed_exit_code(),
+                    // Java: com/google/devtools/build/lib/analysis/producers/ConfigConditionsProducer.java:134 ConfigConditionsProducer.acceptConfiguredTargetAndDataError
                     ConfiguredTargetLookupError::InconsistentNullConfig(_) => {
                         // A config label was evaluated with a null configuration. This should
                         // never happen as ConfigConditions are only present if the parent is a
@@ -85,7 +93,7 @@ pub fn produce_config_conditions(
                         );
                     }
                 };
-                // Java: com/google/devtools/build/lib/analysis/producers/ConfigConditionsProducer.java:202 ConfigConditionsProducer.emitErrorIfMostImportant
+                // Java: com/google/devtools/build/lib/analysis/producers/ConfigConditionsProducer.java:200 ConfigConditionsProducer.emitErrorIfMostImportant
                 most_important_exit_code = choose_more_important_with_first_if_tie(
                     Some(new_exit_code.clone()),
                     most_important_exit_code,
@@ -112,7 +120,7 @@ pub fn produce_config_conditions(
         return Ok(None);
     }
 
-    // Java: com/google/devtools/build/lib/analysis/producers/ConfigConditionsProducer.java:145 ConfigConditionsProducer.constructConfigConditions
+    // Java: com/google/devtools/build/lib/analysis/producers/ConfigConditionsProducer.java:142 ConfigConditionsProducer.constructConfigConditions
     let mut as_configured_targets: IndexMap<Label, ConfiguredTargetAndData> = IndexMap::new();
     let mut as_config_conditions: IndexMap<Label, ConfigMatchingProvider> = IndexMap::new();
     for (label, prerequisite) in config_labels.iter().zip(prerequisites) {
@@ -153,7 +161,7 @@ fn put_or_throw<V>(map: &mut IndexMap<Label, V>, key: Label, value: V) {
 
 /// Computes the config labels belonging to the given target; `None` if there were none
 /// (implying a `ConfigConditions.EMPTY` result).
-// Java: com/google/devtools/build/lib/analysis/producers/ConfigConditionsProducer.java:184 ConfigConditionsProducer.computeConfigLabels
+// Java: com/google/devtools/build/lib/analysis/producers/ConfigConditionsProducer.java:180 ConfigConditionsProducer.computeConfigLabels
 pub fn compute_config_labels(target: &Target) -> Option<Vec<Label>> {
     let rule = target.get_associated_rule()?;
 

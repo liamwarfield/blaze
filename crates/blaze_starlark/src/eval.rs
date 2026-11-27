@@ -347,6 +347,7 @@ pub fn with_evaluator<R>(
     let run = AssertUnwindSafe(|| {
         Module::with_temp_heap(|module| {
             let mut eval = Evaluator::new(&module);
+            crate::debug::install_hook(&mut eval);
             eval.extra = Some(ctx);
             if let Some(l) = loads {
                 eval.set_loader(l);
@@ -384,10 +385,12 @@ pub fn exec_module(
     opts: &EvalOptions,
 ) -> Result<FrozenModule, EvalError> {
     let ast = compiled.ast;
+    let debug_file_name = ast.file_span(Default::default()).filename().to_owned();
     let run = AssertUnwindSafe(|| {
         Module::with_temp_heap(|module| {
             {
                 let mut eval = Evaluator::new(&module);
+                crate::debug::install_hook(&mut eval);
                 eval.extra = Some(ctx);
                 eval.set_loader(loads);
                 eval.set_forbid_recursion(!ctx.semantics.allow_recursion);
@@ -401,7 +404,9 @@ pub fn exec_module(
                 eval.eval_module(ast, globals)
                     .map_err(|e| EvalError::from_starlark(&e))?;
             }
-            freeze(module)
+            let frozen = freeze(module)?;
+            crate::debug::register_module(&debug_file_name, &frozen);
+            Ok(frozen)
         })
     });
     std::panic::catch_unwind(run).unwrap_or_else(|p| Err(panic_error(p)))
@@ -419,12 +424,14 @@ pub fn exec_module_with_extra_value(
     extra_value: impl for<'v> FnOnce(&Module<'v>) -> Value<'v>,
 ) -> Result<FrozenModule, EvalError> {
     let ast = compiled.ast;
+    let debug_file_name = ast.file_span(Default::default()).filename().to_owned();
     let run = AssertUnwindSafe(|| {
         Module::with_temp_heap(|module| {
             let extra = extra_value(&module);
             module.set_extra_value(extra);
             {
                 let mut eval = Evaluator::new(&module);
+                crate::debug::install_hook(&mut eval);
                 eval.extra = Some(ctx);
                 eval.set_loader(loads);
                 eval.set_forbid_recursion(!ctx.semantics.allow_recursion);
@@ -438,7 +445,9 @@ pub fn exec_module_with_extra_value(
                 eval.eval_module(ast, globals)
                     .map_err(|e| EvalError::from_starlark(&e))?;
             }
-            freeze(module)
+            let frozen = freeze(module)?;
+            crate::debug::register_module(&debug_file_name, &frozen);
+            Ok(frozen)
         })
     });
     std::panic::catch_unwind(run).unwrap_or_else(|p| Err(panic_error(p)))
@@ -493,6 +502,7 @@ pub fn call_frozen_and_freeze(
         Module::with_temp_heap(|module| {
             {
                 let mut eval = Evaluator::new(&module);
+                crate::debug::install_hook(&mut eval);
                 eval.extra = Some(ctx);
                 eval.set_forbid_recursion(!ctx.semantics.allow_recursion);
                 eval.set_utf8_byte_strings(ctx.semantics.utf8_byte_strings());

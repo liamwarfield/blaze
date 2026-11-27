@@ -19,7 +19,7 @@ use crate::build_configuration_key::BuildConfigurationKey;
 use crate::build_options::{BuildOptions, BuildOptionsBuilder, StarlarkOptionValue};
 use crate::fragment_options_class::FragmentOptionsClass;
 
-// Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:48 ParsedFlagsValue.Key
+// Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:47 ParsedFlagsValue.Key
 /// Key for [`ParsedFlagsValue`] based on the raw flags.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ParsedFlagsKey {
@@ -31,7 +31,7 @@ pub struct ParsedFlagsKey {
 }
 
 impl ParsedFlagsKey {
-    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:73 ParsedFlagsValue.Key.create
+    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:69 ParsedFlagsValue.Key.create
     /// Returns a new key for the given command-line flags, such as `--compilation_mode=bdg` or
     /// `--//custom/starlark:flag=23`.
     pub fn create(
@@ -42,7 +42,7 @@ impl ParsedFlagsKey {
         Self::create_with_defaults(raw_flags, package_context, false, flag_alias_mappings)
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:86 ParsedFlagsValue.Key.create
+    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:81 ParsedFlagsValue.Key.create
     pub fn create_with_defaults(
         raw_flags: Vec<String>,
         package_context: LabelPackageContext,
@@ -104,29 +104,39 @@ impl Key for ParsedFlagsKey {
     }
 }
 
-// Java: com/google/devtools/build/lib/skyframe/config/NativeAndStarlarkFlags.java:35 NativeAndStarlarkFlags
+// Java: com/google/devtools/build/lib/skyframe/config/NativeAndStarlarkFlags.java:33 NativeAndStarlarkFlags
 /// Container for storing a set of native and Starlark flag settings in separate buckets.
 ///
 /// This is necessary because native and Starlark flags are parsed with different logic.
+// Java: com/google/devtools/build/lib/skyframe/config/NativeAndStarlarkFlags.java:57 NativeAndStarlarkFlags.builder
+// PORT: the AutoValue builder is the struct literal (`..Default::default()`); its setters are the
+// fields.
+// Java: com/google/devtools/build/lib/skyframe/config/NativeAndStarlarkFlags.java:53 NativeAndStarlarkFlags.Builder.build
 #[derive(Clone, Default)]
 pub struct NativeAndStarlarkFlags {
     /// The native flags from a given set of flags, in the format `[--flag=value]` or
     /// `["--flag", "value"]`.
+    // Java: com/google/devtools/build/lib/skyframe/config/NativeAndStarlarkFlags.java:40 NativeAndStarlarkFlags.Builder.nativeFlags
     pub native_flags: Vec<String>,
     /// The Starlark flags from a given set of flags, mapped to the correct converted data type.
     /// If a Starlark flag is explicitly set to the default value it should still appear in this
     /// map so that consumers can properly handle the flag.
+    // Java: com/google/devtools/build/lib/skyframe/config/NativeAndStarlarkFlags.java:42 NativeAndStarlarkFlags.Builder.starlarkFlags
     pub starlark_flags: BTreeMap<String, StarlarkOptionValue>,
+    // Java: com/google/devtools/build/lib/skyframe/config/NativeAndStarlarkFlags.java:44 NativeAndStarlarkFlags.Builder.scopesAttributes
     pub scopes_attributes: BTreeMap<String, String>,
     // TODO: https://github.com/bazelbuild/bazel/issues/22365 - Improve looking up Starlark flag
     // option definitions and do not store this.
+    // Java: com/google/devtools/build/lib/skyframe/config/NativeAndStarlarkFlags.java:46 NativeAndStarlarkFlags.Builder.starlarkFlagDefaults
     pub starlark_flag_defaults: BTreeMap<String, StarlarkOptionValue>,
+    // Java: com/google/devtools/build/lib/skyframe/config/NativeAndStarlarkFlags.java:48 NativeAndStarlarkFlags.Builder.optionsClasses
     pub options_classes: Vec<FragmentOptionsClass>,
+    // Java: com/google/devtools/build/lib/skyframe/config/NativeAndStarlarkFlags.java:51 NativeAndStarlarkFlags.Builder.repoMapping
     pub repo_mapping: Option<RepositoryMapping>,
 }
 
 impl NativeAndStarlarkFlags {
-    // Java: com/google/devtools/build/lib/skyframe/config/NativeAndStarlarkFlags.java:89 NativeAndStarlarkFlags.parse
+    // Java: com/google/devtools/build/lib/skyframe/config/NativeAndStarlarkFlags.java:90 NativeAndStarlarkFlags.parse
     pub fn parse(&self) -> Result<OptionsParser, OptionsParsingException> {
         let classes: Vec<_> = self
             .options_classes
@@ -213,7 +223,7 @@ impl fmt::Debug for NativeAndStarlarkFlags {
     }
 }
 
-// Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:44 ParsedFlagsValue
+// Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:42 ParsedFlagsValue
 /// Stores the `OptionsParsingResult` from `ParsedFlagsFunction`.
 pub struct ParsedFlagsValue {
     flags: NativeAndStarlarkFlags,
@@ -221,7 +231,7 @@ pub struct ParsedFlagsValue {
 }
 
 impl ParsedFlagsValue {
-    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:110 ParsedFlagsValue.parseAndCreate
+    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:101 ParsedFlagsValue.parseAndCreate
     pub fn parse_and_create(
         flags: NativeAndStarlarkFlags,
     ) -> Result<ParsedFlagsValue, OptionsParsingException> {
@@ -232,7 +242,7 @@ impl ParsedFlagsValue {
         })
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:136 ParsedFlagsValue.parsingResult
+    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:127 ParsedFlagsValue.parsingResult
     pub fn parsing_result(&self) -> &OptionsParser {
         &self.parsing_result
     }
@@ -241,7 +251,7 @@ impl ParsedFlagsValue {
         &self.flags
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:171 ParsedFlagsValue.mergeWith
+    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:161 ParsedFlagsValue.mergeWith
     /// Returns a new `BuildConfigurationKey` with options containing all flags from the given
     /// `BuildOptions` with `parsing_result()` merged in.
     ///
@@ -264,7 +274,7 @@ impl ParsedFlagsValue {
         self.merge_with_impl(source)
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:175 ParsedFlagsValue.mergeWithImpl
+    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:165 ParsedFlagsValue.mergeWithImpl
     fn merge_with_impl(&self, source: &BuildOptions) -> BuildConfigurationKey {
         let mut builder = source.to_builder();
 
@@ -302,7 +312,7 @@ impl ParsedFlagsValue {
         BuildConfigurationKey::create(Arc::new(builder.build()))
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:199 ParsedFlagsValue.updateOptionValue
+    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:198 ParsedFlagsValue.updateOptionValue
     fn update_option_value(
         fragment: &mut dyn blaze_options::definition::OptionsBase,
         option_value: &blaze_options::value_description::OptionValueDescription,
@@ -350,7 +360,7 @@ impl ParsedFlagsValue {
 }
 
 impl PartialEq for ParsedFlagsValue {
-    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:225 ParsedFlagsValue.equals
+    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:226 ParsedFlagsValue.equals
     fn eq(&self, other: &Self) -> bool {
         self.flags == other.flags
     }
@@ -359,14 +369,14 @@ impl PartialEq for ParsedFlagsValue {
 impl Eq for ParsedFlagsValue {}
 
 impl Hash for ParsedFlagsValue {
-    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:236 ParsedFlagsValue.hashCode
+    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:237 ParsedFlagsValue.hashCode
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.flags.hash(state);
     }
 }
 
 impl fmt::Debug for ParsedFlagsValue {
-    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:241 ParsedFlagsValue.toString
+    // Java: com/google/devtools/build/lib/skyframe/config/ParsedFlagsValue.java:242 ParsedFlagsValue.toString
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "ParsedFlagsValue{{flags={:?}}}", self.flags)
     }

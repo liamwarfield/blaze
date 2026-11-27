@@ -1257,6 +1257,7 @@ fn join_english_list(items: &[String]) -> String {
 
 // PORT: skipped, starlark-rust does not count Java's executed steps; `--max_computation_steps` stops with unported! (PackageFactory): TargetDefinitionContext.updateStartedThreadComputationSteps, TargetDefinitionContext.updatePausedThreadComputationSteps
 // PORT: skipped, starlark-rust does not count Java's executed steps; `--max_computation_steps` stops with unported! (PackageFactory): TargetDefinitionContext.close, TargetDefinitionContext.setComputationSteps
+// PORT: skipped, the step updaters of the same counting (see above): TargetDefinitionContext.StartedThreadComputationStepUpdater.<init>, TargetDefinitionContext.PausedThreadComputationStepUpdater.<init>
 // PORT: skipped, the BUILD thread's blaze_starlark ThreadContext generates the identity tokens: TargetDefinitionContext.getSymbolGenerator
 // PORT: skipped, memory interning of list attribute values (no output depends on it): TargetDefinitionContext.getListInterner, TargetDefinitionContext.intern
 // PORT: skipped, packages load on the evaluator's workers without Java's CPU-bound semaphore (throughput only): TargetDefinitionContext.getCpuBoundSemaphore

@@ -281,6 +281,19 @@ impl<'v, V: ValueLike<'v>> StarlarkInfoGen<V> {
     /// Java: StarlarkInfoNoSchema.isImmutable
     // Java: com/google/devtools/build/lib/packages/StarlarkInfoNoSchema.java:196 StarlarkInfoNoSchema.isImmutable
     // Java: com/google/devtools/build/lib/packages/StarlarkInfoWithSchema.java:141 StarlarkInfoWithSchema.isImmutable
+    /// Java `StarlarkInfoWithSchema.hashCode` without `checkHashable`: a struct nested in a
+    /// hashed value (a field, a dict entry, a list element) is hashed whatever its mutability,
+    /// as Java's `hashCode` of the outer value calls the inner one's `hashCode`.
+    // Java: com/google/devtools/build/lib/packages/StarlarkInfoWithSchema.java:228 StarlarkInfoWithSchema.hashCode
+    fn java_hash_code_fields(&self, hasher: &mut StarlarkHasher) -> starlark::Result<()> {
+        self.printable_provider_name().hash(hasher);
+        for (k, v) in &self.fields {
+            k.hash(hasher);
+            java_hash_code(v.to_value(), hasher)?;
+        }
+        Ok(())
+    }
+
     pub fn is_immutable(&self) -> bool {
         let exported = provider_info(self.provider.to_value()).is_none_or(|p| p.exported);
         exported && self.fields.iter().all(|(_, v)| is_immutable(v.to_value()))
@@ -396,12 +409,7 @@ where
                 "unhashable type: 'struct'"
             )));
         }
-        self.printable_provider_name().hash(hasher);
-        for (k, v) in &self.fields {
-            k.hash(hasher);
-            java_hash_code(v.to_value(), hasher)?;
-        }
-        Ok(())
+        self.java_hash_code_fields(hasher)
     }
 
     fn compare(&self, other: Value<'v>) -> starlark::Result<Ordering> {
@@ -508,6 +516,12 @@ fn java_hash_code(v: Value, hasher: &mut StarlarkHasher) -> starlark::Result<()>
         }
         sum.hash(hasher);
         return Ok(());
+    }
+    // A nested struct: Java's `hashCode`, which does not check hashability (review query-5:
+    // a frozen dict of `BitcodeInfo` structs with mutable `copts` lists inside a ThinLTO
+    // `library_to_link` is hashed by a depset in Java).
+    if let Some(s) = StarlarkInfo::from_value(v) {
+        return s.java_hash_code_fields(hasher);
     }
     v.write_hash(hasher)
 }

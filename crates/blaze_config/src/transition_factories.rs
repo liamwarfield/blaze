@@ -30,7 +30,7 @@ pub enum TransitionType {
 }
 
 impl TransitionType {
-    // Java: com/google/devtools/build/lib/analysis/config/transitions/TransitionFactory.java:48 TransitionFactory.TransitionType.isCompatibleWith
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/TransitionFactory.java:50 TransitionFactory.TransitionType.isCompatibleWith
     pub fn is_compatible_with(self, other: TransitionType) -> bool {
         if self == TransitionType::Any {
             return true;
@@ -43,7 +43,9 @@ impl TransitionType {
 }
 
 /// The value of `config.exec(exec_group)` (Java `ExecutionTransitionFactory`).
-// Java: com/google/devtools/build/lib/analysis/config/ExecutionTransitionFactory.java:44 ExecutionTransitionFactory
+// PORT: skipped, not used at the pin (a debugging aid of b/288258583, only named in a FunctionTransitionUtil comment): ComparingTransition.<init>, ComparingTransition.patch, ComparingTransition.prettyClassName, ComparingTransition.compare, ComparingTransition.serialize, ComparingTransition.serializeUserDefinedOption, ComparingTransition.reasonForOverride, ComparingTransition.visit
+// PORT: skipped, not used at the pin (no caller outside its BUILD file): ConfigAwareAspectBuilder.<init>, ConfigAwareAspectBuilder.of, ConfigAwareAspectBuilder.originalBuilder
+// Java: com/google/devtools/build/lib/analysis/config/ExecutionTransitionFactory.java:51 ExecutionTransitionFactory
 #[derive(Debug, Clone, PartialEq, Eq, Hash, ProvidesStaticType, NoSerialize, Allocative)]
 pub struct ExecutionTransitionFactory {
     exec_group: String,
@@ -52,14 +54,14 @@ pub struct ExecutionTransitionFactory {
 starlark_simple_value!(ExecutionTransitionFactory);
 
 impl ExecutionTransitionFactory {
-    // Java: com/google/devtools/build/lib/analysis/config/ExecutionTransitionFactory.java:52 ExecutionTransitionFactory.createFactory
+    // Java: com/google/devtools/build/lib/analysis/config/ExecutionTransitionFactory.java:55 ExecutionTransitionFactory.createFactory
     pub fn create_factory() -> Self {
         ExecutionTransitionFactory {
             exec_group: DEFAULT_EXEC_GROUP_NAME.to_owned(),
         }
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/ExecutionTransitionFactory.java:56 ExecutionTransitionFactory.createFactory
+    // Java: com/google/devtools/build/lib/analysis/config/ExecutionTransitionFactory.java:60 ExecutionTransitionFactory.createFactory
     pub fn create_factory_for(exec_group: &str) -> Self {
         ExecutionTransitionFactory {
             exec_group: exec_group.to_owned(),

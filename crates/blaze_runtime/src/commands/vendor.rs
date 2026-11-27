@@ -327,6 +327,7 @@ impl VendorCommand {
                 targets,
                 validator: &validator,
                 repo_precomputed,
+                post_build_callback: None,
                 after_build: Box::new(|outcome: RunBuildOutcome<'_>| {
                     let env = &*outcome.env;
                     // Java: com/google/devtools/build/lib/bazel/commands/TargetFetcher.java:58 TargetFetcher.fetchTargets

@@ -125,6 +125,13 @@ impl BuildIntegrationTestCase {
     /// (with an empty `MODULE.bazel`), an output base, and the runtime.
     // Java: src/test/java/com/google/devtools/build/lib/buildtool/util/BuildIntegrationTestCase.java:240 BuildIntegrationTestCase.createFilesAndMocks
     pub fn new() -> BuildIntegrationTestCase {
+        Self::new_with_modules(Vec::new())
+    }
+
+    /// [`Self::new`] with `extra_modules` after Bazel's modules (Java: the test's
+    /// `getRuntimeBuilder()` override adding modules, e.g. a test spawn strategy).
+    // Java: src/test/java/com/google/devtools/build/lib/buildtool/util/BuildIntegrationTestCase.java:602 BuildIntegrationTestCase.getRuntimeBuilder
+    pub fn new_with_modules(extra_modules: Vec<Arc<dyn BlazeModule>>) -> BuildIntegrationTestCase {
         let serial = SERIAL.lock();
         let install_base = oracle_install_base();
         assert!(
@@ -172,6 +179,7 @@ impl BuildIntegrationTestCase {
         let collector = Arc::new(EventCollector::default());
         let hooks: Arc<Mutex<Vec<BeforeCommandHook>>> = Arc::new(Mutex::new(Vec::new()));
         let mut modules = blaze_runtime::bazel_modules::bazel_modules();
+        modules.extend(extra_modules);
         modules.push(Arc::new(TestModule {
             collector: collector.clone(),
             hooks: hooks.clone(),

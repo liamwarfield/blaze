@@ -302,6 +302,9 @@ fn target_pattern_error_function(
 
 /// Key of `TestExpansionValue`: a test_suite label and whether expansion is strict.
 // Java: com/google/devtools/build/lib/skyframe/TestExpansionValue.java:60 TestExpansionValue.TestExpansionKey
+// Java: com/google/devtools/build/lib/skyframe/TestExpansionValue.java:85 TestExpansionValue.TestExpansionKey.hashCode
+// Java: com/google/devtools/build/lib/skyframe/TestExpansionValue.java:90 TestExpansionValue.TestExpansionKey.equals
+// PORT: skipped, the function name is `Key::FUNCTION` (TESTS_IN_SUITE): TestExpansionValue.TestExpansionKey.functionName
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct TestExpansionKey {
     label: Label,
@@ -315,6 +318,16 @@ impl TestExpansionKey {
             label: target.get_label().clone(),
             strict,
         }
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/TestExpansionValue.java:72 TestExpansionValue.TestExpansionKey.getLabel
+    pub fn get_label(&self) -> &Label {
+        &self.label
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/TestExpansionValue.java:76 TestExpansionValue.TestExpansionKey.isStrict
+    pub fn is_strict(&self) -> bool {
+        self.strict
     }
 }
 

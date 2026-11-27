@@ -61,7 +61,7 @@ use crate::config::configured_attribute_mapper::{
 pub use blaze_build_config::starlark_transition::PATCH_TRANSITION_KEY;
 
 /// Java `TransitionFactory.TransitionCreationException` (a `RuntimeException`).
-// Java: com/google/devtools/build/lib/analysis/config/transitions/TransitionFactory.java:33 TransitionFactory.TransitionCreationException
+// Java: com/google/devtools/build/lib/analysis/config/transitions/TransitionFactory.java:35 TransitionFactory.TransitionCreationException
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 #[error("{0}")]
 pub struct TransitionCreationException(pub String);
@@ -70,7 +70,7 @@ pub struct TransitionCreationException(pub String);
 // Transition data.
 
 /// Data an attribute transition factory reads (Java `packages/AttributeTransitionData`).
-// Java: com/google/devtools/build/lib/packages/AttributeTransitionData.java:34 AttributeTransitionData
+// Java: com/google/devtools/build/lib/packages/AttributeTransitionData.java:33 AttributeTransitionData
 #[derive(Clone, Default)]
 pub struct AttributeTransitionData<'a> {
     /// Java `attributes()`: the configured attributes of the target the attribute belongs to.
@@ -178,7 +178,7 @@ fn transition_attr_value_to_starlark<'v>(v: Option<&AttrValue>, heap: Heap<'v>) 
 /// no Starlark method or field; `type()` is the class's simple name (`Starlark.classType`) and
 /// `repr` the default `<unknown object <class name>>` (analysis review S2-15).
 // Java: net/starlark/java/eval/Starlark.java:337 Starlark.classType
-// Java: net/starlark/java/eval/StarlarkValue.java:41 StarlarkValue.repr
+// Java: net/starlark/java/eval/StarlarkValue.java:37 StarlarkValue.repr
 macro_rules! attribute_default_value {
     ($name:ident, $type_name:literal, $java_class:literal) => {
         #[derive(
@@ -255,7 +255,7 @@ impl<'v> starlark::values::StarlarkValue<'v> for OpaqueAttributeDefault {}
 /// A Starlark-defined transition bound to its `attr` object (Java
 /// `StarlarkAttributeTransitionProvider.FunctionSplitTransition` and
 /// `StarlarkRuleTransitionProvider.FunctionPatchTransition`, both `StarlarkTransition`s).
-// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:51 StarlarkTransition
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:42 StarlarkTransition
 #[derive(Clone)]
 pub struct StarlarkTransition {
     pub definition: Arc<StarlarkDefinedConfigTransition>,
@@ -276,8 +276,8 @@ pub enum StarlarkTransitionKind {
 
 impl StarlarkTransition {
     /// Returns true if the transition is an exec transition.
-    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAttributeTransitionProvider.java:148 FunctionSplitTransition.isExecTransition
-    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleTransitionProvider.java:262 FunctionPatchTransition.isExecTransition
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAttributeTransitionProvider.java:162 FunctionSplitTransition.isExecTransition
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleTransitionProvider.java:260 FunctionPatchTransition.isExecTransition
     pub fn is_exec_transition(&self) -> bool {
         match self.kind {
             StarlarkTransitionKind::FunctionSplit {
@@ -289,7 +289,7 @@ impl StarlarkTransition {
     }
 
     /// The inputs of the starlark transition as a set of canonicalized labels.
-    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:69 StarlarkTransition.getInputs
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:58 StarlarkTransition.getInputs
     pub fn get_inputs(&self) -> Vec<Label> {
         self.definition
             .get_inputs_canonicalized_to_given()
@@ -299,7 +299,7 @@ impl StarlarkTransition {
     }
 
     /// The outputs of the starlark transition as a set of canonicalized labels.
-    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:74 StarlarkTransition.getOutputs
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:63 StarlarkTransition.getOutputs
     pub fn get_outputs(&self) -> Vec<Label> {
         self.definition
             .get_outputs_canonicalized_to_given()
@@ -308,7 +308,7 @@ impl StarlarkTransition {
             .collect()
     }
 
-    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:59 StarlarkTransition.getName
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:50 StarlarkTransition.getName
     pub fn get_name(&self) -> String {
         format!(
             "Starlark transition:{}",
@@ -340,7 +340,7 @@ impl fmt::Debug for StarlarkTransition {
 }
 
 /// A configuration transition (Java `ConfigurationTransition` and its implementations).
-// Java: com/google/devtools/build/lib/analysis/config/transitions/ConfigurationTransition.java:38 ConfigurationTransition
+// Java: com/google/devtools/build/lib/analysis/config/transitions/ConfigurationTransition.java:29 ConfigurationTransition
 #[derive(Clone, Debug)]
 pub enum ConfigurationTransition {
     /// Java `NoTransition.INSTANCE`.
@@ -357,9 +357,16 @@ pub enum ConfigurationTransition {
     /// Java `TestTrimmingTransitionFactory.TestTrimmingTransition`.
     TestTrimming { testonly: bool },
     /// Java `ConfigFeatureFlagTaggedTrimmingTransitionFactory.ConfigFeatureFlagTaggedTrimmingTransition`.
+    // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTaggedTrimmingTransitionFactory.java:53 ConfigFeatureFlagTaggedTrimmingTransitionFactory.ConfigFeatureFlagTaggedTrimmingTransition.<init>
+    // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTaggedTrimmingTransitionFactory.java:85 ConfigFeatureFlagTaggedTrimmingTransitionFactory.ConfigFeatureFlagTaggedTrimmingTransition.equals
+    // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTaggedTrimmingTransitionFactory.java:93 ConfigFeatureFlagTaggedTrimmingTransitionFactory.ConfigFeatureFlagTaggedTrimmingTransition.hashCode
     ConfigFeatureFlagTaggedTrimming { flags: BTreeSet<Label> },
     /// Java `ConfigFeatureFlagTransitionFactory.ConfigFeatureFlagValuesTransition`: the flag
     /// values (an `ImmutableSortedMap`, natural label order).
+    // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTransitionFactory.java:73 ConfigFeatureFlagTransitionFactory.ConfigFeatureFlagValuesTransition.<init>
+    // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTransitionFactory.java:77 ConfigFeatureFlagTransitionFactory.ConfigFeatureFlagValuesTransition.<init>
+    // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTransitionFactory.java:108 ConfigFeatureFlagTransitionFactory.ConfigFeatureFlagValuesTransition.equals
+    // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTransitionFactory.java:114 ConfigFeatureFlagTransitionFactory.ConfigFeatureFlagValuesTransition.hashCode
     ConfigFeatureFlagValues {
         flag_values: BTreeMap<Label, String>,
     },
@@ -369,17 +376,18 @@ pub enum ConfigurationTransition {
 
 impl ConfigurationTransition {
     /// Returns the option classes this transition requires to apply.
-    // Java: com/google/devtools/build/lib/analysis/config/transitions/ConfigurationTransition.java:56 ConfigurationTransition.requiresOptionFragments
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/ConfigurationTransition.java:42 ConfigurationTransition.requiresOptionFragments
     pub fn requires_option_fragments(&self) -> Vec<FragmentOptionsClass> {
         match self {
-            // Java: com/google/devtools/build/lib/analysis/config/transitions/NoConfigTransition.java:57 NoConfigTransition.requiresOptionFragments
+            // Java: com/google/devtools/build/lib/analysis/config/transitions/NoConfigTransition.java:67 NoConfigTransition.requiresOptionFragments
             ConfigurationTransition::NoConfigTransition => vec![&CORE_OPTIONS],
-            // Java: com/google/devtools/build/lib/analysis/config/ExecutionTransitionFactory.java:173 ExecTransitionFinalizer.requiresOptionFragments
+            // Java: com/google/devtools/build/lib/analysis/config/ExecutionTransitionFactory.java:183 ExecTransitionFinalizer.requiresOptionFragments
             ConfigurationTransition::ExecTransitionFinalizer { .. } => {
                 exec_transition_required_fragments()
             }
-            // Java: com/google/devtools/build/lib/analysis/test/TestTrimmingTransitionFactory.java:63 TestTrimmingTransition.requiresOptionFragments
+            // Java: com/google/devtools/build/lib/analysis/test/TestTrimmingTransitionFactory.java:70 TestTrimmingTransition.requiresOptionFragments
             ConfigurationTransition::TestTrimming { .. } => test_trimming_required_fragments(),
+            // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTaggedTrimmingTransitionFactory.java:59 ConfigFeatureFlagTaggedTrimmingTransitionFactory.ConfigFeatureFlagTaggedTrimmingTransition.requiresOptionFragments
             ConfigurationTransition::ConfigFeatureFlagTaggedTrimming { .. } => {
                 vec![&CONFIG_FEATURE_FLAG_OPTIONS, &CORE_OPTIONS]
             }
@@ -398,16 +406,16 @@ impl ConfigurationTransition {
         matches!(self, ConfigurationTransition::NoTransition)
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/transitions/ConfigurationTransition.java:95 ConfigurationTransition.getName
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/ConfigurationTransition.java:89 ConfigurationTransition.getName
     pub fn get_name(&self) -> String {
         match self {
             ConfigurationTransition::NoTransition => "NoTransition".to_owned(),
             ConfigurationTransition::NoConfigTransition => "NoConfigTransition".to_owned(),
-            // Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:186 ComposingTransition.getName
+            // Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:192 ComposingTransition.getName
             ConfigurationTransition::Composing(t1, t2) => {
                 format!("({} + {})", t1.get_name(), t2.get_name())
             }
-            // Java: com/google/devtools/build/lib/analysis/config/ExecutionTransitionFactory.java:158 ExecTransitionFinalizer.getName
+            // Java: com/google/devtools/build/lib/analysis/config/ExecutionTransitionFactory.java:168 ExecTransitionFinalizer.getName
             ConfigurationTransition::ExecTransitionFinalizer { .. } => "exec".to_owned(),
             ConfigurationTransition::TestTrimming { .. } => "TestTrimmingTransition".to_owned(),
             ConfigurationTransition::ConfigFeatureFlagTaggedTrimming { .. } => {
@@ -423,15 +431,15 @@ impl ConfigurationTransition {
 
     /// Visits this transition and its components (Java `visit(Visitor)`); `visitor` receives
     /// every leaf transition.
-    // Java: com/google/devtools/build/lib/analysis/config/transitions/ConfigurationTransition.java:103 ConfigurationTransition.visit
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/ConfigurationTransition.java:94 ConfigurationTransition.visit
     pub fn visit(&self, visitor: &mut dyn FnMut(&ConfigurationTransition)) {
         match self {
-            // Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:192 ComposingTransition.visit
+            // Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:198 ComposingTransition.visit
             ConfigurationTransition::Composing(t1, t2) => {
                 t1.visit(visitor);
                 t2.visit(visitor);
             }
-            // Java: com/google/devtools/build/lib/analysis/config/ExecutionTransitionFactory.java:167 ExecTransitionFinalizer.visit
+            // Java: com/google/devtools/build/lib/analysis/config/ExecutionTransitionFactory.java:178 ExecTransitionFinalizer.visit
             ConfigurationTransition::ExecTransitionFinalizer {
                 main_transition, ..
             } => visitor(&ConfigurationTransition::Starlark(main_transition.clone())),
@@ -470,7 +478,7 @@ impl ConfigurationTransition {
             ConfigurationTransition::ConfigFeatureFlagTaggedTrimming { flags } => {
                 format!("ConfigFeatureFlagTaggedTrimmingTransition{{flags={flags:?}}}")
             }
-            // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTransitionFactory.java:120 ConfigFeatureFlagValuesTransition.toString
+            // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTransitionFactory.java:119 ConfigFeatureFlagValuesTransition.toString
             ConfigurationTransition::ConfigFeatureFlagValues { flag_values } => format!(
                 "ConfigFeatureFlagValuesTransition{{flagValues={{{}}}}}",
                 flag_values
@@ -485,7 +493,7 @@ impl ConfigurationTransition {
 
     /// Applies the transition to the options (Java `apply(BuildOptionsView, EventHandler)`).
     /// Errors are reported to `event_handler`.
-    // Java: com/google/devtools/build/lib/analysis/config/transitions/ConfigurationTransition.java:74 ConfigurationTransition.apply
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/ConfigurationTransition.java:71 ConfigurationTransition.apply
     pub fn apply(
         &self,
         build_options: &BuildOptionsView,
@@ -494,7 +502,7 @@ impl ConfigurationTransition {
     ) -> IndexMap<String, BuildOptions> {
         match self {
             ConfigurationTransition::Composing(t1, t2) => {
-                // Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:166 ComposingTransition.apply
+                // Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:169 ComposingTransition.apply
                 let mut to_options: IndexMap<String, BuildOptions> = IndexMap::new();
                 let transition1_output = t1.apply(
                     &restrict(t1, build_options.underlying()),
@@ -521,7 +529,7 @@ impl ConfigurationTransition {
                     allow_immutable_flag_changes,
                     is_exec_transition_provider,
                 } => {
-                    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAttributeTransitionProvider.java:128 FunctionSplitTransition.split
+                    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAttributeTransitionProvider.java:141 FunctionSplitTransition.split
                     // Starlark transitions already have logic to enforce they only access
                     // declared inputs and outputs. Rather than complicate BuildOptionsView with
                     // more access points to BuildOptions, we just use the original BuildOptions
@@ -544,7 +552,7 @@ impl ConfigurationTransition {
                             m
                         }
                     };
-                    // Java: com/google/devtools/build/lib/analysis/config/transitions/SplitTransition.java:62 SplitTransition.apply
+                    // Java: com/google/devtools/build/lib/analysis/config/transitions/SplitTransition.java:63 SplitTransition.apply
                     blaze_util::check_state!(
                         !res.is_empty(),
                         "Split transition output may not be empty"
@@ -567,11 +575,11 @@ impl ConfigurationTransition {
         semantics: &Arc<StarlarkSemantics>,
     ) -> BuildOptions {
         match self {
-            // Java: com/google/devtools/build/lib/analysis/config/transitions/NoTransition.java:44 NoTransition.patch
+            // Java: com/google/devtools/build/lib/analysis/config/transitions/NoTransition.java:32 NoTransition.patch
             ConfigurationTransition::NoTransition => options.underlying().clone(),
-            // Java: com/google/devtools/build/lib/analysis/config/transitions/NoConfigTransition.java:62 NoConfigTransition.patch
+            // Java: com/google/devtools/build/lib/analysis/config/transitions/NoConfigTransition.java:72 NoConfigTransition.patch
             ConfigurationTransition::NoConfigTransition => EMPTY_OPTIONS.clone(),
-            // Java: com/google/devtools/build/lib/analysis/config/ExecutionTransitionFactory.java:181 ExecTransitionFinalizer.patch
+            // Java: com/google/devtools/build/lib/analysis/config/ExecutionTransitionFactory.java:192 ExecTransitionFinalizer.patch
             ConfigurationTransition::ExecTransitionFinalizer {
                 execution_platform,
                 main_transition,
@@ -582,7 +590,7 @@ impl ConfigurationTransition {
                 semantics,
                 event_handler,
             ),
-            // Java: com/google/devtools/build/lib/analysis/test/TestTrimmingTransitionFactory.java:68 TestTrimmingTransition.patch
+            // Java: com/google/devtools/build/lib/analysis/test/TestTrimmingTransitionFactory.java:75 TestTrimmingTransition.patch
             ConfigurationTransition::TestTrimming { testonly } => {
                 let Some(original_test_options) = options.get::<TestConfigurationTestOptions>()
                 else {
@@ -627,7 +635,7 @@ impl ConfigurationTransition {
                 }
                 to_options
             }
-            // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTaggedTrimmingTransitionFactory.java:62 ConfigFeatureFlagTaggedTrimmingTransition.patch
+            // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTaggedTrimmingTransitionFactory.java:64 ConfigFeatureFlagTaggedTrimmingTransition.patch
             ConfigurationTransition::ConfigFeatureFlagTaggedTrimming { flags } => {
                 let Some(config_feature_flag_options) = options.get::<ConfigFeatureFlagOptions>()
                 else {
@@ -657,7 +665,7 @@ impl ConfigurationTransition {
                 }
                 to_options
             }
-            // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleTransitionProvider.java:238 FunctionPatchTransition.patch
+            // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleTransitionProvider.java:232 FunctionPatchTransition.patch
             ConfigurationTransition::Starlark(t) => {
                 // Starlark transitions already have logic to enforce they only access declared
                 // inputs and outputs. Rather than complicate BuildOptionsView with more access
@@ -701,7 +709,7 @@ fn singleton(options: BuildOptions) -> IndexMap<String, BuildOptions> {
 /// Composes a new key out of two given keys. If either transition is a patch (1:1) its
 /// placeholder `PATCH_TRANSITION_KEY` is absorbed; if both transitions split, the keys are
 /// joined by a comma so the composition produces the cross product of their splits.
-// Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:214 ComposingTransition.composeKeys
+// Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:221 ComposingTransition.composeKeys
 fn compose_keys(key1: &str, key2: &str) -> String {
     if key1 == PATCH_TRANSITION_KEY {
         return key2.to_owned();
@@ -741,7 +749,7 @@ pub fn to_event_location(location: &blaze_starlark::Location) -> blaze_events::L
 // PORT: skipped, no transition caching (as above): StarlarkAttributeTransitionProvider.FunctionSplitTransition.equals, StarlarkAttributeTransitionProvider.FunctionSplitTransition.hashCode
 // PORT: skipped, implied by the type (an attribute transition provider is always a split transition; blaze_packages' TransitionFactory kind): StarlarkAttributeTransitionProvider.transitionType, StarlarkAttributeTransitionProvider.isSplit
 // PORT: skipped, not a Starlark value in Blaze (an attribute's `cfg` is not readable from Starlark): StarlarkAttributeTransitionProvider.repr
-// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAttributeTransitionProvider.java:47 StarlarkAttributeTransitionProvider
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAttributeTransitionProvider.java:52 StarlarkAttributeTransitionProvider
 #[derive(Clone, Debug)]
 pub struct StarlarkAttributeTransitionProvider {
     pub starlark_defined_config_transition: Arc<StarlarkDefinedConfigTransition>,
@@ -761,7 +769,7 @@ impl StarlarkAttributeTransitionProvider {
     }
 
     /// Java `StarlarkExecTransitionLoader.StarlarkExecTransitionProvider`.
-    // Java: com/google/devtools/build/lib/analysis/config/StarlarkExecTransitionLoader.java:58 StarlarkExecTransitionLoader.StarlarkExecTransitionProvider
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkExecTransitionLoader.java:118 StarlarkExecTransitionLoader.StarlarkExecTransitionProvider
     pub fn new_exec(definition: Arc<StarlarkDefinedConfigTransition>) -> Self {
         StarlarkAttributeTransitionProvider {
             starlark_defined_config_transition: definition,
@@ -770,12 +778,12 @@ impl StarlarkAttributeTransitionProvider {
         }
     }
 
-    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAttributeTransitionProvider.java:73 StarlarkAttributeTransitionProvider.create
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAttributeTransitionProvider.java:72 StarlarkAttributeTransitionProvider.create
     pub fn create(&self, attribute_map: Option<&ConfiguredAttributeMapper>) -> StarlarkTransition {
         // TODO(bazel-team): consider caching transition instances to save CPU time, similar to
         // what's done in StarlarkRuleTransitionProvider. This could benefit builds that apply
         // transitions over many build graph edges.
-        // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAttributeTransitionProvider.java:111 FunctionSplitTransition.<init>
+        // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkAttributeTransitionProvider.java:110 FunctionSplitTransition.<init>
         let mut attributes: Vec<(String, Option<AttrValue>)> = Vec::new();
         if let Some(attribute_map) = attribute_map {
             for attribute in attribute_map.get_attribute_names() {
@@ -808,7 +816,7 @@ impl StarlarkAttributeTransitionProvider {
 }
 
 /// Java `StarlarkRuleTransitionProvider`.
-// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleTransitionProvider.java:52 StarlarkRuleTransitionProvider
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleTransitionProvider.java:59 StarlarkRuleTransitionProvider
 #[derive(Clone, Debug)]
 pub struct StarlarkRuleTransitionProvider {
     pub starlark_defined_config_transition: Arc<StarlarkDefinedConfigTransition>,
@@ -819,12 +827,12 @@ impl StarlarkRuleTransitionProvider {
     ///
     /// PORT: `StarlarkDefinedConfigTransition.createRuleTransition` caches the transition per
     /// `RuleTransitionData`; recreating it yields an equal transition.
-    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleTransitionProvider.java:66 StarlarkRuleTransitionProvider.create
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleTransitionProvider.java:73 StarlarkRuleTransitionProvider.create
     pub fn create(&self, rule_data: &RuleTransitionData) -> StarlarkTransition {
         self.create_transition(rule_data)
     }
 
-    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleTransitionProvider.java:87 StarlarkRuleTransitionProvider.createTransition
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleTransitionProvider.java:94 StarlarkRuleTransitionProvider.createTransition
     fn create_transition(&self, rule_data: &RuleTransitionData) -> StarlarkTransition {
         let rule = &rule_data.rule;
         let config_conditions = &rule_data.config_conditions;
@@ -875,7 +883,7 @@ impl StarlarkRuleTransitionProvider {
     }
 
     /// `None` is Java's `Result.failure()`; `Some(resolved)` is `Result.success(resolved)`.
-    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleTransitionProvider.java:146 StarlarkRuleTransitionProvider.handleConfiguredAttribute
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleTransitionProvider.java:149 StarlarkRuleTransitionProvider.handleConfiguredAttribute
     fn handle_configured_attribute(
         &self,
         config_conditions: &IndexMap<Label, ConfigMatchingProvider>,
@@ -902,7 +910,7 @@ impl StarlarkRuleTransitionProvider {
         }
     }
 
-    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleTransitionProvider.java:172 StarlarkRuleTransitionProvider.selectBranchesReferenceOutputs
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleTransitionProvider.java:175 StarlarkRuleTransitionProvider.selectBranchesReferenceOutputs
     fn select_branches_reference_outputs(
         config_conditions: &IndexMap<Label, ConfigMatchingProvider>,
         transition_outputs: &[String],
@@ -922,7 +930,7 @@ impl StarlarkRuleTransitionProvider {
         false
     }
 
-    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleTransitionProvider.java:187 StarlarkRuleTransitionProvider.checkIfAttributeSelectOnAFlagTransitionChanges
+    // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleTransitionProvider.java:189 StarlarkRuleTransitionProvider.checkIfAttributeSelectOnAFlagTransitionChanges
     fn check_if_attribute_select_on_a_flag_transition_changes(
         config_matching_provider: &ConfigMatchingProvider,
         transition_outputs: &[String],
@@ -1065,13 +1073,13 @@ pub fn starlark_defined_config_transition_of(
 
 /// Java `TransitionFactory<AttributeTransitionData>.create(data)` for the loading-phase factory
 /// of an attribute.
-// Java: com/google/devtools/build/lib/analysis/config/transitions/TransitionFactory.java:68 TransitionFactory.create
+// Java: com/google/devtools/build/lib/analysis/config/transitions/TransitionFactory.java:65 TransitionFactory.create
 pub fn create_attribute_transition(
     factory: &TransitionFactory,
     data: &AttributeTransitionData<'_>,
 ) -> Result<ConfigurationTransition, TransitionCreationException> {
     Ok(match factory {
-        // Java: com/google/devtools/build/lib/analysis/config/transitions/NoTransition.java:70 NoTransition.Factory.create
+        // Java: com/google/devtools/build/lib/analysis/config/transitions/NoTransition.java:64 NoTransition.Factory.create
         TransitionFactory::NoTransition | TransitionFactory::Target => {
             ConfigurationTransition::NoTransition
         }
@@ -1082,7 +1090,7 @@ pub fn create_attribute_transition(
             ))
             .create(data.attributes),
         ),
-        // Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:107 ComposingTransitionFactory.create
+        // Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:103 ComposingTransitionFactory.create
         TransitionFactory::Composing { first, second } => {
             let transition1 = create_attribute_transition(first, data)?;
             let transition2 = create_attribute_transition(second, data)?;
@@ -1098,7 +1106,7 @@ pub fn create_attribute_transition(
 // PORT: skipped, a cache only (the rule transition of a Starlark transition is built again for each target; it is a pure function of the target's attributes): StarlarkDefinedConfigTransition.createRuleTransition
 /// Java `TransitionFactory<RuleTransitionData>.create(data)` for the loading-phase factory of a
 /// rule class.
-// Java: com/google/devtools/build/lib/analysis/config/transitions/TransitionFactory.java:68 TransitionFactory.create
+// Java: com/google/devtools/build/lib/analysis/config/transitions/TransitionFactory.java:65 TransitionFactory.create
 pub fn create_rule_transition(
     factory: &TransitionFactory,
     data: &RuleTransitionData,
@@ -1129,7 +1137,7 @@ pub fn create_rule_transition(
     }
 }
 
-// Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTransitionFactory.java:137 ConfigFeatureFlagTransitionFactory.create
+// Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTransitionFactory.java:138 ConfigFeatureFlagTransitionFactory.create
 fn config_feature_flag_transition_factory_create(
     attribute_name: &str,
     rule_data: &RuleTransitionData,
@@ -1155,12 +1163,19 @@ fn create_native(name: &str) -> ConfigurationTransition {
     match name {
         // Java: com/google/devtools/build/lib/analysis/config/transitions/NoConfigTransition.java:87 NoConfigTransition.Factory.create
         "NoConfigTransition" => ConfigurationTransition::NoConfigTransition,
-        other => blaze_util::unported!("TransitionFactory.create", "native factory {}", other),
+        // Every TransitionFactory class at the pin has its own variant (Composing, Exec,
+        // ConfigFeatureFlag, the Starlark providers, ...) or is NoConfigTransition; blaze_packages
+        // creates `Native` only for NoConfigTransition, so this is reached by no build.
+        other => blaze_util::unported!(
+            "TransitionFactory.create",
+            "native factory {} (no such native factory in Bazel 9.3.2)",
+            other
+        ),
     }
 }
 
 /// Java `ExecutionTransitionFactory.create(dataWithTargetAttributes)`.
-// Java: com/google/devtools/build/lib/analysis/config/ExecutionTransitionFactory.java:73 ExecutionTransitionFactory.create
+// Java: com/google/devtools/build/lib/analysis/config/ExecutionTransitionFactory.java:77 ExecutionTransitionFactory.create
 fn execution_transition_factory_create(
     data_with_target_attributes: &AttributeTransitionData<'_>,
 ) -> Result<ConfigurationTransition, TransitionCreationException> {
@@ -1206,7 +1221,7 @@ fn execution_transition_factory_create(
 
 /// Returns the exec group of the `ExecutionTransitionFactory` within the given (possibly
 /// composed) transition factory, or `None` if there is none.
-// Java: com/google/devtools/build/lib/analysis/DependencyResolutionHelpers.java:252 DependencyResolutionHelpers.findExecutionTransitionFactory
+// Java: com/google/devtools/build/lib/analysis/DependencyResolutionHelpers.java:263 DependencyResolutionHelpers.findExecutionTransitionFactory
 pub fn find_execution_transition_factory(factory: &TransitionFactory) -> Option<String> {
     match factory {
         TransitionFactory::Exec { exec_group } => Some(exec_group.clone().unwrap_or_else(|| {
@@ -1230,10 +1245,12 @@ pub fn find_execution_transition_factory(factory: &TransitionFactory) -> Option<
 /// (`CoreRules`: `TestTrimmingTransitionFactory`; `ConfigRules`:
 /// `ConfigFeatureFlagTaggedTrimmingTransitionFactory(TAGGED_TRIMMING_ATTR)`), composed with
 /// `ComposingTransitionFactory.ofUnchecked`.
-// Java: com/google/devtools/build/lib/analysis/ConfiguredRuleClassProvider.java:388 ConfiguredRuleClassProvider.Builder.addTrimmingTransitionFactory
+// Java: com/google/devtools/build/lib/analysis/ConfiguredRuleClassProvider.java:387 ConfiguredRuleClassProvider.Builder.addTrimmingTransitionFactory
 pub fn create_trimming_transition(rule_data: &RuleTransitionData) -> ConfigurationTransition {
     // ComposingTransitionFactory.create(t1, t2): both are rule factories, neither is
     // NoTransition.getFactory().
+    // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTaggedTrimmingTransitionFactory.java:105 ConfigFeatureFlagTaggedTrimmingTransitionFactory.<init>
+    // Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTaggedTrimmingTransitionFactory.java:156 ConfigFeatureFlagTaggedTrimmingTransitionFactory.transitionType
     ConfigurationTransition::Composing(
         Box::new(test_trimming_transition_factory_create(rule_data)),
         Box::new(
@@ -1247,7 +1264,7 @@ pub fn create_trimming_transition(rule_data: &RuleTransitionData) -> Configurati
 
 /// Java `ComposingTransitionFactory.ofUnchecked(ruleClassFactory, trimmingTransitionFactory)
 /// .create(ruleData)` as `RuleTransitionApplier.computeTransition` does it.
-// Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:229 RuleTransitionApplier.computeTransition
+// Java: com/google/devtools/build/lib/analysis/producers/RuleTransitionApplier.java:247 RuleTransitionApplier.computeTransition
 pub fn create_rule_transition_with_trimming(
     rule_class_factory: &TransitionFactory,
     rule_data: &RuleTransitionData,
@@ -1266,7 +1283,7 @@ pub fn create_rule_transition_with_trimming(
 }
 
 /// The labels in `TestOptions` (Java `TEST_OPTIONS`: the option names of `TestOptions`).
-// Java: com/google/devtools/build/lib/analysis/test/TestTrimmingTransitionFactory.java:40 TestTrimmingTransitionFactory.TEST_OPTIONS
+// Java: com/google/devtools/build/lib/analysis/test/TestTrimmingTransitionFactory.java:43 TestTrimmingTransitionFactory.TEST_OPTIONS
 fn test_options_names() -> Vec<&'static str> {
     blaze_build_config::fragment_options_class::TEST_OPTIONS
         .get_option_definitions()
@@ -1274,12 +1291,12 @@ fn test_options_names() -> Vec<&'static str> {
         .collect()
 }
 
-// Java: com/google/devtools/build/lib/analysis/test/TestTrimmingTransitionFactory.java:43 TestTrimmingTransitionFactory.TRANSITIVE_CONFIG_TO_TRIGGER_SKIP
+// Java: com/google/devtools/build/lib/analysis/test/TestTrimmingTransitionFactory.java:46 TestTrimmingTransitionFactory.TRANSITIVE_CONFIG_TO_TRIGGER_SKIP
 static TRANSITIVE_CONFIG_TO_TRIGGER_SKIP: LazyLock<Label> =
     LazyLock::new(|| Label::parse_canonical_unchecked("//command_line_option/fragment:test"));
 
 /// Java `AliasProvider.mayBeAlias(rule)`: the rule class can have any provider.
-// Java: com/google/devtools/build/lib/analysis/AliasProvider.java:103 AliasProvider.mayBeAlias
+// Java: com/google/devtools/build/lib/analysis/AliasProvider.java:168 AliasProvider.mayBeAlias
 pub fn may_be_alias(rule: &Rule) -> bool {
     let provider_set = rule.get_rule_class_object().get_advertised_providers();
     provider_set.can_have_any_provider()
@@ -1291,7 +1308,7 @@ pub fn may_be_alias(rule: &Rule) -> bool {
             .contains("LateBoundAliasProvider")
 }
 
-// Java: com/google/devtools/build/lib/analysis/test/TestTrimmingTransitionFactory.java:89 TestTrimmingTransitionFactory.create
+// Java: com/google/devtools/build/lib/analysis/test/TestTrimmingTransitionFactory.java:93 TestTrimmingTransitionFactory.create
 fn test_trimming_transition_factory_create(
     rule_data: &RuleTransitionData,
 ) -> ConfigurationTransition {
@@ -1339,7 +1356,7 @@ fn test_trimming_transition_factory_create(
     ConfigurationTransition::TestTrimming { testonly: false }
 }
 
-// Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTaggedTrimmingTransitionFactory.java:111 ConfigFeatureFlagTaggedTrimmingTransitionFactory.create
+// Java: com/google/devtools/build/lib/rules/config/ConfigFeatureFlagTaggedTrimmingTransitionFactory.java:110 ConfigFeatureFlagTaggedTrimmingTransitionFactory.create
 fn config_feature_flag_tagged_trimming_transition_factory_create(
     attribute_name: &str,
     rule_data: &RuleTransitionData,
@@ -1401,7 +1418,7 @@ fn config_feature_flag_tagged_trimming_transition_factory_create(
 
 /// Java `ConfiguredRuleClassProvider.getToolchainTaggedTrimmingTransition()`
 /// (`ConfigFeatureFlagTaggedTrimmingTransition.EMPTY`, set by `ConfigRules`).
-// Java: com/google/devtools/build/lib/rules/config/ConfigRules.java:44 ConfigRules.init
+// Java: com/google/devtools/build/lib/rules/config/ConfigRules.java:37 ConfigRules.init
 pub fn toolchain_tagged_trimming_transition() -> ConfigurationTransition {
     ConfigurationTransition::ConfigFeatureFlagTaggedTrimming {
         flags: BTreeSet::new(),

@@ -14,6 +14,7 @@
 //!   [`list`] (immutable lists), [`dict`] (immutable dicts).
 //! - [`defining_module`]: the module a Starlark function was defined in.
 
+pub mod debug;
 pub mod defining_module;
 pub mod depset;
 pub mod dict;

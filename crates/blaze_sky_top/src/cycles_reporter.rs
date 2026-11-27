@@ -5,10 +5,9 @@
 //! (`blaze_skyframe`); they are kept here, next to the only reporters that exist, until that
 //! crate takes them.
 //!
-//! Java's `SkyframeExecutor.createCyclesReporter` registers seven reporters; not all are ported
-//! (see `SkyframeExecutor::new`). A cycle no registered reporter reports reaches `unported!`
-//! instead of Java's "could not be properly displayed" fallback, because that fallback is only
-//! right when none of the seven reports the cycle.
+//! Java's `SkyframeExecutor.createCyclesReporter` registers seven reporters, all ported (see
+//! `SkyframeExecutor::new`); `TestExpansionCycleReporter` is here. A cycle none of them reports
+//! gets Java's "could not be properly displayed" error.
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -24,6 +23,8 @@ use blaze_sky_loading::package_manager::{NoSuchPackageOrInterrupted, SkyframePac
 use blaze_sky_loading::transitive_target::{TRANSITIVE_TARGET, TransitiveTargetKey};
 use blaze_skyframe::{CycleInfo, SkyFunctionName, SkyKey};
 use blaze_util::{check_argument, check_state};
+
+use crate::target_pattern_phase::TestExpansionKey;
 
 /// Interface for reporting custom information about a single cycle.
 // Java: com/google/devtools/build/skyframe/CyclesReporter.java:38 CyclesReporter.SingleCycleReporter
@@ -123,15 +124,19 @@ impl CyclesReporter {
             }
         }
 
-        // PORT: Java falls back to "Cycle detected but could not be properly displayed due to an
-        // internal problem" once all seven reporters declined. Not all of them are registered
-        // here (see SkyframeExecutor::new), so the cycle may be one of theirs.
-        blaze_util::unported!(
-            "CyclesReporter.maybeReportCycle",
-            "a cycle none of the registered reporters reports (TestExpansionCycleReporter is \
-             not ported): {}",
-            print_arbitrary_cycle(top_level_key, cycle_info, already_reported)
-        )
+        // No proper cycle reporter could be found. Blaze bug! Not fatal, though.
+        let raw_cycle = print_arbitrary_cycle(top_level_key, cycle_info, already_reported);
+        event_handler.handle(&Event::error(format!(
+            "Cycle detected but could not be properly displayed due to an internal problem. \
+             Please file an issue. Raw display: {raw_cycle}"
+        )));
+        // PORT: Java appends the reporters' `Object.toString` (class name and identity hash code)
+        // to the bug report; Blaze names the reporters only by their count.
+        blaze_util::bug_report::send_bug_report(&format!(
+            "{raw_cycle}\n[{} cycle reporters]",
+            self.cycle_reporters.len()
+        ));
+        true
     }
 }
 
@@ -446,6 +451,74 @@ pub fn label_maybe_report_cycle(
     true
 }
 
+/// Reports cycles occurring in during the expansion of `test_suite` rules.
+// Java: com/google/devtools/build/lib/skyframe/TestExpansionCycleReporter.java:23 TestExpansionCycleReporter
+pub struct TestExpansionCycleReporter {
+    package_provider: Arc<SkyframePackageManager>,
+}
+
+impl TestExpansionCycleReporter {
+    // Java: com/google/devtools/build/lib/skyframe/TestExpansionCycleReporter.java:25 TestExpansionCycleReporter.<init>
+    pub fn new(package_provider: Arc<SkyframePackageManager>) -> Self {
+        TestExpansionCycleReporter { package_provider }
+    }
+}
+
+impl AbstractLabelCycleReporter for TestExpansionCycleReporter {
+    fn package_provider(&self) -> &Arc<SkyframePackageManager> {
+        &self.package_provider
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/TestExpansionCycleReporter.java:30 TestExpansionCycleReporter.canReportCycle
+    fn can_report_cycle(&self, _top_level_key: &SkyKey, cycle_info: &CycleInfo) -> bool {
+        cycle_info
+            .get_cycle()
+            .iter()
+            .all(|key| key.downcast::<TestExpansionKey>().is_some())
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/TestExpansionCycleReporter.java:35 TestExpansionCycleReporter.shouldSkipOnPathToCycle
+    fn should_skip_on_path_to_cycle(&self, key: &SkyKey) -> bool {
+        key.downcast::<TestExpansionKey>().is_none()
+    }
+
+    /// Java's default `prettyPrint`: the label of an `ActionLookupKey`, else `getLabel(key)`.
+    /// PORT: the keys this reporter prints are `TestExpansionKey`s (the cycle is made of them and
+    /// every other key on the path is skipped), never `ActionLookupKey`s.
+    // Java: com/google/devtools/build/lib/skyframe/AbstractLabelCycleReporter.java:52 AbstractLabelCycleReporter.prettyPrint
+    fn pretty_print(&self, key: &SkyKey) -> String {
+        self.get_label(key).to_string()
+    }
+
+    // Java: com/google/devtools/build/lib/skyframe/TestExpansionCycleReporter.java:40 TestExpansionCycleReporter.getLabel
+    fn get_label(&self, key: &SkyKey) -> Label {
+        match key.downcast::<TestExpansionKey>() {
+            Some(test_expansion_key) => test_expansion_key.get_label().clone(),
+            // Java: ClassCastException.
+            None => panic!("ClassCastException: {:?}", key),
+        }
+    }
+}
+
+impl SingleCycleReporter for TestExpansionCycleReporter {
+    // Java: com/google/devtools/build/lib/skyframe/AbstractLabelCycleReporter.java:83 AbstractLabelCycleReporter.maybeReportCycle
+    fn maybe_report_cycle(
+        &self,
+        top_level_key: &SkyKey,
+        cycle_info: &CycleInfo,
+        already_reported: bool,
+        event_handler: &Arc<dyn ExtendedEventHandler>,
+    ) -> bool {
+        label_maybe_report_cycle(
+            self,
+            top_level_key,
+            cycle_info,
+            already_reported,
+            event_handler,
+        )
+    }
+}
+
 /// Reports cycles between targets. These may be in the form of `ConfiguredTargetValue`s or
 /// `TransitiveTargetValue`s.
 ///
@@ -616,6 +689,156 @@ mod tests {
 
     fn keys(names: &[&'static str]) -> Vec<SkyKey> {
         names.iter().map(|n| SkyKey::new(TestKey(n))).collect()
+    }
+
+    /// A `SingleCycleReporter` that records its calls (the tests' lambdas and Mockito mock).
+    struct RecordingReporter {
+        result: bool,
+        calls: Arc<parking_lot::Mutex<Vec<(SkyKey, CycleInfo, bool)>>>,
+    }
+
+    impl SingleCycleReporter for RecordingReporter {
+        fn maybe_report_cycle(
+            &self,
+            top_level_key: &SkyKey,
+            cycle_info: &CycleInfo,
+            already_reported: bool,
+            _event_handler: &Arc<dyn ExtendedEventHandler>,
+        ) -> bool {
+            self.calls
+                .lock()
+                .push((top_level_key.clone(), cycle_info.clone(), already_reported));
+            self.result
+        }
+    }
+
+    fn recording(
+        result: bool,
+    ) -> (
+        Box<dyn SingleCycleReporter>,
+        Arc<parking_lot::Mutex<Vec<(SkyKey, CycleInfo, bool)>>>,
+    ) {
+        let calls = Arc::new(parking_lot::Mutex::new(Vec::new()));
+        (
+            Box::new(RecordingReporter {
+                result,
+                calls: calls.clone(),
+            }),
+            calls,
+        )
+    }
+
+    fn null_event_handler() -> Arc<dyn ExtendedEventHandler> {
+        Arc::new(blaze_events::StoredEventHandler::new())
+    }
+
+    fn key(name: &'static str) -> SkyKey {
+        SkyKey::new(TestKey(name))
+    }
+
+    // Java: src/test/java/com/google/devtools/build/skyframe/CyclesReporterTest.java:39 CyclesReporterTest.nullEventHandler
+    #[test]
+    #[ignore = "Rust has no null event handler: the parameter is a reference"]
+    fn null_event_handler_test() {}
+
+    // Java: src/test/java/com/google/devtools/build/skyframe/CyclesReporterTest.java:50 CyclesReporterTest.notReportedAssertion
+    #[test]
+    #[ignore = "the bug report rethrows only in a test environment (TEST_TMPDIR set when the process starts, \
+                TestType.isInTest); run with TEST_TMPDIR=<dir> cargo test -- --ignored"]
+    #[should_panic(expected = "java.lang.IllegalStateException")]
+    fn not_reported_assertion() {
+        let (single_reporter, _) = recording(false);
+        let cycle_info = CycleInfo::create_cycle_info_without_path(vec![key("func")]);
+        let cycles_reporter = CyclesReporter::new(vec![single_reporter]);
+        cycles_reporter.report_cycles(&[cycle_info], &key("func"), &null_event_handler());
+    }
+
+    /// Not a Java test: what `notReportedAssertion` sees before the bug report, the error event.
+    #[test]
+    fn not_reported_cycle_is_an_error_event() {
+        if blaze_util::test_type::TestType::is_in_test() {
+            return; // the bug report panics (see `not_reported_assertion`)
+        }
+        let (single_reporter, _) = recording(false);
+        let cycle_info = CycleInfo::create_cycle_info_without_path(vec![key("func")]);
+        let cycles_reporter = CyclesReporter::new(vec![single_reporter]);
+        let stored = Arc::new(blaze_events::StoredEventHandler::new());
+        let handler: Arc<dyn ExtendedEventHandler> = stored.clone();
+        cycles_reporter.report_cycles(&[cycle_info], &key("func"), &handler);
+        let events = stored.get_events();
+        assert_eq!(events.len(), 1);
+        assert_eq!(
+            events[0].get_message(),
+            "Cycle detected but could not be properly displayed due to an internal problem. \
+             Please file an issue. Raw display: topLevelKey: TestKey(\"func\")\n\
+             alreadyReported: false\npath to cycle:\ncycle:\nTestKey(\"func\")\n"
+        );
+    }
+
+    // Java: src/test/java/com/google/devtools/build/skyframe/CyclesReporterTest.java:64 CyclesReporterTest.smoke
+    #[test]
+    fn smoke() {
+        let (single_reporter, calls) = recording(true);
+        let cycle_info = CycleInfo::create_cycle_info_without_path(vec![key("func")]);
+        let cycles_reporter = CyclesReporter::new(vec![single_reporter]);
+        cycles_reporter.report_cycles(&[cycle_info], &key("func"), &null_event_handler());
+        assert!(!calls.lock().is_empty());
+    }
+
+    // Java: src/test/java/com/google/devtools/build/skyframe/CyclesReporterTest.java:79 CyclesReporterTest.alreadyReportedCycles
+    #[test]
+    fn already_reported_cycles() {
+        let (mock_reporter, calls) = recording(true);
+        let cycles_reporter = CyclesReporter::new(vec![mock_reporter]);
+        let (top1, top2) = (key("top1"), key("top2"));
+        let (path1, path2) = (key("path1"), key("path2"));
+        let (cycle1, cycle2) = (key("cycle1"), key("cycle2"));
+        let cycles_for = |top: &SkyKey| {
+            vec![
+                CycleInfo::create_cycle_info(
+                    vec![top.clone(), path1.clone()],
+                    vec![cycle1.clone(), cycle2.clone()],
+                ),
+                CycleInfo::create_cycle_info(
+                    vec![top.clone(), path2.clone()],
+                    vec![cycle1.clone(), cycle2.clone()],
+                ),
+                CycleInfo::create_cycle_info(
+                    vec![top.clone(), path1.clone()],
+                    vec![cycle2.clone(), cycle1.clone()],
+                ),
+                CycleInfo::create_cycle_info(
+                    vec![top.clone(), path2.clone()],
+                    vec![cycle2.clone(), cycle1.clone()],
+                ),
+            ]
+        };
+        let top1_cycles = cycles_for(&top1);
+        cycles_reporter.report_cycles(&top1_cycles, &top1, &null_event_handler());
+        {
+            let calls = calls.lock();
+            assert_eq!(calls.len(), 1);
+            assert_eq!(calls[0].0, top1);
+            assert_eq!(
+                calls[0].1.get_path_to_cycle(),
+                top1_cycles[0].get_path_to_cycle()
+            );
+            assert_eq!(calls[0].1.get_cycle(), top1_cycles[0].get_cycle());
+            assert!(!calls[0].2);
+        }
+        // Second cycle is filtered out because it is equivalent but for the path and cycle order.
+
+        let top2_cycles = cycles_for(&top2);
+        cycles_reporter.report_cycles(&top2_cycles, &top2, &null_event_handler());
+        let calls = calls.lock();
+        assert_eq!(calls.len(), 2);
+        assert_eq!(calls[1].0, top2);
+        assert_eq!(
+            calls[1].1.get_path_to_cycle(),
+            top2_cycles[0].get_path_to_cycle()
+        );
+        assert_eq!(calls[1].1.get_cycle(), top2_cycles[0].get_cycle());
+        assert!(calls[1].2);
     }
 
     // Java: src/test/java/com/google/devtools/build/skyframe/CycleDeduperTest.java:31 CycleDeduperTest.simple

@@ -1,0 +1,20 @@
+[package]
+name = "blaze_starlarkdebug"
+edition.workspace = true
+version.workspace = true
+publish = false
+
+# Port of `com.google.devtools.build.lib.starlarkdebug.server` (the Starlark debug server of
+# `--experimental_skylark_debug`). The interpreter hooks it uses (`net.starlark.java.eval.Debug`)
+# are in blaze_starlark's `debug` module; the module (`StarlarkDebuggerModule`) is in
+# blaze_runtime.
+
+[dependencies]
+blaze_starlark = { path = "../blaze_starlark" }
+blaze_protos = { path = "../blaze_protos" }
+blaze_events = { path = "../blaze_events" }
+blaze_util = { path = "../blaze_util" }
+starlark.workspace = true
+starlark_syntax.workspace = true
+prost.workspace = true
+parking_lot.workspace = true

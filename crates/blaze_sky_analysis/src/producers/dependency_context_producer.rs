@@ -26,7 +26,7 @@ use crate::producers::transition_applier::Produced;
 use crate::toolchains::unloaded_toolchain_contexts_producer::produce_unloaded_toolchain_contexts;
 
 /// The unloaded toolchain contexts and config conditions of a target.
-// Java: com/google/devtools/build/lib/analysis/producers/DependencyContext.java:24 DependencyContext
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyContext.java:29 DependencyContext
 #[derive(Clone, Debug)]
 pub struct DependencyContext {
     /// `None` if the target doesn't require toolchain resolution.
@@ -36,7 +36,7 @@ pub struct DependencyContext {
 
 impl DependencyContext {
     /// Java `toolchainContexts()`: the unloaded contexts as `ToolchainContext`s.
-    // Java: com/google/devtools/build/lib/analysis/producers/DependencyContext.java:34 DependencyContext.toolchainContexts
+    // Java: com/google/devtools/build/lib/analysis/producers/DependencyContext.java:37 DependencyContext.toolchainContexts
     pub fn toolchain_contexts(&self) -> Option<&ToolchainCollection<UnloadedToolchainContext>> {
         self.unloaded_toolchain_contexts.as_deref()
     }
@@ -44,7 +44,8 @@ impl DependencyContext {
 
 /// Computes the dependency context, checking for directly incompatible targets before
 /// toolchain resolution (Java `DependencyContextProducerWithCompatibilityCheck`).
-// Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:93 DependencyContextProducerWithCompatibilityCheck.step
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:81 DependencyContextProducerWithCompatibilityCheck.step
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:67 DependencyContextProducerWithCompatibilityCheck.<init>
 pub fn produce_dependency_context_with_compatibility_check(
     env: &mut Environment<'_>,
     target_and_configuration: &TargetAndConfiguration,
@@ -97,12 +98,13 @@ pub fn produce_dependency_context_with_compatibility_check(
             .get_command_line_flag_aliases(),
     )? {
         None => return Ok(None),
+        // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:113 DependencyContextProducerWithCompatibilityCheck.acceptPlatformValue
         Some(Ok(info)) => info,
-        // Java: DependencyContextProducerWithCompatibilityCheck.acceptPlatformInfoError
+        // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:118 DependencyContextProducerWithCompatibilityCheck.acceptPlatformInfoError
         Some(Err(PlatformProducerError::InvalidPlatform(e))) => {
             return Ok(Some(Err(DependencyContextError::Toolchain(e))));
         }
-        // Java: DependencyContextProducerWithCompatibilityCheck.acceptOptionsParsingError
+        // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:124 DependencyContextProducerWithCompatibilityCheck.acceptOptionsParsingError
         Some(Err(PlatformProducerError::OptionsParsing(message))) => {
             return Ok(Some(Err(DependencyContextError::ConfiguredValueCreation(
                 ConfiguredValueCreationException::for_target(target, message),
@@ -110,7 +112,7 @@ pub fn produce_dependency_context_with_compatibility_check(
         }
     };
 
-    // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:142 DependencyContextProducerWithCompatibilityCheck.computeConfigConditions
+    // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:132 DependencyContextProducerWithCompatibilityCheck.computeConfigConditions
     let config_conditions = match produce_config_conditions(
         env,
         target,
@@ -120,15 +122,17 @@ pub fn produce_dependency_context_with_compatibility_check(
         transitive_state,
     )? {
         None => return Ok(None),
+        // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:154 DependencyContextProducerWithCompatibilityCheck.acceptConfigConditionsError
         Some(Err(e)) => {
             return Ok(Some(Err(DependencyContextError::ConfiguredValueCreation(
                 e,
             ))));
         }
+        // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:149 DependencyContextProducerWithCompatibilityCheck.acceptConfigConditions
         Some(Ok(c)) => c,
     };
 
-    // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:170 DependencyContextProducerWithCompatibilityCheck.checkCompatibility
+    // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:159 DependencyContextProducerWithCompatibilityCheck.checkCompatibility
     match produce_incompatible_target(
         env,
         target_and_configuration,
@@ -138,7 +142,9 @@ pub fn produce_dependency_context_with_compatibility_check(
         transitive_state,
     )? {
         None => return Ok(None),
+        // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:184 DependencyContextProducerWithCompatibilityCheck.acceptValidationException
         Some(Err(e)) => return Ok(Some(Err(DependencyContextError::Validation(e)))),
+        // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:175 DependencyContextProducerWithCompatibilityCheck.acceptIncompatibleTarget
         Some(Ok(Some(incompatible_target))) => {
             return Ok(Some(Err(DependencyContextError::IncompatibleTarget(
                 incompatible_target,
@@ -147,14 +153,17 @@ pub fn produce_dependency_context_with_compatibility_check(
         Some(Ok(None)) => {}
     }
 
-    // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:203 DependencyContextProducerWithCompatibilityCheck.computeUnloadedToolchainContexts
+    // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:189 DependencyContextProducerWithCompatibilityCheck.computeUnloadedToolchainContexts
     let unloaded_toolchain_contexts =
         match produce_unloaded_toolchain_contexts(env, unloaded_toolchain_contexts_inputs)? {
             None => return Ok(None),
+            // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:207 DependencyContextProducerWithCompatibilityCheck.acceptUnloadedToolchainContextsError
             Some(Err(e)) => return Ok(Some(Err(DependencyContextError::Toolchain(e)))),
+            // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:201 DependencyContextProducerWithCompatibilityCheck.acceptUnloadedToolchainContexts
             Some(Ok(c)) => c,
         };
 
+    // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducerWithCompatibilityCheck.java:212 DependencyContextProducerWithCompatibilityCheck.constructResult
     Ok(Some(Ok(DependencyContext {
         unloaded_toolchain_contexts,
         config_conditions,
@@ -163,7 +172,11 @@ pub fn produce_dependency_context_with_compatibility_check(
 
 /// Computes the dependency context without the compatibility check (Java
 /// `DependencyContextProducer`, used for aspects).
-// Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducer.java:84 DependencyContextProducer.step
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducer.java:87 DependencyContextProducer.step
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducer.java:52 DependencyContextProducer.ResultSink.acceptDependencyContext
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducer.java:54 DependencyContextProducer.ResultSink.acceptDependencyContextError
+// PORT: the result sink is the return value (`Ok(DependencyContext)` or the error).
+// Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducer.java:72 DependencyContextProducer.<init>
 pub fn produce_dependency_context(
     env: &mut Environment<'_>,
     unloaded_toolchain_contexts_inputs: &UnloadedToolchainContextsInputs,
@@ -174,11 +187,13 @@ pub fn produce_dependency_context(
     let unloaded_toolchain_contexts =
         match produce_unloaded_toolchain_contexts(env, unloaded_toolchain_contexts_inputs)? {
             None => return Ok(None),
+            // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducer.java:101 DependencyContextProducer.acceptUnloadedToolchainContextsError
             Some(Err(e)) => return Ok(Some(Err(DependencyContextError::Toolchain(e)))),
+            // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducer.java:95 DependencyContextProducer.acceptUnloadedToolchainContexts
             Some(Ok(c)) => c,
         };
 
-    // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducer.java:105 DependencyContextProducer.computeConfigConditions
+    // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducer.java:106 DependencyContextProducer.computeConfigConditions
     let target = target_and_configuration.get_target();
     let config_conditions = match produce_config_conditions(
         env,
@@ -191,14 +206,17 @@ pub fn produce_dependency_context(
         transitive_state,
     )? {
         None => return Ok(None),
+        // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducer.java:127 DependencyContextProducer.acceptConfigConditionsError
         Some(Err(e)) => {
             return Ok(Some(Err(DependencyContextError::ConfiguredValueCreation(
                 e,
             ))));
         }
+        // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducer.java:122 DependencyContextProducer.acceptConfigConditions
         Some(Ok(c)) => c,
     };
 
+    // Java: com/google/devtools/build/lib/analysis/producers/DependencyContextProducer.java:132 DependencyContextProducer.constructResult
     Ok(Some(Ok(DependencyContext {
         unloaded_toolchain_contexts,
         config_conditions,

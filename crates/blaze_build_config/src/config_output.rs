@@ -13,19 +13,46 @@ use blaze_optdefs::fragment::core_options::CoreOptions;
 use crate::build_configuration_value::BuildConfigurationValue;
 use crate::fragment::{FragmentRegistry, required_options};
 
-/// `FragmentForOutput`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `FragmentForOutput`: a fragment and the names of the FragmentOptions it requires.
+// Java: com/google/devtools/build/lib/analysis/config/output/FragmentForOutput.java:31 FragmentForOutput
+// Java: com/google/devtools/build/lib/analysis/config/output/FragmentForOutput.java:38 FragmentForOutput.<init>
+// Java: com/google/devtools/build/lib/analysis/config/output/FragmentForOutput.java:53 FragmentForOutput.equals
+// PORT: Java's equals and hashCode compare both fields, as the derived ones do.
+// Java: com/google/devtools/build/lib/analysis/config/output/FragmentForOutput.java:61 FragmentForOutput.hashCode
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FragmentForOutput {
+    // Java: com/google/devtools/build/lib/analysis/config/output/FragmentForOutput.java:43 FragmentForOutput.getName
     pub name: String,
+    /// The names of the FragmentOptions, sorted.
+    // Java: com/google/devtools/build/lib/analysis/config/output/FragmentForOutput.java:48 FragmentForOutput.getFragmentOptions
     pub fragment_options: Vec<String>,
 }
 
-/// `FragmentOptionsForOutput`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// `FragmentOptionsForOutput`: a FragmentOptions and its option values.
+// Java: com/google/devtools/build/lib/analysis/config/output/FragmentOptionsForOutput.java:27 FragmentOptionsForOutput
+// Java: com/google/devtools/build/lib/analysis/config/output/FragmentOptionsForOutput.java:31 FragmentOptionsForOutput.<init>
+// PORT: Java's equals and hashCode compare both fields, as the derived ones do.
+// Java: com/google/devtools/build/lib/analysis/config/output/FragmentOptionsForOutput.java:53 FragmentOptionsForOutput.equals
+// Java: com/google/devtools/build/lib/analysis/config/output/FragmentOptionsForOutput.java:61 FragmentOptionsForOutput.hashCode
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FragmentOptionsForOutput {
+    // Java: com/google/devtools/build/lib/analysis/config/output/FragmentOptionsForOutput.java:36 FragmentOptionsForOutput.getName
     pub name: String,
     /// Sorted by option name (`ImmutableSortedMap`, natural String order).
+    // Java: com/google/devtools/build/lib/analysis/config/output/FragmentOptionsForOutput.java:40 FragmentOptionsForOutput.getOptions
     pub options: BTreeMap<String, String>,
+}
+
+impl FragmentOptionsForOutput {
+    // Java: com/google/devtools/build/lib/analysis/config/output/FragmentOptionsForOutput.java:44 FragmentOptionsForOutput.optionNames
+    pub fn option_names(&self) -> impl Iterator<Item = &String> {
+        self.options.keys()
+    }
+
+    // Java: com/google/devtools/build/lib/analysis/config/output/FragmentOptionsForOutput.java:48 FragmentOptionsForOutput.getOption
+    pub fn get_option(&self, option_name: &str) -> Option<&String> {
+        self.options.get(option_name)
+    }
 }
 
 /// `UserDefinedFragment.DESCRIPTIVE_NAME`.
@@ -34,17 +61,61 @@ pub const USER_DEFINED_DESCRIPTIVE_NAME: &str = "user-defined";
 // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:50 ConfigurationForOutput
 /// Data structure defining a `BuildConfigurationValue` for the purpose of returning user output
 /// about the configuration.
-#[derive(Clone, Debug, PartialEq, Eq)]
+// Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:58 ConfigurationForOutput.<init>
+#[derive(Clone, Debug)]
 pub struct ConfigurationForOutput {
+    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:73 ConfigurationForOutput.getSkyKey
     pub sky_key: String,
+    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:77 ConfigurationForOutput.getConfigHash
     pub config_hash: String,
+    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:81 ConfigurationForOutput.getMnemonic
     pub mnemonic: String,
+    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:85 ConfigurationForOutput.isExec
     pub is_exec: bool,
+    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:95 ConfigurationForOutput.getFragments
     pub fragments: Vec<FragmentForOutput>,
+    /// The union of `FragmentOptionsForOutput` used by the Fragments associated with this
+    /// configuration, sorted by FragmentOptionsForOutput name.
+    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:103 ConfigurationForOutput.getFragmentOptions
     pub fragment_options: Vec<FragmentOptionsForOutput>,
 }
 
+// Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:122 ConfigurationForOutput.equals
+impl PartialEq for ConfigurationForOutput {
+    fn eq(&self, other: &Self) -> bool {
+        other.sky_key == self.sky_key
+            && other.config_hash == self.config_hash
+            && other.fragments == self.fragments
+            && other.fragment_options == self.fragment_options
+    }
+}
+
+impl Eq for ConfigurationForOutput {}
+
+// Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:133 ConfigurationForOutput.hashCode
+impl std::hash::Hash for ConfigurationForOutput {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.sky_key.hash(state);
+        self.config_hash.hash(state);
+        self.fragments.hash(state);
+        self.fragment_options.hash(state);
+    }
+}
+
 impl ConfigurationForOutput {
+    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:108 ConfigurationForOutput.fragment
+    pub fn fragment(&self, fragment_name: &str) -> Option<&FragmentOptionsForOutput> {
+        self.fragment_options
+            .iter()
+            .find(|fo| fo.name == fragment_name)
+    }
+
+    /// Sorted in natural String order (`toImmutableSortedSet(Ordering.natural())`).
+    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:115 ConfigurationForOutput.fragmentOptionNames
+    pub fn fragment_option_names(&self) -> std::collections::BTreeSet<&String> {
+        self.fragment_options.iter().map(|fo| &fo.name).collect()
+    }
+
     // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:89 ConfigurationForOutput.hasTestConfig
     pub fn has_test_config(&self) -> bool {
         self.fragment_options
@@ -52,7 +123,7 @@ impl ConfigurationForOutput {
             .any(|f| f.name.contains("TestConfiguration"))
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:138 ConfigurationForOutput.getConfigurationForOutput
+    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:160 ConfigurationForOutput.getConfigurationForOutput
     /// Constructs a `ConfigurationForOutput` from the given input data. `fragment_defs` are the
     /// rule class provider's fragments (`ConfigCommand` passes all registered fragments).
     pub fn get_configuration_for_output(
@@ -102,7 +173,7 @@ impl ConfigurationForOutput {
         }
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:195 ConfigurationForOutput.getOrderedNativeOptions
+    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:215 ConfigurationForOutput.getOrderedNativeOptions
     /// Returns a `FragmentOptions`'s native option settings in canonical order.
     fn get_ordered_native_options(
         simple_name: &str,
@@ -118,7 +189,7 @@ impl ConfigurationForOutput {
             .collect()
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:198 ConfigurationForOutput.getOrderedUserDefinedOptions
+    // Java: com/google/devtools/build/lib/analysis/config/output/ConfigurationForOutput.java:234 ConfigurationForOutput.getOrderedUserDefinedOptions
     /// Returns a configuration's user-definable settings in canonical order.
     fn get_ordered_user_defined_options(
         config: &BuildConfigurationValue,

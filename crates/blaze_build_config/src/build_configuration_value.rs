@@ -2,6 +2,9 @@
 //! targets and commands read; the Starlark API comes with the analysis wave) and
 //! `analysis/config/FeatureSet.java`.
 
+// PORT: skipped, no module posts it at the pin (CommandEnvironment.additionalConfigurationChangeEvent has no caller): AdditionalConfigurationChangeEvent.<init>, AdditionalConfigurationChangeEvent.getChangeDescription
+// PORT: skipped, no subscriber at the pin (BuildView posts it; blaze_sky_top's BuildView.update does not): TopLevelConfigRequestedEvent.<init>
+
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Arc;

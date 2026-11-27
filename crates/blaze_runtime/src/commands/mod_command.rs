@@ -675,9 +675,7 @@ fn stored_attr_value(type_: Type, value: &AttributeValue) -> AttrValue {
         | Type::NodepLabelList
         | Type::DormantLabelList
         | Type::GenqueryScopeTypeList
-        | Type::OutputList => {
-            AttrValue::LabelList(list(value).iter().map(label).collect())
-        }
+        | Type::OutputList => AttrValue::LabelList(list(value).iter().map(label).collect()),
         Type::StringDict => AttrValue::StringDict(
             dict(value)
                 .iter()

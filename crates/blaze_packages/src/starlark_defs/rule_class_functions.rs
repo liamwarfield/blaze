@@ -16,6 +16,7 @@ use blaze_cmdline::RepositoryMapping;
 use blaze_cmdline::RepositoryName;
 use blaze_starlark::Location;
 use blaze_starlark::ThreadContext;
+use blaze_starlark::error::StackEntry;
 use indexmap::IndexMap;
 use indexmap::IndexSet;
 use parking_lot::Mutex;
@@ -1066,6 +1067,16 @@ impl Drop for InitializerThreadState<'_> {
     }
 }
 
+std::thread_local! {
+    /// The thread's call stack for a rule function called from Java, not from Starlark
+    /// (`starlarkRuleFunction.call(thread, ...)` in `StarlarkTestingModule.analysisTest`).
+    /// PORT: starlark-rust pushes frames for the rule function and the native dispatch that
+    /// Java's direct call does not have; the caller sets the stack Java's `thread.getCallStack()`
+    /// returns there, and the call takes it on entry.
+    static DIRECT_CALL_STACK: std::cell::RefCell<Option<Vec<StackEntry>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
 /// Java `StarlarkRuleFunction.call`.
 // Java: com/google/devtools/build/lib/analysis/starlark/StarlarkRuleClassFunctions.java:1767 StarlarkRuleFunction.call
 fn call_rule_function<'v>(
@@ -1073,6 +1084,7 @@ fn call_rule_function<'v>(
     args: &Arguments<'v, '_>,
     eval: &mut Evaluator<'v, '_, '_>,
 ) -> starlark::Result<Value<'v>> {
+    let direct_call_stack = DIRECT_CALL_STACK.with(|s| s.borrow_mut().take());
     if args.len()? != args.names_map()?.len() {
         return Err(errorf("Unexpected positional arguments"));
     }
@@ -1241,7 +1253,7 @@ fn call_rule_function<'v>(
 
     let attribute_values = BuildLangTypedAttributeValuesMap::new(kwargs);
     let fail_on_unknown_attributes = thread.semantics.incompatible_fail_on_unknown_attributes;
-    let callstack = call_stack(eval);
+    let callstack = direct_call_stack.unwrap_or_else(|| call_stack(eval));
     let mut target_definition_context =
         TargetDefinitionContext::from_or_fail_participle(eval, "a rule", "instantiated")
             .map_err(eval_exception)?;
@@ -1532,24 +1544,27 @@ pub fn analysis_test<'v>(
 
     // Export the rule (in the BUILD thread).
     let state = starlark_rule_function.state.clone();
-    // createRule records `thread.getCallStack()` sans its last entry, the called builtin
-    // (here analysis_test). PORT: the testing module's method is dispatched through more than
-    // one native frame, so createRule's single pop leaves builtin entries; the stack Java
-    // records ends at the caller of analysis_test.
-    {
-        let mut callstack = call_stack(eval);
-        // A builtin frame's location is BUILTIN (`<builtin>`) or absent.
-        while callstack.last().is_some_and(|entry| {
-            entry
-                .location
-                .as_ref()
-                .is_none_or(|l| *l == blaze_starlark::Location::builtin())
-        }) {
-            callstack.pop();
-        }
-        if let Some(builder) = state.builder.lock().as_mut() {
-            builder.set_call_stack(callstack);
-        }
+    // Java's `thread.getCallStack()` here: the Starlark frames, then analysis_test itself.
+    // PORT: the testing module's method is dispatched through more than one native frame, so
+    // the trailing builtin entries are replaced by the one Java has.
+    let mut java_call_stack = call_stack(eval);
+    // A builtin frame's location is BUILTIN (`<builtin>`) or absent.
+    while java_call_stack.last().is_some_and(|entry| {
+        entry
+            .location
+            .as_ref()
+            .is_none_or(|l| *l == blaze_starlark::Location::builtin())
+    }) {
+        java_call_stack.pop();
+    }
+    java_call_stack.push(StackEntry {
+        name: "analysis_test".to_owned(),
+        location: None,
+        source_line: None,
+    });
+    // createRule records the stack sans its last entry, the called builtin (analysis_test).
+    if let Some(builder) = state.builder.lock().as_mut() {
+        builder.set_call_stack(java_call_stack[..java_call_stack.len() - 1].to_vec());
     }
     let rule_name = format!("{name}_test");
     let errors = export_rule_function_errors(&state, &build_file_label, &rule_name, &[], &[]);
@@ -1573,7 +1588,12 @@ pub fn analysis_test<'v>(
     // Java, without a Starlark frame, so its EvalException is an error of analysis_test.
     // PORT: eval_function pushes a frame for the rule function; its error is re-raised here
     // without that frame.
-    if let Err(e) = eval.eval_function(function, &[], &args) {
+    // The rule function records Java's stack at this direct call (RuleFactory pops its last
+    // entry, analysis_test).
+    DIRECT_CALL_STACK.with(|s| *s.borrow_mut() = Some(java_call_stack));
+    let result = eval.eval_function(function, &[], &args);
+    DIRECT_CALL_STACK.with(|s| s.borrow_mut().take());
+    if let Err(e) = result {
         return Err(errorf(e.without_diagnostic().to_string()));
     }
     Ok(())

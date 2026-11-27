@@ -14,6 +14,17 @@
 //! `//a:foo` ran again on the remote runner (the rewound action) and `//a:bar` ran on
 //! `linux-sandbox`.
 //!
+//! The second test, `shared_action_copies_rewound_once` (review RW-2), loses the input of two
+//! copies of one shared action: `B-shared.out` is declared by both `//shared:shared_1` and
+//! `//shared:shared_2` (one shareable action), runs locally and reads `A-shared.out`, which the
+//! remote worker built and forgot. Java's waiting copy restarts its node and waits for the
+//! rewound input (`ActionExecutionState`, `Obsolete` → `scheduleRestart`); executing it with the
+//! stale input would lose the input again and rewind `A-shared.out` a second time. Expected
+//! results recorded from the oracle (Bazel 9.3.2, 2026-11-26, `rewinding/bin/rw2.sh oracle`): exit
+//! code 0, "4 total actions", and in the execution log `SharedA` once on `remote` (the one
+//! rewind), `SharedB` once and `SharedOut` twice on `linux-sandbox`. Whether the second copy
+//! reaches the owner's state before the owner's loss is a race; the test asserts the outcome.
+//!
 //! Needs Bazel's remote worker (`scripts/remote/worker`, built from the pinned source), so it is
 //! ignored by default: `scripts/cargo-capped test -p blaze --test rewind_lost_inputs_test --
 //! --ignored`.
@@ -87,12 +98,17 @@ impl Blaze {
 
 /// The spawns of an execution log (`--execution_log_json_file`): (target label, runner).
 fn spawns(execution_log: &Path) -> Vec<(String, String)> {
+    spawn_fields(execution_log, "targetLabel")
+}
+
+/// The spawns of an execution log: (`field`, runner).
+fn spawn_fields(execution_log: &Path, field: &str) -> Vec<(String, String)> {
     let text = std::fs::read_to_string(execution_log).unwrap();
     let mut spawns = Vec::new();
     for value in serde_json::Deserializer::from_str(&text).into_iter::<serde_json::Value>() {
         let value = value.unwrap();
         spawns.push((
-            value["targetLabel"].as_str().unwrap_or("").to_owned(),
+            value[field].as_str().unwrap_or("").to_owned(),
             value["runner"].as_str().unwrap_or("").to_owned(),
         ));
     }
@@ -190,5 +206,116 @@ genrule(
     assert!(
         spawns.contains(&("//a:bar".to_owned(), "linux-sandbox".to_owned())),
         "{spawns:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs Bazel's remote worker (scripts/remote/worker); run with --ignored"]
+fn shared_action_copies_rewound_once() {
+    let base = PathBuf::from(std::env::var("HOME").unwrap())
+        .join(".cache/blaze/work/rewinding/itest-shared");
+    let workspace = base.join("ws");
+    std::fs::create_dir_all(workspace.join("shared")).unwrap();
+    std::fs::write(workspace.join("MODULE.bazel"), "").unwrap();
+    std::fs::write(
+        workspace.join("shared/shared.bzl"),
+        r#"def _shared_impl(ctx):
+    a = ctx.actions.declare_file("A-shared.out")
+    ctx.actions.run_shell(inputs = [ctx.file.src], outputs = [a], mnemonic = "SharedA",
+        progress_message = "Copying %s input to A-shared.out" % ctx.attr.name,
+        command = "cp %s %s" % (ctx.file.src.path, a.path))
+    b = ctx.actions.declare_file("B-shared.out")
+    ctx.actions.run_shell(inputs = [a, ctx.file.b_in], outputs = [b], mnemonic = "SharedB",
+        execution_requirements = {"no-remote-exec": "1"},
+        progress_message = "Copying A-shared.out to B-shared.out on behalf of %s" % ctx.attr.name,
+        command = "cat %s %s > %s" % (a.path, ctx.file.b_in.path, b.path))
+    out = ctx.outputs.out
+    ctx.actions.run_shell(inputs = [b], outputs = [out], mnemonic = "SharedOut",
+        execution_requirements = {"no-remote-exec": "1"},
+        command = "cp %s %s" % (b.path, out.path))
+    return [DefaultInfo(files = depset([out]))]
+
+shared = rule(implementation = _shared_impl, attrs = {
+    "src": attr.label(mandatory = True, allow_single_file = True),
+    "b_in": attr.label(mandatory = True, allow_single_file = True),
+    "out": attr.output(mandatory = True),
+})
+"#,
+    )
+    .unwrap();
+    std::fs::write(
+        workspace.join("shared/BUILD"),
+        r#"load("//shared:shared.bzl", "shared")
+shared(name = "shared_1", src = "in.txt", b_in = "b.in", out = "shared_1.out")
+shared(name = "shared_2", src = "in.txt", b_in = "b.in", out = "shared_2.out")
+"#,
+    )
+    .unwrap();
+    std::fs::write(workspace.join("shared/in.txt"), "shared input\n").unwrap();
+    std::fs::write(workspace.join("shared/b.in"), "b\n").unwrap();
+    let blaze = Blaze {
+        workspace: workspace.clone(),
+        output_user_root: base.join("our"),
+    };
+    let port = free_port();
+    let name = format!("rewind-shared-itest-{port}");
+    let remote = format!("--remote_executor=grpc://localhost:{port}");
+    let execution_log = base.join("execlog.json");
+    let targets = ["//shared:shared_1", "//shared:shared_2"];
+    let build = |extra: &[&str]| {
+        let mut args = vec![
+            "build",
+            remote.as_str(),
+            "--remote_download_minimal",
+            "--jobs=4",
+        ];
+        args.extend_from_slice(extra);
+        args.extend_from_slice(&targets);
+        blaze.run(&args)
+    };
+
+    worker(&["start", &name, &port.to_string()]);
+    let (rc, err) = build(&[]);
+    assert_eq!(rc, 0, "{err}");
+    let (rc, err) = blaze.run(&["clean"]);
+    assert_eq!(rc, 0, "{err}");
+    let (rc, err) = build(&[]);
+    assert_eq!(rc, 0, "{err}");
+
+    // A fresh worker: A-shared.out is gone; b.in changes, so both copies of B run again.
+    worker(&["stop", &name]);
+    wait_for_port_closed(port);
+    worker(&["start", &name, &port.to_string()]);
+    std::fs::write(workspace.join("shared/b.in"), "updated b\n").unwrap();
+    let execution_log_flag = format!("--execution_log_json_file={}", execution_log.display());
+    let (rc, err) = build(&[
+        "--rewind_lost_inputs",
+        "--experimental_remote_cache_eviction_retries=0",
+        &execution_log_flag,
+    ]);
+    let _ = blaze.run(&["shutdown"]);
+    worker(&["stop", &name]);
+
+    assert_eq!(rc, 0, "{err}");
+    assert!(!err.contains("retrying the build"), "{err}");
+    assert!(
+        err.contains("Build completed successfully, 4 total actions"),
+        "{err}"
+    );
+    let mut counts = std::collections::BTreeMap::new();
+    for spawn in spawn_fields(&execution_log, "mnemonic") {
+        *counts.entry(spawn).or_insert(0) += 1;
+    }
+    let expected: std::collections::BTreeMap<(String, String), i32> = [
+        (("SharedA", "remote"), 1),
+        (("SharedB", "linux-sandbox"), 1),
+        (("SharedOut", "linux-sandbox"), 2),
+    ]
+    .into_iter()
+    .map(|((m, r), n)| ((m.to_owned(), r.to_owned()), n))
+    .collect();
+    assert_eq!(
+        counts, expected,
+        "one rewind of A-shared.out, one run of the shared B"
     );
 }
