@@ -582,3 +582,16 @@ Each entry: date, decision, why, who decided.
   restored: the disk-cache integrity check is skipped under `--rewind_lost_inputs` (this
   reverses the stop-gap of 2026-11-19). `RewindingTest` (37 cases) stays ignored until an
   in-process build harness exists. Root.
+- 2026-11-26. Referee batch 3b adopted (auditor PASS, docs/reviews/2026-11-26-audit-referee-3b.md):
+  in daemon mode a cold/warm mismatch or a failed, missing or leaky `shutdown` fails; strict
+  rules follow the observed server; an empty field list excuses nothing; scores carry a
+  top-level `staged` field. File hashes checked against the auditor's table; 159 referee tests
+  and 62 gate tests pass. Root's own gate change, as the auditor wrote it:
+  `scripts/gate/compare-scores` refuses a score whose `staged` field is non-null or missing,
+  with a test. The ratchet base is now `corpus/scores/blaze-ef66f55e904e.referee3b.json`
+  (rows equal referee3's: matching 13,850, allowed 56, failed 145,082); `referee3.json` and
+  `referee2.json` stay for history. A recording made with `--blaze-server daemon` may be
+  accepted as a score under the usual label rules; a mode-unset recording of a Blaze whose
+  default is the server may not, before finding C1 is closed. Once a daemon-mode score is the
+  base the ratchet does not go back to one-process recordings (C3). The next extractor change
+  takes A5-A8, C1, C2 and the start-line decision together, with one renormalisation. Root.

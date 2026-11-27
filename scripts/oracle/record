@@ -6,6 +6,7 @@ import datetime
 import hashlib
 import json
 import os
+import re
 import shutil
 import signal
 import socket
@@ -162,9 +163,17 @@ def live_servers(root):
                 cmdline = f.read()
         except (OSError, ValueError):
             continue
-        if root.encode() in cmdline:
+        if names_path(cmdline, root):
             out[name] = pid
     return out
+
+
+def names_path(cmdline, root):
+    """Whether one argument of a NUL-separated /proc command line names the directory `root`
+    itself or a path below it: the root ends at "/" or at the end of the argument, so that
+    rec-oracle-9.3.2 does not match rec-oracle-9.3.2-rerun (audit of batch 3, B2)."""
+    rx = re.compile(re.escape(root.rstrip("/").encode()) + rb"(?:/|\Z)")
+    return any(rx.search(arg) for arg in cmdline.split(b"\0"))
 
 
 def server_pid(root):

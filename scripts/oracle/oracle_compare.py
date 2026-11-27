@@ -73,6 +73,13 @@ class AllowList:
             raise AllowListError(
                 "allow-list entry %r: max_items is required and must be an object "
                 "{project: non-negative integer}" % e.get("id"))
+        # Audit of batch 3, A3: an empty field list would excuse every difference of the item.
+        if "DIFF" in e.get("kinds", ["DIFF"]):
+            for name in ("only_fields", "only_fields_in_daemon_mode"):
+                if (name == "only_fields" or name in e) and not e.get(name):
+                    raise AllowListError(
+                        "allow-list entry %r excuses DIFF items, so %s must name at least one field "
+                        "(an empty list would excuse every difference)" % (e.get("id"), name))
         e["_item_re"] = re.compile(e.get("item", ".*"))
         e["_field_res"] = [re.compile(f) for f in e.get("only_fields", [])]
         if "only_fields_in_daemon_mode" in e:
@@ -84,7 +91,8 @@ class AllowList:
         return entry["max_items"].get(project, 0)
 
     def match(self, project, surface, key, kind, diff_paths, mode=None):
-        """The entry that excuses this item, or None. mode: the candidate's blaze_server_mode."""
+        """The entry that excuses this item, or None. mode "daemon": the candidate is judged by
+        the daemon-mode rules (oc.strict_server_rules), so only_fields_in_daemon_mode applies."""
         for e in self.entries:
             if e.get("surface") != surface:
                 continue
@@ -96,8 +104,10 @@ class AllowList:
             if not e["_item_re"].search(key):
                 continue
             field_res = e["_daemon_field_res"] if mode == "daemon" and "_daemon_field_res" in e else e["_field_res"]
-            if kind == "DIFF" and field_res:
-                if not diff_paths or not all(any(r.fullmatch(p) for r in field_res) for p in diff_paths):
+            if kind == "DIFF":
+                # No field list excuses nothing (A3; prepare refuses such an entry anyway).
+                if not field_res or not diff_paths or not all(
+                        any(r.fullmatch(p) for r in field_res) for p in diff_paths):
                     continue
             return e
         return None
@@ -302,6 +312,32 @@ def compare_surface(project, surface, a, b, allow, exits_a=None, exits_b=None, m
     return res
 
 
+SHUTDOWN_ITEM = "__shutdown__"
+
+
+def server_checked_exit_codes(a, b, states_a, states_b, shutdown_b):
+    """exit_codes of both sides with the daemon-mode server checks (audit of batch 3, A1).
+
+    For a candidate under the daemon-mode rules: a command that ran on a cold server on one side
+    and a warm one on the other becomes a DIFF of its exit_codes item (path `server_state`); a
+    final `shutdown` that exited non-zero, left a server alive or was not recorded becomes the
+    candidate-only item SHUTDOWN_ITEM (EXTRA). Decided here, at compare time, so that no
+    recording's items change. Returns new (a, b) surface dicts; the inputs are not modified.
+    """
+    ia, ib = dict(a.get("items", {})), dict(b.get("items", {}))
+    for cmd in sorted(set(ia) & set(ib)):
+        sa, sb = (states_a or {}).get(cmd), (states_b or {}).get(cmd)
+        sa, sb = sa[0] if sa else None, sb[0] if sb else None
+        if sa != sb:
+            ia[cmd] = {"exit_code": ia[cmd], "server_state": sa}
+            ib[cmd] = {"exit_code": ib[cmd], "server_state": sb}
+    sd = shutdown_b or {}
+    if sd.get("shutdown_exit_code") != 0 or sd.get("alive_after_shutdown"):
+        ib[SHUTDOWN_ITEM] = {"shutdown_exit_code": sd.get("shutdown_exit_code"),
+                             "alive_after_shutdown": sd.get("alive_after_shutdown")}
+    return dict(a, items=ia), dict(b, items=ib)
+
+
 def manifest_exceptions(manifest):
     """The declared exceptions of a recording: [{"id", "surfaces", "explanation", ...}].
 
@@ -343,6 +379,8 @@ def provenance(label, project, manifest):
         # Referee batch 3: BLAZE_SERVER_MODE the recorder set (None: unset), what it saw of the
         # server per command (oc.server_states), and the final shutdown.
         "server_mode": oc.blaze_server_mode(manifest),
+        # Batch 3b (A2): judged by the daemon-mode rules (mode daemon, or a warm server observed).
+        "strict_server_rules": oc.strict_server_rules(manifest),
         "server_states": oc.server_states(label, project, manifest),
         "shutdown": {k: v for k, v in (manifest.get("server") or {}).items()
                      if k in ("shutdown_exit_code", "alive_after_shutdown")} or None,
@@ -425,9 +463,16 @@ def compare_labels(label_a, label_b, projects=None, surfaces=None, allow=None):
         exits_a = load_surface(label_a, p, "exit_codes", ma, sa).get("items")
         exits_b = load_surface(label_b, p, "exit_codes", mb, sb).get("items")
         excs = [(side, e) for side in ("a", "b") for e in cmp.provenance[p][side].get("exceptions", [])]
+        # Audit of batch 3, A1 and A2: the daemon-mode rules follow the server the recorder
+        # observed, not only the mode it was asked for.
+        strict = mb is not None and oc.strict_server_rules(mb)
         for s in scope_surfaces:
-            r = compare_surface(p, s, load_surface(label_a, p, s, ma, sa), load_surface(label_b, p, s, mb, sb),
-                                allow, exits_a, exits_b, oc.blaze_server_mode(mb))
+            sur_a, sur_b = load_surface(label_a, p, s, ma, sa), load_surface(label_b, p, s, mb, sb)
+            if strict and s == "exit_codes" and sur_a.get("status") == "OK" and sur_b.get("status") == "OK":
+                pa, pb = cmp.provenance[p]["a"], cmp.provenance[p]["b"]
+                sur_a, sur_b = server_checked_exit_codes(sur_a, sur_b, pa.get("server_states"),
+                                                         pb.get("server_states"), pb.get("shutdown"))
+            r = compare_surface(p, s, sur_a, sur_b, allow, exits_a, exits_b, "daemon" if strict else None)
             r["exceptions"] = [{"side": side, "id": e["id"]} for side, e in excs if s in e["surfaces"]]
             cmp.results.append(r)
     return cmp

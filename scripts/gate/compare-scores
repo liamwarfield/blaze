@@ -22,7 +22,8 @@ Also printed (not a failure here; `scoreboard --write` enforces it): a score's
 reason.
 
 The two scores must come from the same referee (`referee_sha256`) and the same reference
-recording: otherwise the totals mean different things and the tool exits 2. After a referee
+recording: otherwise the totals mean different things and the tool exits 2. A score with a non-null
+`staged` field, or without the field, is not comparable (exit 2). After a referee
 change, score the base label again (`scoreboard <base label> --write`, a protected-path commit)
 and compare with that.
 
@@ -48,9 +49,26 @@ def reference_binaries(doc):
             if s["reference"].get("recorded")}
 
 
+def staged_blockers(base, new):
+    """A score made from a staging area (BLAZE_ORACLE_STAGE), or one that cannot say, is refused."""
+    out = []
+    for name, doc in (("base", base), ("new", new)):
+        if "staged" not in doc:
+            out.append("%s score has no `staged` field (written before referee batch 3b): "
+                       "score the label again" % name)
+        elif doc["staged"] is not None:
+            st = doc["staged"]
+            out.append("%s score was made from a staging area (%s): score the label again "
+                       "without BLAZE_ORACLE_STAGE" % (name, st.get("stage") if isinstance(st, dict) else repr(st)))
+        if any(isinstance(w, str) and w.startswith("staged:") for w in doc.get("warnings") or []):
+            out.append("%s score carries a `staged:` warning" % name)
+    return out
+
+
 def compare(base, new):
     """(not-comparable reasons, regressions) for two score documents."""
     blockers, bad = [], []
+    blockers.extend(staged_blockers(base, new))
     if base.get("referee_sha256") != new.get("referee_sha256"):
         blockers.append("different referees: %s vs %s" % (base.get("referee_sha256"), new.get("referee_sha256")))
     if base.get("reference") != new.get("reference"):

@@ -255,6 +255,20 @@ def blaze_server_mode(manifest):
     return ((manifest or {}).get("server") or {}).get("blaze_server_mode")
 
 
+def observed_warm_server(manifest):
+    """Whether `record` saw a persistent server: a command recorded (from the server's pid file)
+    as having run warm. Recordings made before batch 3 carry no such field: False."""
+    return any(isinstance(c.get("server"), dict) and c["server"].get("state") == "warm"
+               for c in (manifest or {}).get("commands", []))
+
+
+def strict_server_rules(manifest):
+    """Whether a candidate is judged by the daemon-mode rules (audit of batch 3, A1 and A2): the
+    recorder ran Blaze's persistent server (`blaze_server_mode` daemon), or it observed a warm
+    server whatever the mode it was asked for (a binary whose default is a server)."""
+    return blaze_server_mode(manifest) == "daemon" or observed_warm_server(manifest)
+
+
 def client_started_server(stderr_text):
     """Whether the client printed its server-start line ("Starting local Bazel server (9.3.2) and
     connecting to it..."; Blaze's one-process mode prints it on every command)."""

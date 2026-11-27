@@ -590,7 +590,8 @@ class DiffAndAllowTest(unittest.TestCase):
         self.assertFalse(ocmp.is_clean(r))
 
     def test_project_filter(self):
-        al = self.allow([{"id": "x", "surface": "s", "projects": ["re2"], "kinds": ["DIFF"], "max_items": {"re2": 1}}])
+        al = self.allow([{"id": "x", "surface": "s", "projects": ["re2"], "kinds": ["DIFF"], "only_fields": ["a"],
+                          "max_items": {"re2": 1}}])
         self.assertIsNone(al.match("brotli", "s", "k", "DIFF", ["a"]))
         self.assertIsNotNone(al.match("re2", "s", "k", "DIFF", ["a"]))
 

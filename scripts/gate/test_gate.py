@@ -351,7 +351,7 @@ class BaselineTest(unittest.TestCase):
 
 def score(rows, referee="r" * 64, **over):
     doc = {"label": "blaze-x", "reference": "oracle-9.3.2", "referee_sha256": referee, "restriction":
-           {"projects": None, "surfaces": None}, "verdict": "FAIL", "rows": [], "provenance": {},
+           {"projects": None, "surfaces": None}, "verdict": "FAIL", "rows": [], "provenance": {}, "staged": None,
            "totals": {"total": 0, "matching": 0, "allowed": 0, "failed": 0}}
     for project, surface, status, total, matching in rows:
         doc["rows"].append({"project": project, "surface": surface, "status": status, "total": total,
@@ -367,6 +367,21 @@ class CompareScoresTest(unittest.TestCase):
         self.tool = load_tool("compare-scores")
         self.base = score([("brotli", "query", "MATCH", 10, 10), ("brotli", "aquery", "DIFF", 60, 50),
                            ("re2", "bep", "MISSING", 100, 0)])
+
+    def test_staged_or_unmarked_scores_are_not_comparable(self):
+        # Audit of referee batch 3b (B1): a staged score, or one that cannot say, is refused.
+        same = score([(r["project"], r["surface"], r["status"], r["total"], r["matching"]) for r in self.base["rows"]])
+        blockers, _ = self.tool.compare(self.base, same)
+        self.assertEqual(blockers, [])
+        staged = dict(same, staged={"stage": "/x", "records": "/x/r", "summaries": "/x/s"})
+        blockers, _ = self.tool.compare(self.base, staged)
+        self.assertTrue(any("staging area" in b for b in blockers), blockers)
+        unmarked = {k: v for k, v in same.items() if k != "staged"}
+        blockers, _ = self.tool.compare(unmarked, same)
+        self.assertTrue(any("no `staged` field" in b for b in blockers), blockers)
+        warned = dict(same, warnings=["staged: records from /x"])
+        blockers, _ = self.tool.compare(self.base, warned)
+        self.assertTrue(any("`staged:` warning" in b for b in blockers), blockers)
 
     def test_no_regression(self):
         new = score([("brotli", "query", "MATCH", 10, 10), ("brotli", "aquery", "MATCH", 60, 60),

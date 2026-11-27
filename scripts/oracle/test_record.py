@@ -399,6 +399,22 @@ class ServerModeTest(unittest.TestCase):
         # A pid file naming a process that is not a server of this root (a reused pid) is ignored.
         self.assertIsNone(stranger.poll())
 
+    def test_a_server_of_another_label_with_a_longer_name_is_left_alone(self):
+        # Batch 3b (audit of batch 3, B2): rec-blaze-x is a prefix of rec-blaze-x-rerun.
+        other_root = self.root + "-rerun"
+        other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)",
+                                  "--output_base=" + other_root + "/ob"])
+        self.addCleanup(other.wait)
+        self.addCleanup(other.kill)
+        os.makedirs(os.path.join(self.root, "ob", "server"))
+        write(os.path.join(self.root, "ob", "server", "server.pid.txt"), str(other.pid))
+        self.assertEqual(record.live_servers(self.root), {})
+        self.assertEqual(record.kill_servers(self.root), [])
+        self.assertIsNone(other.poll())
+        self.assertTrue(record.names_path(b"java\0--output_base=" + self.root.encode() + b"/ob", self.root))
+        self.assertTrue(record.names_path(b"x\0" + self.root.encode(), self.root))
+        self.assertFalse(record.names_path(b"x\0" + other_root.encode(), self.root))
+
     def test_a_server_alive_after_shutdown_is_reported_and_stopped(self):
         write(os.path.join(oc.OUTPUT_ROOTS, "FAKE_KEEP"), "")
         rc, out, err = self.run_record("--binary", self.server, "--label", "blaze-x", "--project", "toy",

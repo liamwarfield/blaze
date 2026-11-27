@@ -686,7 +686,7 @@ class ServerStateTest(unittest.TestCase):
         self.add_with_pids("cand", [("mod_graph", "cold"), ("build", "warm"), ("info", "warm")])
         cmp = ocmp.compare_labels(REF, "cand")
         self.assertFalse([w for w in orep.warning_lines(cmp) if "server" in w])
-        self.assertIn("server cand/brotli: server mode daemon; cold: mod_graph; warm: build, info",
+        self.assertIn("server cand/brotli: server mode daemon (daemon-mode rules); cold: mod_graph; warm: build, info",
                       orep.server_lines(cmp))
 
     def test_a_failed_shutdown_is_a_warning(self):
@@ -749,6 +749,137 @@ class DaemonModeAllowTest(unittest.TestCase):
                      "buildMetrics.buildGraphMetrics.changedValues", "buildMetrics.buildGraphMetrics.cleanedValues"):
             self.assertIsNotNone(ocmp.AllowList().match("re2", "bep", self.BM, "DIFF", [path]), path)
             self.assertIsNone(ocmp.AllowList().match("re2", "bep", self.BM, "DIFF", [path], "daemon"), path)
+
+
+class DaemonRulesTest(unittest.TestCase):
+    """Batch 3b (audit of batch 3, A1, A2): under the daemon-mode rules a command that ran cold on
+    one side and warm on the other, or a failed final shutdown, fails exit_codes; one-process
+    candidates keep the warning. The rules follow the server the recorder observed."""
+
+    START = "Starting local Bazel server (9.3.2) and connecting to it...\n"
+    CLEAN_SHUTDOWN = {"shutdown_exit_code": 0, "alive_after_shutdown": []}
+
+    def setUp(self):
+        self.rec = Records(self)
+        codes = {"mod_graph": 0, "build": 0, "info": 0}
+        rd = self.rec.add(REF, "brotli", {"exit_codes": codes}, manifest=dict(CLEAN, commands=[
+            {"name": n, "exit_code": 0} for n in codes]))
+        os.makedirs(os.path.join(rd, "raw"))
+        for name, text in (("mod_graph", self.START), ("build", ""), ("info", "")):
+            with open(os.path.join(rd, "raw", name + ".stderr"), "w") as f:
+                f.write(text)
+
+    def cand(self, states, mode="daemon", shutdown=None, label="cand"):
+        server = dict(self.CLEAN_SHUTDOWN if shutdown is None else shutdown, blaze_server_mode=mode)
+        self.rec.add(label, "brotli", {"exit_codes": {n: 0 for n, _ in states}}, manifest=dict(
+            CLEAN, server=server, commands=[
+                {"name": n, "exit_code": 0, "server": {"pid_before": 1, "pid_after": 1 if st == "warm" else 2,
+                                                        "start_line": st == "cold", "state": st}}
+                for n, st in states]))
+        cmp = ocmp.compare_labels(REF, label, surfaces=["exit_codes"])
+        return cmp, by_surface(cmp, "brotli")["exit_codes"]
+
+    SAME = [("mod_graph", "cold"), ("build", "warm"), ("info", "warm")]
+    COLD_BUILD = [("mod_graph", "cold"), ("build", "cold"), ("info", "warm")]
+
+    def test_equal_states_and_a_clean_shutdown_match(self):
+        _, r = self.cand(self.SAME)
+        self.assertEqual((r["status"], r["counts"]["MATCH"]), ("MATCH", 3))
+
+    def test_a_cold_command_fails_its_exit_code_item(self):
+        cmp, r = self.cand(self.COLD_BUILD)
+        self.assertEqual(r["status"], "DIFF")
+        self.assertEqual([(d["key"], d["kind"], d["paths"]) for d in r["details"]], [("build", "DIFF", ["server_state"])])
+        self.assertEqual(r["_a"]["build"], {"exit_code": 0, "server_state": "warm"})
+        self.assertEqual(r["_b"]["build"], {"exit_code": 0, "server_state": "cold"})
+        # The reference's items are not changed: the same number of reference items.
+        self.assertEqual(r["total_a"], 3)
+        self.assertTrue(any("runs under the daemon-mode rules, so these commands fail" in w
+                            for w in orep.warning_lines(cmp)))
+
+    def test_a_failed_shutdown_fails_exit_codes(self):
+        for sd in ({"shutdown_exit_code": 1, "alive_after_shutdown": []},
+                   {"shutdown_exit_code": 0, "alive_after_shutdown": [{"pid": 7}]},
+                   {}):
+            label = "cand%d" % len(str(sd))
+            _, r = self.cand(self.SAME, shutdown=sd, label=label)
+            self.assertEqual(r["status"], "DIFF", sd)
+            self.assertEqual([(d["key"], d["kind"]) for d in r["details"]], [(ocmp.SHUTDOWN_ITEM, "EXTRA")], sd)
+
+    def test_one_process_candidates_keep_the_warning(self):
+        cmp, r = self.cand([("mod_graph", "cold"), ("build", "cold"), ("info", "cold")], mode=None,
+                           shutdown={"shutdown_exit_code": 1})
+        self.assertEqual(r["status"], "MATCH")
+        self.assertIn("brotli: commands on a warm server in %s and a cold one in cand: build, info" % REF,
+                      orep.warning_lines(cmp))
+
+    def test_an_observed_warm_server_gets_the_strict_rules_without_the_mode(self):
+        # A2: a binary whose default is a server; the recorder was not asked for daemon mode.
+        _, r = self.cand(self.COLD_BUILD, mode=None)
+        self.assertEqual(r["status"], "DIFF")
+        self.assertTrue(oc.strict_server_rules({"commands": [{"name": "build", "server": {"state": "warm"}}]}))
+        self.assertTrue(oc.strict_server_rules({"server": {"blaze_server_mode": "daemon"}}))
+        self.assertFalse(oc.strict_server_rules({"commands": [{"name": "build", "server": {"state": "cold"}}]}))
+        self.assertFalse(oc.strict_server_rules({"commands": [{"name": "build", "exit_code": 0}]}))
+
+    def test_an_observed_warm_server_gets_the_daemon_allow_fields(self):
+        bm = '{"buildMetrics":{}}'
+
+        def bep(built):
+            return {bm: {"buildMetrics": {"buildGraphMetrics": {"builtValues": [{"skyfunctionName": "FILE",
+                                                                                 "count": built}]}}}}
+        self.rec.add(REF + "-x", "brotli", {"bep": bep("10")})
+        for label, states in (("lenient", [("build", "cold")]), ("observed", [("build", "warm")])):
+            self.rec.add(label, "brotli", {"bep": bep("15")}, manifest=dict(CLEAN, server={}, commands=[
+                {"name": "build", "exit_code": 0, "server": {"state": st}} for _, st in states]))
+        got = {l: by_surface(ocmp.compare_labels(REF + "-x", l, surfaces=["bep"]), "brotli")["bep"]["status"]
+               for l in ("lenient", "observed")}
+        self.assertEqual(got, {"lenient": "MATCH", "observed": "DIFF"})
+
+
+class EmptyFieldListTest(unittest.TestCase):
+    """Batch 3b (audit of batch 3, A3): an empty field list must excuse nothing."""
+
+    BASE = {"id": "e", "surface": "bep", "projects": "*", "item": ".", "kinds": ["DIFF"], "max_items": {"p": 1}}
+
+    def test_prepare_refuses_empty_lists(self):
+        for extra in ({}, {"only_fields": []}, {"only_fields": ["a"], "only_fields_in_daemon_mode": []}):
+            with self.assertRaises(ocmp.AllowListError, msg=extra):
+                ocmp.AllowList.prepare(dict(self.BASE, **extra))
+        # MISSING/EXTRA entries need no field list.
+        ocmp.AllowList.prepare(dict(self.BASE, kinds=["MISSING"]))
+
+    def test_match_excuses_nothing_without_fields(self):
+        al = ocmp.AllowList(None)
+        e = ocmp.AllowList.prepare(dict(self.BASE, only_fields=["a"], only_fields_in_daemon_mode=["a"]))
+        e["_daemon_field_res"] = []  # as an entry with an empty list would have been prepared
+        al.entries = [e]
+        self.assertIsNotNone(al.match("p", "bep", "k", "DIFF", ["a"]))
+        self.assertIsNone(al.match("p", "bep", "k", "DIFF", ["a"], "daemon"))
+        self.assertIsNone(al.match("p", "bep", "k", "DIFF", ["b"], "daemon"))
+
+
+class StagedFieldTest(unittest.TestCase):
+    """Batch 3b (audit of batch 3, B1): a staged score says so in a top-level field."""
+
+    def setUp(self):
+        self.rec = Records(self)
+        self.rec.add(REF, "brotli", QUERY)
+        self.rec.add("cand", "brotli", QUERY)
+
+    def doc(self):
+        return orep.score_document(ocmp.compare_labels(REF, "cand"), ocmp.AllowList(None))
+
+    def test_unstaged(self):
+        self.assertIsNone(self.doc()["staged"])
+
+    def test_staged(self):
+        self.addCleanup(setattr, oc, "STAGE", oc.STAGE)
+        oc.STAGE = self.rec.root
+        doc = self.doc()
+        self.assertEqual(sorted(doc["staged"]), ["records", "stage", "summaries"])
+        self.assertEqual(doc["staged"]["records"], orep.home_relative(oc.RECORDS))
+        self.assertIn('"staged": {', orep.score_json(doc))
 
 
 class StageTest(unittest.TestCase):

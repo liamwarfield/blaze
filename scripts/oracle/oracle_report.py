@@ -42,6 +42,15 @@ def tree_text(p):
     return "repo commit %s clean, %s" % (short(p["repo_commit"]), v)
 
 
+def staged_field():
+    """{"records", "summaries"} of the staging area (home-relative) when BLAZE_ORACLE_STAGE is
+    set, else None."""
+    if not oc.STAGE:
+        return None
+    return {"stage": home_relative(oc.STAGE), "records": home_relative(oc.RECORDS),
+            "summaries": home_relative(oc.CORPUS_SUMMARIES)}
+
+
 def server_text(p):
     """'server mode daemon; cold: mod_graph; warm: build, ...' (states read from stderr are marked)."""
     states = p.get("server_states") or {}
@@ -50,6 +59,8 @@ def server_text(p):
         name = "unknown" if not st else st[0] + (" (from stderr)" if st[1] == "stderr" else "")
         by.setdefault(name, []).append(cmd)
     parts = ["server mode %s" % (p.get("server_mode") or "unset")]
+    if p.get("strict_server_rules"):
+        parts[0] += " (daemon-mode rules)"
     parts += ["%s: %s" % (k, ", ".join(v)) for k, v in sorted(by.items())]
     return "; ".join(parts)
 
@@ -64,7 +75,11 @@ def server_state_lines(cmp):
             continue
         sa, sb = a.get("server_states") or {}, b.get("server_states") or {}
         differ = [c for c in sa if c in sb and sa[c] and sb[c] and sa[c][0] != sb[c][0]]
-        if differ:
+        if differ and b.get("strict_server_rules"):
+            out.append("%s: %s runs under the daemon-mode rules, so these commands fail its exit_codes "
+                       "(server_state): %s" % (project, cmp.b, ", ".join(
+                           "%s %s/%s" % (c, sa[c][0], sb[c][0]) for c in differ)))
+        elif differ:
             out.append("%s: commands on a %s server in %s and a %s one in %s: %s" % (
                 project, sa[differ[0]][0], cmp.a, sb[differ[0]][0], cmp.b, ", ".join(differ))
                 if all(sa[c][0] == sa[differ[0]][0] for c in differ) else
@@ -292,6 +307,9 @@ def score_document(cmp, allow, allow_dirty=None):
         "excluded": excluded(cmp),
         "recording_problems": recording_problems(cmp),
         "allow_dirty": allow_dirty,
+        # Batch 3b (audit B1): a score made from a staging area (BLAZE_ORACLE_STAGE) says so in a
+        # field of its own, so that scripts/gate/compare-scores can refuse it; null otherwise.
+        "staged": staged_field(),
         "matching_keys_format": "sha256(key)[:%d], sorted, space-separated" % KEY_DIGEST_HEX,
     }
 

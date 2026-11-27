@@ -148,7 +148,8 @@ an oracle recording can use the same startup options) and ends with `shutdown`.
 What the manifest records (every recording made since batch 3):
 
 - per command, `server`: `pid_before` and `pid_after` (the live pid in
-  `<output base>/server/server.pid.txt` whose command line names the output user root),
+  `<output base>/server/server.pid.txt` whose command line has an argument naming the output
+  user root or a path below it, the root ending at `/` or at the end of the argument),
   `start_line` (the client printed "Starting local ... server"), and `state`: `warm` when the
   same server was alive before and after and the client started none, `cold` otherwise;
 - per recording, `server`: `blaze_server_mode` (null: unset), `max_idle_secs`, `stopped_before`
@@ -160,8 +161,23 @@ What the manifest records (every recording made since batch 3):
 warm (for recordings made before batch 3, read from `raw/<command>.stderr`: cold when the client
 printed its start line; marked `from stderr`), and warn when a command ran warm on one side and
 cold on the other, or when the final shutdown failed or left a server alive. The score document
-carries them in `provenance` (`server_mode`, `server_states`, `shutdown`). Different states are
-a warning, not a failure: the one-process mode keeps scoring as before.
+carries them in `provenance` (`server_mode`, `server_states`, `shutdown`,
+`strict_server_rules`).
+
+The daemon-mode rules (batch 3b) apply to a candidate whose manifest has `blaze_server_mode`
+`daemon`, or on which `record` observed a warm server (a command with `server.state` `warm`,
+whatever mode was asked for: a binary whose default is the server gets them too;
+`oracle_common.strict_server_rules`). Under them:
+
+- a command that ran cold on one side and warm on the other makes its `exit_codes` item a DIFF
+  (both values become `{"exit_code", "server_state"}`; path `server_state`);
+- a final `shutdown` that exited non-zero, left a server alive or was not recorded adds the
+  candidate-only item `__shutdown__` to `exit_codes` (EXTRA);
+- allow-list entries use `only_fields_in_daemon_mode` (below).
+
+Both are decided at compare time (`oracle_compare.server_checked_exit_codes`), so no
+recording's items change. Other candidates (one process per command, and recordings made before
+batch 3) get the warning only, and score as before.
 
 Masks and allow-list entries that exist only because of the cold/warm difference, and what
 daemon mode does with them:
@@ -169,7 +185,9 @@ daemon mode does with them:
 - the client's server-start line in `build_stderr` (it has no prefix, so the stderr summary
   drops it; Blaze in one-process mode prints it on every command): kept and compared for a
   recording with `blaze_server_mode` `daemon` (`normalise.SERVER_START_RE`); dropped otherwise,
-  as before.
+  as before. This is decided at extraction by the requested mode; a server started by the build
+  of a recording with an observed warm server is caught by the `server_state` check above
+  instead (moving this to the observed state is listed for the next extractor change).
 - Four of the nine `only_fields` of `build-metrics-volatile-counters`: `builtValues`,
   `changedValues`, `cleanedValues` and `postInvocationSkyframeNodeCount`. In `oracle-9.3.2`,
   `-rerun` and `-check` they are equal (per SkyFunction and in order; node count brotli 7305, re2
@@ -197,7 +215,9 @@ or the committed files, set `BLAZE_ORACLE_STAGE=<dir>`: the tools then read and 
 recordings in `<dir>/oracle-records`, check the reference against `<dir>/corpus-oracle`, and
 `scoreboard --write` writes to `<dir>/scores`. Copy what you need there first (`raw/` may be
 hard-linked: renormalising only reads it). Every report made that way says so in a `staged:`
-warning, which a score document keeps. After the referee change is accepted, root
+warning, which a score document keeps, and in the top-level field `staged` of the score
+document (`{"stage", "records", "summaries"}`; `null` for an unstaged score; scores written
+before batch 3b lack the field). After the referee change is accepted, root
 renormalises the shared recordings (`record --renormalise`), which writes the summaries, and
 commits them with the referee.
 
@@ -385,9 +405,11 @@ that normalisation cannot remove. An entry:
 ```
 
 The condition is checked on every run: a DIFF is excused only if every differing leaf path
-matches one of `only_fields` (a DIFF entry must name them); for a candidate recorded with
-`blaze_server_mode` `daemon`, of `only_fields_in_daemon_mode` when the entry has one (see
-"Server mode"). `max_items` is required: per
+matches one of `only_fields` (a DIFF entry must name them); for a candidate under the
+daemon-mode rules, of `only_fields_in_daemon_mode` when the entry has one (see "Server mode").
+An entry that excuses DIFF items with an empty or missing `only_fields`, or with an empty
+`only_fields_in_daemon_mode`, is refused (an empty list would excuse every difference), and an
+empty list excuses nothing. `max_items` is required: per
 project, the number of items the entry excused when the oracle was compared with itself. A
 project that is not named has the cap 0 (there is no oracle-vs-oracle evidence for it; workerd
 today). An entry that would excuse more items than the cap excuses none of them and fails the
