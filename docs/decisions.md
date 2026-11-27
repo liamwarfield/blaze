@@ -644,3 +644,15 @@ Each entry: date, decision, why, who decided.
   stayed under its memory limit): 190 of 211 targets, 2,803 of 2,878 functions. The server is
   still opt-in: the I3 review is STOP on three stale paths (round 2). Of the 75 functions not
   passing, 20 are JVM-only and 4 are the declared TLS gap. Root.
+- 2026-11-26. Ruling: Blaze ports Skymeld, Bazel's default merged analysis and execution (one
+  Skyframe evaluation in which a top-level target executes while others are still analysed).
+  Blaze analysed everything and then executed; the execution implementer showed this is the
+  cause of an observable difference (after a failure Bazel has run 2 processes and prints
+  "Target X failed to build" and a final FAILED progress line; Blaze matches Bazel's
+  non-merged mode exactly instead), and it also sets the order of build events and the
+  progress denominators. The referee guard must stay at regressed 0 through the change. Also
+  from that implementer's pass over the execution cluster: the digest cache was configured too
+  late (fixed; six steps equal the oracle's), `closeContext` was missing, the emacs
+  "Entering directory" lines were missing, `--experimental_skyframe_memory_dump` was silently
+  ignored (now fails loudly: Java measures its own objects). Patch 0065 of the vendored
+  interpreter is in the patch list. Root.
