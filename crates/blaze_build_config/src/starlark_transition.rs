@@ -78,6 +78,13 @@ pub enum JavaObject {
     StarlarkValue(OptionValue),
     /// Any other option value (not readable by Starlark without conversion).
     Other(OptionValue),
+    /// Any other Starlark object a transition function returned (`StarlarkFloat`, a struct, a
+    /// function, ...). PORT: kept as its `Starlark.repr` and `Starlark.type`, all that the
+    /// transition's validation errors read; it is never an option value of a configuration.
+    StarlarkObject {
+        repr: String,
+        type_name: String,
+    },
 }
 
 impl PartialEq for JavaObject {
@@ -101,6 +108,16 @@ impl PartialEq for JavaObject {
             (Set(a), Set(b)) => a.len() == b.len() && a.iter().all(|e| b.contains(e)),
             (StarlarkValue(a), StarlarkValue(b)) => a == b,
             (Other(a), Other(b)) => a == b,
+            (
+                StarlarkObject {
+                    repr: a,
+                    type_name: ta,
+                },
+                StarlarkObject {
+                    repr: b,
+                    type_name: tb,
+                },
+            ) => a == b && ta == tb,
             _ => false,
         }
     }
@@ -133,6 +150,8 @@ impl JavaObject {
                 format!("{{{}}}", entries.join(", "))
             }
             JavaObject::StarlarkValue(v) | JavaObject::Other(v) => v.java_to_string(),
+            // PORT: see the variant: its repr.
+            JavaObject::StarlarkObject { repr, .. } => repr.clone(),
         }
     }
 
@@ -195,12 +214,13 @@ impl JavaObject {
             // Java: net/starlark/java/eval/Printer.java:216 Printer.repr (a value whose class
             // is not a Starlark value prints its `toString()`).
             JavaObject::StarlarkValue(v) | JavaObject::Other(v) => v.java_to_string(),
+            JavaObject::StarlarkObject { repr, .. } => repr.clone(),
         }
     }
 
     /// Java `Starlark.type(x)` for the error messages that name a value's type.
-    pub fn starlark_type(&self) -> &'static str {
-        match self {
+    pub fn starlark_type(&self) -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed(match self {
             JavaObject::Null => "NoneType",
             JavaObject::Bool(_) => "bool",
             JavaObject::Int(_) => "int",
@@ -212,7 +232,10 @@ impl JavaObject {
             JavaObject::Map(_) => "dict",
             JavaObject::Set(_) => "set",
             JavaObject::StarlarkValue(_) | JavaObject::Other(_) => "unknown",
-        }
+            JavaObject::StarlarkObject { type_name, .. } => {
+                return std::borrow::Cow::Owned(type_name.clone());
+            }
+        })
     }
 
     /// Classifies an option value by its Java class.
@@ -276,6 +299,10 @@ impl JavaObject {
                 )
             }
             JavaObject::StarlarkValue(v) | JavaObject::Other(v) => Some(v.clone()),
+            // `to_option_value_if_typed` keeps it from `isInstance`, the only way here.
+            JavaObject::StarlarkObject { type_name, .. } => {
+                panic!("IllegalStateException: a {type_name} is not an option value")
+            }
         }
     }
 }
@@ -494,6 +521,11 @@ pub fn from_java<'v>(x: &JavaObject, heap: starlark::values::Heap<'v>) -> Option
             starlark::values::set::alloc_set(heap, elems).ok()
         }
         JavaObject::Other(_) => None,
+        JavaObject::StarlarkObject { type_name, .. } => blaze_util::unported!(
+            "Starlark.fromJava",
+            "a {} kept as its repr (it never reaches a configuration)",
+            type_name
+        ),
     }
 }
 
@@ -514,6 +546,8 @@ fn is_from_java_convertible(x: &JavaObject) -> bool {
         JavaObject::Map(m) => m.iter().all(|(k, v)| is_valid(k) && is_valid(v)),
         JavaObject::Set(l) => l.iter().all(is_valid),
         JavaObject::Other(_) => false,
+        // A StarlarkValue.
+        JavaObject::StarlarkObject { .. } => true,
     }
 }
 
@@ -597,7 +631,11 @@ pub fn to_java_object(v: Value) -> Result<JavaObject, String> {
             set.iter().map(to_java_object).collect::<Result<_, _>>()?,
         ));
     }
-    Err(v.get_type().to_string())
+    // Any other Starlark value: Java keeps the object.
+    Ok(JavaObject::StarlarkObject {
+        repr: v.to_repr(),
+        type_name: v.get_type().to_string(),
+    })
 }
 
 // -------------------------------------------------------------------------------------------

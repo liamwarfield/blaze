@@ -743,8 +743,9 @@ mod tests {
 
     // Java: src/test/java/com/google/devtools/build/skyframe/CyclesReporterTest.java:50 CyclesReporterTest.notReportedAssertion
     #[test]
-    #[ignore = "the bug report rethrows only in a test environment (TEST_TMPDIR set when the process starts, \
-                TestType.isInTest); run with TEST_TMPDIR=<dir> cargo test -- --ignored"]
+    #[ignore = "the bug report rethrows only in a test environment (TestType.isInTest: TEST_TMPDIR set \
+                when the process starts); run the test binary with TEST_TMPDIR set and --ignored \
+                (scripts/cargo-capped does not pass TEST_TMPDIR)"]
     #[should_panic(expected = "java.lang.IllegalStateException")]
     fn not_reported_assertion() {
         let (single_reporter, _) = recording(false);

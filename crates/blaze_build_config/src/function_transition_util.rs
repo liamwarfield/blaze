@@ -580,6 +580,11 @@ pub fn starlark_option_to_java(v: &StarlarkOptionValue) -> JavaObject {
             "feature flag value {} as a transition input",
             v
         ),
+        StarlarkOptionValue::StarlarkObject { type_name, .. } => blaze_util::unported!(
+            "FunctionTransitionUtil.findStarlarkOptionValue",
+            "a {} kept as its repr (it never reaches a configuration)",
+            type_name
+        ),
         StarlarkOptionValue::List(l) => {
             let items = l.iter().map(starlark_option_to_java).collect();
             match l.class() {
@@ -619,6 +624,14 @@ fn java_to_starlark_option(v: &JavaObject) -> Result<StarlarkOptionValue, Valida
                 .map(java_to_starlark_option)
                 .collect::<Result<_, _>>()?,
         ),
+        // Java stores any other object as it is (`Starlark.NONE`, a `Dict`, a `StarlarkFloat`, a
+        // struct); `StarlarkTransition.validate` rejects it with the setting type's error.
+        JavaObject::Null | JavaObject::Map(_) | JavaObject::StarlarkObject { .. } => {
+            StarlarkOptionValue::StarlarkObject {
+                repr: v.starlark_repr(),
+                type_name: v.starlark_type().into_owned(),
+            }
+        }
         other => blaze_util::unported!(
             "FunctionTransitionUtil.applyTransition",
             "Starlark option value {:?}",
@@ -951,7 +964,9 @@ impl JavaObject {
             | JavaObject::StarlarkList(_)
             | JavaObject::Tuple(_)
             | JavaObject::Map(_)
-            | JavaObject::Set(_) => None,
+            | JavaObject::Set(_)
+            // A StarlarkFloat, struct, ... is an instance of no option's type.
+            | JavaObject::StarlarkObject { .. } => None,
             other => other.to_option_value(),
         }
     }

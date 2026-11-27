@@ -232,6 +232,15 @@ pub enum StarlarkOptionValue {
     List(StarlarkOptionList),
     /// A `config_feature_flag` value (`rules/config/FeatureFlagValue`).
     FeatureFlag(crate::feature_flag_value::FeatureFlagValue),
+    /// Any other Starlark object a transition function returned for a Starlark setting
+    /// (`Starlark.NONE`, a `StarlarkFloat`, a `Dict`, a struct, ...): Java stores the object as
+    /// it is (`FunctionTransitionUtil.applyTransition`) and `StarlarkTransition.validate` then
+    /// rejects it with the build setting type's conversion error.
+    ///
+    /// PORT: the object is kept as its `Starlark.repr` and `Starlark.type`, which is all that
+    /// error and `toString` read; two of them are equal when both are equal. Such a value never
+    /// reaches a configuration (validation fails first).
+    StarlarkObject { repr: String, type_name: String },
 }
 
 impl StarlarkOptionValue {
@@ -287,6 +296,9 @@ impl StarlarkOptionValue {
             StarlarkOptionValue::Str(s) => s.clone(),
             StarlarkOptionValue::Label(l) => l.to_string(),
             StarlarkOptionValue::FeatureFlag(v) => v.to_string(),
+            // PORT: the object's own toString is not kept; it is never printed, as the value never
+            // reaches a configuration (see the variant).
+            StarlarkOptionValue::StarlarkObject { repr, .. } => repr.clone(),
             StarlarkOptionValue::List(l) => match l.class() {
                 // Java: java/util/AbstractCollection.java AbstractCollection.toString
                 JavaCollectionClass::List | JavaCollectionClass::Set => {
@@ -317,6 +329,7 @@ impl StarlarkOptionValue {
             // Java: net/starlark/java/eval/Printer.java:216 Printer.repr (a non-Starlark value
             // prints its `toString()`).
             StarlarkOptionValue::FeatureFlag(v) => v.to_string(),
+            StarlarkOptionValue::StarlarkObject { repr, .. } => repr.clone(),
             StarlarkOptionValue::List(l) => {
                 let elems: Vec<String> = l.iter().map(StarlarkOptionValue::starlark_repr).collect();
                 match l.class() {
@@ -363,6 +376,10 @@ impl StarlarkOptionValue {
             (StarlarkOptionValue::Str(a), StarlarkOptionValue::Str(b)) => a == b,
             (StarlarkOptionValue::Label(a), StarlarkOptionValue::Label(b)) => a == b,
             (StarlarkOptionValue::FeatureFlag(a), StarlarkOptionValue::FeatureFlag(b)) => a == b,
+            (
+                StarlarkOptionValue::StarlarkObject { .. },
+                StarlarkOptionValue::StarlarkObject { .. },
+            ) => self == other,
             (StarlarkOptionValue::List(a), StarlarkOptionValue::List(b)) => {
                 let same_elems =
                     || a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x.java_equals(y));

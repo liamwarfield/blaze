@@ -1486,28 +1486,78 @@ fn cc_internal_methods(builder: &mut MethodsBuilder) {
         #[starlark(require = named)] object_file: Value<'v>,
         #[starlark(require = named)] dwo_file: Value<'v>,
         #[starlark(require = named)] env: Value<'v>,
+        eval: &mut Evaluator<'v, '_, '_>,
     ) -> starlark::Result<NoneType> {
-        let _ = (
-            this,
-            actions,
-            feature_configuration,
-            build_variables,
-            use_pic,
-            all_bitcode_files,
-            additional_inputs,
-            index,
-            bitcode_file,
-            object_file,
-            dwo_file,
-            env,
-        );
-        // Needs LtoBackendActionTemplate (an ActionTemplate expanding to LtoBackendActions per
-        // tree-artifact child); reached like create_lto_backend_action, for tree-artifact bitcode.
-        blaze_util::unported!(
-            "CcStarlarkInternal.createLtoBackendActionTemplate",
-            "LtoBackendActionTemplate (ThinLTO of tree-artifact sources with a toolchain that \
-             defines the lto-backend action)"
-        )
+        let _ = this;
+        const F: &str = "create_lto_backend_action_template";
+        let handle = super::wrapped_action_factory::actions_rule_context(actions, F, "actions")?;
+        let feature_configuration =
+            feature_configuration_param(feature_configuration, F, "feature_configuration")?
+                .get_feature_configuration()
+                .clone();
+        let build_variables = variables_param(build_variables, F, "build_variables")?;
+        // Java: allowedTypes = {Depset, NoneType}.
+        let bitcode_files = if all_bitcode_files.is_none() {
+            None
+        } else if blaze_starlark::depset::Depset::from_value(all_bitcode_files).is_some() {
+            Some(Arc::new(super::lto_backend_action::BitcodeFiles::new(
+                depset_cast_artifacts(all_bitcode_files, "bitcode_files")?,
+            )))
+        } else {
+            return Err(errorf(format!(
+                "in call to {F}(), parameter 'all_bitcode_files' got value of type '{}', want \
+                 'depset or NoneType'",
+                all_bitcode_files.get_type()
+            )));
+        };
+        // Java: allowedTypes = {SpecialArtifact, NoneType}, then
+        // `x instanceof SpecialArtifact s ? s : null`.
+        let special_artifact =
+            |x: Value<'v>, param: &str| -> starlark::Result<Option<blaze_actions::Artifact>> {
+                if x.is_none() {
+                    return Ok(None);
+                }
+                match blaze_actions::analysis::starlark::starlark_file::artifact_from_value(x) {
+                    Some(a) if a.is_tree_artifact() => Ok(Some(a)),
+                    _ => Err(errorf(format!(
+                        "in call to {F}(), parameter '{param}' got value of type '{}', want \
+                     'File or NoneType'",
+                        x.get_type()
+                    ))),
+                }
+            };
+        let index = special_artifact(index, "index")?;
+        let bitcode_file = special_artifact(bitcode_file, "bitcode_file")?;
+        let object_file = special_artifact(object_file, "object_file")?;
+        let dwo_file = special_artifact(dwo_file, "dwo_file")?;
+        let additional_inputs = depset_cast_artifacts(additional_inputs, "additional_inputs")?;
+        // ActionEnvironment.create(ImmutableMap.copyOf(Dict.cast(env, String.class,
+        // String.class, "env"))).
+        let env = Arc::new(blaze_actions::ActionEnvironment::create_fixed(
+            super::util::dict_cast_string_string(env, "env")?,
+        ));
+        let action_template = {
+            let rc = handle.borrow();
+            super::lto_backend_action_template::LtoBackendActionTemplate::new(
+                index,
+                bitcode_file.unwrap_or_else(|| {
+                    panic!("NullPointerException: LtoBackendActionTemplate.fullBitcodeTreeArtifact")
+                }),
+                object_file.unwrap_or_else(|| {
+                    panic!("NullPointerException: LtoBackendActionTemplate.objectFileTreeArtifact")
+                }),
+                dwo_file,
+                feature_configuration,
+                additional_inputs,
+                env,
+                build_variables,
+                use_pic,
+                bitcode_files,
+                rc.get_action_owner(),
+            )
+        };
+        register_action(eval, Arc::new(action_template))?;
+        Ok(NoneType)
     }
 
     // Java: com/google/devtools/build/lib/rules/cpp/CcStarlarkInternal.java:1196 CcStarlarkInternal.createHeaderInfo

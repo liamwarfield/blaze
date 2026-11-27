@@ -10,7 +10,7 @@
 //! is installed, so evaluation pays nothing.
 
 use starlark::codemap::FileSpanRef;
-use starlark::environment::FrozenModule;
+use starlark::environment::{FrozenModule, Globals};
 use starlark::eval::{BeforeStmtFunc, BeforeStmtFuncDyn, Evaluator};
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock, RwLock};
@@ -37,22 +37,22 @@ impl DebugLocation {
 }
 
 /// A debugger, called before each statement of instrumented code.
-// Java: net/starlark/java/eval/Debug.java:34 Debug.Debugger
+// Java: net/starlark/java/eval/Debug.java:32 Debug.Debugger
 pub trait Debugger: Send + Sync {
     /// Called before each statement; may block (to pause the thread).
-    // Java: net/starlark/java/eval/Debug.java:41 Debug.Debugger.before
+    // Java: net/starlark/java/eval/Debug.java:34 Debug.Debugger.before
     fn before(&self, eval: &mut Evaluator<'_, '_, '_>, location: &DebugLocation);
 
     /// Called when the debugger is replaced or removed.
-    // Java: net/starlark/java/eval/Debug.java:44 Debug.Debugger.close
+    // Java: net/starlark/java/eval/Debug.java:37 Debug.Debugger.close
     fn close(&self);
 }
 
-// Java: net/starlark/java/eval/Debug.java:92 Debug.debugger
+// Java: net/starlark/java/eval/Debug.java:90 Debug.debugger
 static DEBUGGER: LazyLock<RwLock<Option<Arc<dyn Debugger>>>> = LazyLock::new(|| RwLock::new(None));
 
 /// Installs `dbg` as the debugger (or removes it), closing the previous one.
-// Java: net/starlark/java/eval/Debug.java:101 Debug.setDebugger
+// Java: net/starlark/java/eval/Debug.java:97 Debug.setDebugger
 pub fn set_debugger(dbg: Option<Arc<dyn Debugger>>) {
     let prev = std::mem::replace(&mut *DEBUGGER.write().unwrap(), dbg);
     // The modules recorded for the previous debugger belong to its command.
@@ -97,7 +97,7 @@ pub fn install_hook(eval: &mut Evaluator<'_, '_, '_>) {
 }
 
 /// How a resumed thread steps.
-// Java: net/starlark/java/eval/Debug.java:73 Debug.Stepping
+// Java: net/starlark/java/eval/Debug.java:67 Debug.Stepping
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stepping {
     None,
@@ -107,11 +107,11 @@ pub enum Stepping {
 }
 
 /// Whether a stepping thread pauses at its next statement, given its call-stack depth then.
-// Java: net/starlark/java/eval/Debug.java:63 Debug.ReadyToPause
+// Java: net/starlark/java/eval/Debug.java:61 Debug.ReadyToPause
 pub type ReadyToPause = Box<dyn Fn(usize) -> bool + Send + Sync>;
 
 /// The predicate that pauses a thread resumed with `stepping` at call-stack depth `depth`.
-// Java: net/starlark/java/eval/Debug.java:120 Debug.stepControl
+// Java: net/starlark/java/eval/Debug.java:126 Debug.stepControl
 pub fn step_control(depth: usize, stepping: Stepping) -> Option<ReadyToPause> {
     match stepping {
         Stepping::None => None,
@@ -136,9 +136,29 @@ pub fn call_stack_size(eval: &Evaluator<'_, '_, '_>) -> usize {
 }
 
 // The modules of the files evaluated while a debugger is set, by file name: the globals of a
-// frame whose function was defined in a frozen module (Java `StarlarkFunction.getModule()`).
-static MODULE_GLOBALS: LazyLock<RwLock<HashMap<String, FrozenModule>>> =
+// frame whose function was defined in a frozen module (Java `StarlarkFunction.getModule()`), and
+// the predeclared names the file was evaluated with (Java `Module.getPredeclaredBindings`).
+#[derive(Default)]
+struct DebugModule {
+    frozen: Option<FrozenModule>,
+    predeclared: Option<Globals>,
+}
+
+static MODULE_GLOBALS: LazyLock<RwLock<HashMap<String, DebugModule>>> =
     LazyLock::new(|| RwLock::new(HashMap::new()));
+
+/// Records the predeclared names `file` is evaluated with (when a debugger is set), before it
+/// runs.
+pub fn register_predeclared(file: &str, globals: &Globals) {
+    if DEBUGGER.read().unwrap().is_some() {
+        MODULE_GLOBALS
+            .write()
+            .unwrap()
+            .entry(file.to_owned())
+            .or_default()
+            .predeclared = Some(globals.clone());
+    }
+}
 
 /// Records the frozen module of `file` (when a debugger is set).
 pub fn register_module(file: &str, module: &FrozenModule) {
@@ -146,18 +166,97 @@ pub fn register_module(file: &str, module: &FrozenModule) {
         MODULE_GLOBALS
             .write()
             .unwrap()
-            .insert(file.to_owned(), module.clone());
+            .entry(file.to_owned())
+            .or_default()
+            .frozen = Some(module.clone());
     }
 }
 
 /// The frozen module of `file`, if it was evaluated while the debugger was set.
 pub fn module_of_file(file: &str) -> Option<FrozenModule> {
-    MODULE_GLOBALS.read().unwrap().get(file).cloned()
+    MODULE_GLOBALS
+        .read()
+        .unwrap()
+        .get(file)
+        .and_then(|m| m.frozen.clone())
+}
+
+/// The predeclared names of `file`, if it was evaluated while the debugger was set.
+pub fn predeclared_of_file(file: &str) -> Option<Globals> {
+    MODULE_GLOBALS
+        .read()
+        .unwrap()
+        .get(file)
+        .and_then(|m| m.predeclared.clone())
+}
+
+/// The front end of Java's `Starlark.execFile(input, FileOptions.DEFAULT, module, thread)` for
+/// the debugger's statements: parses `content` (as `<debug eval>`) and resolves it in a module
+/// whose globals are `globals` and whose predeclared and universal names are those of
+/// `predeclared`. `Err` is `SyntaxError.Exception.getMessage()`.
+// Java: net/starlark/java/eval/Starlark.java:1105 Starlark.execFile
+pub fn check_statement(
+    content: &str,
+    globals: &[String],
+    predeclared: Option<&Globals>,
+) -> Result<(), String> {
+    use crate::syntax::java;
+    let options = java::JavaOptions::DEFAULT;
+    let parsed = java::parse_file("<debug eval>", content, options);
+    let errors: Vec<String> = if !parsed.errors.is_empty() {
+        parsed.errors.iter().map(|e| e.message.clone()).collect()
+    } else {
+        let module = DebugResolverModule {
+            globals: globals.iter().cloned().collect(),
+            predeclared: predeclared
+                .map(|g| g.names().map(|n| n.as_str().to_owned()).collect())
+                .unwrap_or_default(),
+        };
+        java::resolver::resolve_file(&parsed.statements, &module, options)
+            .into_iter()
+            .map(|e| e.message)
+            .collect()
+    };
+    match errors.as_slice() {
+        [] => Ok(()),
+        // Java: net/starlark/java/syntax/SyntaxError.java:89 SyntaxError.Exception.getMessage
+        [first] => Err(first.clone()),
+        [first, rest @ ..] => Err(format!("{first} (+ {} more)", rest.len())),
+    }
+}
+
+/// Java `Module.resolve` for a module with these globals and predeclared (and universal) names.
+// Java: net/starlark/java/eval/Module.java:230 Module.resolve
+struct DebugResolverModule {
+    globals: Vec<String>,
+    predeclared: Vec<String>,
+}
+
+impl crate::syntax::java::resolver::ResolverModule for DebugResolverModule {
+    fn resolve(
+        &self,
+        name: &str,
+    ) -> Result<crate::syntax::java::resolver::Scope, crate::syntax::java::resolver::Undefined>
+    {
+        use crate::syntax::java::resolver::{Scope, Undefined};
+        if self.globals.iter().any(|g| g == name) {
+            return Ok(Scope::Global);
+        }
+        if self.predeclared.iter().any(|p| p == name) {
+            return Ok(Scope::Predeclared);
+        }
+        let mut candidates = self.globals.clone();
+        candidates.extend(self.predeclared.iter().cloned());
+        Err(Undefined {
+            message: format!("name '{name}' is not defined"),
+            candidates: Some(candidates),
+        })
+    }
 }
 
 /// One frame of the paused thread, innermost first (Java `Debug.getCallStack`, reversed by the
 /// debug server).
-// Java: net/starlark/java/eval/Debug.java:139 Debug.Frame
+// Java: net/starlark/java/eval/Debug.java:144 Debug.Frame
 #[derive(Clone, Debug)]
 pub struct DebugFrame {
     /// `getFunction().getName()` (`<toplevel>` for the file's top level).

@@ -19,28 +19,28 @@ use crate::thread_handler::{DebugRequestException, ThreadHandler};
 use crate::transport::{DebugServerTransport, ListenPortCallback};
 
 /// Callbacks at the debugging lifecycle's steps.
-// Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:265 StarlarkDebugServer.DebugCallback
+// Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:262 StarlarkDebugServer.DebugCallback
 pub trait DebugCallback: Send + Sync {
     /// Called with the paths that have breakpoints when the client starts debugging.
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:271 StarlarkDebugServer.DebugCallback.beforeDebuggingStart
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:268 StarlarkDebugServer.DebugCallback.beforeDebuggingStart
     fn before_debugging_start(&self, _break_point_paths: &[String]) {}
 
     /// Blocks until debugging may start, if the callback requires it.
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:273 StarlarkDebugServer.DebugCallback.maybeBlockBeforeStart
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:270 StarlarkDebugServer.DebugCallback.maybeBlockBeforeStart
     fn maybe_block_before_start(&self) {}
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:275 StarlarkDebugServer.DebugCallback.onClose
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:272 StarlarkDebugServer.DebugCallback.onClose
     fn on_close(&self) {}
 }
 
 /// `DebugCallback.noop()`.
-// Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:266 StarlarkDebugServer.DebugCallback.noop
+// Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:264 StarlarkDebugServer.DebugCallback.noop
 pub struct NoopCallback;
 
 impl DebugCallback for NoopCallback {}
 
 /// Manages the network socket and debugging state for threads running Starlark code.
-// Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:46 StarlarkDebugServer
+// Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:32 StarlarkDebugServer
 pub struct StarlarkDebugServer {
     event_handler: Arc<dyn EventHandler>,
     callback: Arc<dyn DebugCallback>,
@@ -52,7 +52,7 @@ pub struct StarlarkDebugServer {
 impl StarlarkDebugServer {
     /// Initializes debugging support, setting up any debugging-specific overrides, then opens
     /// the debug server socket and blocks waiting for an incoming connection.
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:59 StarlarkDebugServer.createAndWaitForConnection
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:42 StarlarkDebugServer.createAndWaitForConnection
     pub fn create_and_wait_for_connection(
         event_handler: Arc<dyn EventHandler>,
         port: u16,
@@ -70,7 +70,7 @@ impl StarlarkDebugServer {
         )
     }
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:68 StarlarkDebugServer.createAndWaitForConnection
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:57 StarlarkDebugServer.createAndWaitForConnection
     pub fn create_and_wait_for_connection_on(
         event_handler: Arc<dyn EventHandler>,
         server_socket: TcpListener,
@@ -96,7 +96,7 @@ impl StarlarkDebugServer {
     }
 
     /// Starts a worker thread listening for and responding to client debug requests.
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:96 StarlarkDebugServer.listenForClientRequests
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:95 StarlarkDebugServer.listenForClientRequests
     fn listen_for_client_requests(server: Arc<StarlarkDebugServer>) {
         std::thread::Builder::new()
             .name("starlark-debug-server".to_owned())
@@ -118,7 +118,7 @@ impl StarlarkDebugServer {
             .expect("OutOfMemoryError: unable to create native thread");
     }
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:130 StarlarkDebugServer.close
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:131 StarlarkDebugServer.close
     fn close_server(&self) {
         if self.verbose_logging {
             self.event_handler
@@ -134,7 +134,7 @@ impl StarlarkDebugServer {
     }
 
     /// Handles a request from the client, and returns the response, where relevant.
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:159 StarlarkDebugServer.handleClientRequest
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:164 StarlarkDebugServer.handleClientRequest
     pub fn handle_client_request(&self, request: &DebugRequest) -> Option<DebugEvent> {
         let sequence_number = request.sequence_number;
         let result = match &request.payload {
@@ -162,7 +162,7 @@ impl StarlarkDebugServer {
         Some(result.unwrap_or_else(|e| event_helper::error_with(sequence_number, &e.0)))
     }
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:189 StarlarkDebugServer.listFrames
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:196 StarlarkDebugServer.listFrames
     fn list_frames(
         &self,
         sequence_number: i64,
@@ -172,13 +172,13 @@ impl StarlarkDebugServer {
         Ok(event_helper::list_frames_response(sequence_number, frames))
     }
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:196 StarlarkDebugServer.setBreakpoints
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:204 StarlarkDebugServer.setBreakpoints
     fn set_breakpoints(&self, sequence_number: i64, request: &SetBreakpointsRequest) -> DebugEvent {
         self.thread_handler.set_breakpoints(&request.breakpoint);
         event_helper::set_breakpoints_response(sequence_number)
     }
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:202 StarlarkDebugServer.evaluate
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:211 StarlarkDebugServer.evaluate
     fn evaluate(
         &self,
         sequence_number: i64,
@@ -190,7 +190,7 @@ impl StarlarkDebugServer {
         Ok(event_helper::evaluate_response(sequence_number, value))
     }
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:210 StarlarkDebugServer.getChildren
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:219 StarlarkDebugServer.getChildren
     fn get_children(
         &self,
         sequence_number: i64,
@@ -205,7 +205,7 @@ impl StarlarkDebugServer {
         ))
     }
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:219 StarlarkDebugServer.continueExecution
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:228 StarlarkDebugServer.continueExecution
     fn continue_execution(
         &self,
         sequence_number: i64,
@@ -221,7 +221,7 @@ impl StarlarkDebugServer {
         Ok(event_helper::continue_execution_response(sequence_number))
     }
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:232 StarlarkDebugServer.pauseThread
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:240 StarlarkDebugServer.pauseThread
     fn pause_thread(
         &self,
         sequence_number: i64,
@@ -238,7 +238,7 @@ impl StarlarkDebugServer {
 }
 
 impl Debugger for StarlarkDebugServer {
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:152 StarlarkDebugServer.before
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:156 StarlarkDebugServer.before
     fn before(&self, eval: &mut Evaluator<'_, '_, '_>, location: &DebugLocation) {
         if !self.transport.is_closed() {
             self.thread_handler
@@ -246,7 +246,7 @@ impl Debugger for StarlarkDebugServer {
         }
     }
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:130 StarlarkDebugServer.close
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/StarlarkDebugServer.java:131 StarlarkDebugServer.close
     fn close(&self) {
         self.close_server();
     }

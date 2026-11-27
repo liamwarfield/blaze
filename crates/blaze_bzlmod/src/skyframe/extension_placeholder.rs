@@ -9,7 +9,7 @@
 use blaze_bzlmod_model::{
     BazelLockFileValue, ExternalDepsCode, ExternalDepsException, Facts, LockFileModuleExtension,
     LockFileModuleExtensionWithFactors, LockfileMode, ModuleExtensionEvalFactors,
-    ModuleExtensionId,
+    ModuleExtensionId, ModuleExtensionUsage, ModuleKey,
 };
 use blaze_cmdline::RepositoryName;
 use blaze_options::spelling::SpellChecker;
@@ -151,10 +151,12 @@ fn compute_lockfile_only_extension_eval(
     }))
 }
 
-/// Validates the imports of an extension's usages against the repos it generated.
+/// Validates the imports of an extension's usages against the repos it generated (the
+/// lockfile-only setup of this crate's tests; the binary registers
+/// `blaze_repo_rules::bzlmod::single_extension::compute`, which reads SINGLE_EXTENSION_USAGES as
+/// Java does).
 ///
-/// PORT: Java reads the usages from SINGLE_EXTENSION_USAGES (`SingleExtensionUsagesFunction`, a
-/// change-pruning node over BAZEL_DEP_GRAPH); they are read from BAZEL_DEP_GRAPH directly here.
+/// PORT: reads the usages from BAZEL_DEP_GRAPH: this crate is below SINGLE_EXTENSION_USAGES.
 // Java: com/google/devtools/build/lib/bazel/bzlmod/SingleExtensionFunction.java:37 SingleExtensionFunction.compute
 pub fn compute_single_extension(
     key: &SingleExtensionKey,
@@ -169,13 +171,6 @@ pub fn compute_single_extension(
     else {
         return Ok(None);
     };
-
-    // SingleExtensionEvalFunction doesn't handle the fixup warning so that bazel mod tidy doesn't
-    // show it.
-    if let Some(fixup) = &eval_only_value.fixup {
-        env.listener().handle(&fixup.warning);
-    }
-
     let empty_usages = IndexMap::new();
     let extension_usages = dep_graph_value
         .extension_usages_table
@@ -186,6 +181,31 @@ pub fn compute_single_extension(
         .repo_overrides
         .row(extension_id)
         .unwrap_or(&empty_overrides);
+    check_single_extension(
+        extension_id,
+        &eval_only_value,
+        extension_usages,
+        repo_overrides,
+        env,
+    )?;
+    Ok(Some((*eval_only_value).clone()))
+}
+
+/// The body of `SingleExtensionFunction.compute` after its two lookups: reports the fixup
+/// warning and checks the imports and repo overrides of the usages.
+// Java: com/google/devtools/build/lib/bazel/bzlmod/SingleExtensionFunction.java:51 SingleExtensionFunction.compute
+pub fn check_single_extension(
+    extension_id: &ModuleExtensionId,
+    eval_only_value: &SingleExtensionValue,
+    extension_usages: &IndexMap<ModuleKey, ModuleExtensionUsage>,
+    repo_overrides: &IndexMap<String, RepositoryName>,
+    env: &mut Environment<'_>,
+) -> Result<(), ComputeError> {
+    // SingleExtensionEvalFunction doesn't handle the fixup warning so that bazel mod tidy doesn't
+    // show it.
+    if let Some(fixup) = &eval_only_value.fixup {
+        env.listener().handle(&fixup.warning);
+    }
 
     // Check that all imported repos have actually been generated.
     for usage in extension_usages.values() {
@@ -253,5 +273,5 @@ pub fn compute_single_extension(
         }
     }
 
-    Ok(Some((*eval_only_value).clone()))
+    Ok(())
 }

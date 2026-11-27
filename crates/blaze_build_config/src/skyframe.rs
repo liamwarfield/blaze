@@ -20,6 +20,11 @@ use blaze_skyframe::{
     Transience,
 };
 use blaze_starlark::StarlarkSemantics;
+
+/// `PrecomputedValue.STARLARK_SEMANTICS` (the same node as blaze_sky_loading's, by name).
+// Java: com/google/devtools/build/lib/skyframe/PrecomputedValue.java:84 PrecomputedValue.STARLARK_SEMANTICS
+static STARLARK_SEMANTICS: blaze_skyframe::precomputed::Precomputed<StarlarkSemantics> =
+    blaze_skyframe::precomputed::Precomputed::new("starlark_semantics");
 use blaze_vfs::{Path, RootedPath};
 use indexmap::IndexMap;
 
@@ -61,6 +66,8 @@ impl Key for BuildConfigurationKeyValueKey {
 
 // Java: com/google/devtools/build/lib/analysis/config/transitions/BaselineOptionsValue.java:68 BaselineOptionsValue.Key
 /// `BaselineOptionsValue.key(afterExecTransition, newPlatform)`.
+// Java: com/google/devtools/build/lib/analysis/config/transitions/BaselineOptionsValue.java:59 BaselineOptionsValue.key
+// Java: com/google/devtools/build/lib/analysis/config/transitions/BaselineOptionsValue.java:84 BaselineOptionsValue.Key.create
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub struct BaselineOptionsKey {
     pub after_exec_transition: bool,
@@ -85,7 +92,10 @@ impl fmt::Debug for BaselineOptionsKey {
 
 impl Key for BaselineOptionsKey {
     /// `BaselineOptionsValue.toOptions()`.
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/BaselineOptionsValue.java:55 BaselineOptionsValue.create
+    // PORT: the value is the options themselves.
     type Value = Arc<BuildOptions>;
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/BaselineOptionsValue.java:71 BaselineOptionsValue.Key.functionName
     const FUNCTION: SkyFunctionName = SkyFunctionName("BASELINE_OPTIONS");
     // Java: com/google/devtools/build/lib/skyframe/SkyFunctions.java:115 SkyFunctions.BASELINE_OPTIONS (createNonHermetic)
     const HERMETICITY: FunctionHermeticity = FunctionHermeticity::Nonhermetic;
@@ -391,6 +401,16 @@ fn compute_platform_mapping(
     let Some(main_repo_mapping) = lookup.main_repository_mapping(env)? else {
         return Ok(None);
     };
+    // PrecomputedValue.PATH_PACKAGE_LOCATOR.get(env): requested for the dependency; its type is
+    // blaze_sky_loading's (`PathPackageLocator`), so the path entries are the client's copy.
+    if env
+        .get_value(blaze_skyframe::precomputed::PrecomputedKey(
+            "path_package_locator",
+        ))?
+        .is_none()
+    {
+        return Ok(None);
+    }
     let path_entries = client(env).package_path_roots.clone();
     for root in &path_entries {
         let rooted_mapping_path = RootedPath::to_rooted_path(
@@ -1351,7 +1371,11 @@ fn compute_build_configuration(
     key: &BuildConfigurationKey,
     env: &mut Environment<'_>,
 ) -> Result<Option<Arc<BuildConfigurationValue>>, ComputeError> {
-    let starlark_semantics = client(env).starlark_semantics.clone();
+    // PrecomputedValue.STARLARK_SEMANTICS.get(env): the dependency on the PRECOMPUTED node (a
+    // change of the semantics invalidates the configuration in the kept graph).
+    let Some(starlark_semantics) = STARLARK_SEMANTICS.get(env)? else {
+        return Ok(None);
+    };
     let target_options = key.get_options().clone();
     let Some(baseline_options) = get_baseline_options(env, &target_options)? else {
         return Ok(None);

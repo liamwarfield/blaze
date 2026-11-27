@@ -779,13 +779,237 @@ impl BlazeModule for CacheHitReportingModule {
 /// The subscriber half of [`CacheHitReportingModule`].
 struct CacheHitReportingSubscriber {
     reporter: Arc<blaze_events::Reporter>,
-    /// Java `ConcurrentHashMap<String, Set<Pair<String, URI>>>`.
-    ///
-    /// PORT: the hits of one context are kept in the order they were seen; Java's set is a
-    /// `ConcurrentHashMap.newKeySet()`, whose order follows the (hash, URI) pairs' hash codes,
-    /// so the listing order differs when a repository has more than one cache hit.
-    cache_hits_by_context:
-        parking_lot::Mutex<std::collections::HashMap<String, indexmap::IndexSet<(String, String)>>>,
+    /// Java `ConcurrentHashMap<String, Set<Pair<String, URI>>>`; each set is a
+    /// `ConcurrentHashMap.newKeySet()`, modelled with its iteration order (the order of the
+    /// listing).
+    cache_hits_by_context: parking_lot::Mutex<
+        std::collections::HashMap<
+            String,
+            blaze_query_engine::java_concurrent_hash_map::JavaConcurrentHashMap<CacheHit, ()>,
+        >,
+    >,
+}
+
+/// Java `Pair<String, URI>` of a file hash and the URI it was found for.
+struct CacheHit {
+    file_hash: String,
+    uri: blaze_repo_fetch::uri::JavaUri,
+}
+
+impl PartialEq for CacheHit {
+    // Java: com/google/devtools/build/lib/util/Pair.java:65 Pair.equals
+    fn eq(&self, other: &CacheHit) -> bool {
+        self.file_hash == other.file_hash && java_uri_equals(&self.uri, &other.uri)
+    }
+}
+
+impl Eq for CacheHit {}
+
+impl blaze_query_engine::java_concurrent_hash_map::JavaHashCode for CacheHit {
+    // Java: com/google/devtools/build/lib/util/Pair.java:77 Pair.hashCode
+    fn java_hash_code(&self) -> i32 {
+        let hash1 = blaze_query_engine::java_concurrent_hash_map::java_internal_string_hash_code(
+            &self.file_hash,
+        );
+        let hash2 = java_uri_hash_code(&self.uri);
+        hash1.wrapping_mul(31).wrapping_add(hash2)
+    }
+}
+
+/// The UTF-16 units of a string (Java `String.charAt`).
+fn java_chars(s: &str) -> Vec<u16> {
+    s.encode_utf16().collect()
+}
+
+/// `java.net.URI.toLower` (US-ASCII only).
+fn uri_to_lower(c: u16) -> i32 {
+    if (b'A' as u16..=b'Z' as u16).contains(&c) {
+        (c + (b'a' - b'A') as u16) as i32
+    } else {
+        c as i32
+    }
+}
+
+/// `java.net.URI.toUpper` (US-ASCII only).
+fn uri_to_upper(c: u16) -> i32 {
+    if (b'a' as u16..=b'z' as u16).contains(&c) {
+        (c - (b'a' - b'A') as u16) as i32
+    } else {
+        c as i32
+    }
+}
+
+/// `java.net.URI.hash(int, String)`.
+fn uri_hash(hash: i32, s: Option<&str>) -> i32 {
+    let Some(s) = s else {
+        return hash;
+    };
+    if !s.contains('%') {
+        return hash.wrapping_mul(127).wrapping_add(
+            blaze_query_engine::java_concurrent_hash_map::java_internal_string_hash_code(s),
+        );
+    }
+    // normalizedHash: the two characters after each '%' hash upper-cased.
+    let chars = java_chars(s);
+    let mut h: i32 = 0;
+    let mut index = 0;
+    while index < chars.len() {
+        let ch = chars[index];
+        h = h.wrapping_mul(31).wrapping_add(ch as i32);
+        if ch == b'%' as u16 {
+            for i in index + 1..index + 3 {
+                h = h.wrapping_mul(31).wrapping_add(uri_to_upper(chars[i]));
+            }
+            index += 2;
+        }
+        index += 1;
+    }
+    hash.wrapping_mul(127).wrapping_add(h)
+}
+
+/// `java.net.URI.hashIgnoringCase(int, String)`.
+fn uri_hash_ignoring_case(hash: i32, s: Option<&str>) -> i32 {
+    let Some(s) = s else {
+        return hash;
+    };
+    let mut h = hash;
+    for c in s.encode_utf16() {
+        h = h.wrapping_mul(31).wrapping_add(uri_to_lower(c));
+    }
+    h
+}
+
+/// Java `java.net.URI.hashCode()` (the JDK's algorithm; checked against the oracle's JDK 25).
+fn java_uri_hash_code(uri: &blaze_repo_fetch::uri::JavaUri) -> i32 {
+    let mut h = uri_hash_ignoring_case(0, uri.get_scheme());
+    h = uri_hash(h, uri.get_raw_fragment());
+    if uri.is_opaque() {
+        h = uri_hash(h, Some(uri.get_raw_scheme_specific_part()));
+    } else {
+        h = uri_hash(h, uri.get_raw_path());
+        h = uri_hash(h, uri.get_raw_query());
+        if uri.get_host().is_some() {
+            h = uri_hash(h, uri.get_raw_user_info());
+            h = uri_hash_ignoring_case(h, uri.get_host());
+            h = h.wrapping_add(1949i32.wrapping_mul(uri.get_port()));
+        } else {
+            h = uri_hash(h, uri.get_raw_authority());
+        }
+    }
+    h
+}
+
+/// `java.net.URI.equal(String, String)`: equal, with the hex digits of escapes compared
+/// ignoring case.
+fn uri_equal(s: Option<&str>, t: Option<&str>) -> bool {
+    match (s, t) {
+        (None, None) => true,
+        (Some(s), Some(t)) => {
+            let (s, t) = (java_chars(s), java_chars(t));
+            if s.len() != t.len() {
+                return false;
+            }
+            if !s.contains(&(b'%' as u16)) {
+                return s == t;
+            }
+            let n = s.len();
+            let mut i = 0;
+            while i < n {
+                let (c, d) = (s[i], t[i]);
+                if c != b'%' as u16 {
+                    if c != d {
+                        return false;
+                    }
+                    i += 1;
+                    continue;
+                }
+                if d != b'%' as u16 {
+                    return false;
+                }
+                i += 1;
+                if uri_to_lower(s[i]) != uri_to_lower(t[i]) {
+                    return false;
+                }
+                i += 1;
+                if uri_to_lower(s[i]) != uri_to_lower(t[i]) {
+                    return false;
+                }
+                i += 1;
+            }
+            true
+        }
+        _ => false,
+    }
+}
+
+/// `java.net.URI.equalIgnoringCase(String, String)` (US-ASCII only).
+fn uri_equal_ignoring_case(s: Option<&str>, t: Option<&str>) -> bool {
+    match (s, t) {
+        (None, None) => true,
+        (Some(s), Some(t)) => {
+            let (s, t) = (java_chars(s), java_chars(t));
+            s.len() == t.len()
+                && s.iter()
+                    .zip(t.iter())
+                    .all(|(a, b)| uri_to_lower(*a) == uri_to_lower(*b))
+        }
+        _ => false,
+    }
+}
+
+/// Java `java.net.URI.equals(Object)`.
+fn java_uri_equals(
+    this: &blaze_repo_fetch::uri::JavaUri,
+    that: &blaze_repo_fetch::uri::JavaUri,
+) -> bool {
+    if this.is_opaque() != that.is_opaque() {
+        return false;
+    }
+    if !uri_equal_ignoring_case(this.get_scheme(), that.get_scheme()) {
+        return false;
+    }
+    if !uri_equal(this.get_raw_fragment(), that.get_raw_fragment()) {
+        return false;
+    }
+    // Opaque
+    if this.is_opaque() {
+        return uri_equal(
+            Some(this.get_raw_scheme_specific_part()),
+            Some(that.get_raw_scheme_specific_part()),
+        );
+    }
+    // Hierarchical
+    if !uri_equal(this.get_raw_path(), that.get_raw_path()) {
+        return false;
+    }
+    if !uri_equal(this.get_raw_query(), that.get_raw_query()) {
+        return false;
+    }
+    // Authorities. Java's `this.authority == that.authority` is an identity test of two strings
+    // parsed separately: true only when both are null.
+    if this.get_raw_authority().is_none() && that.get_raw_authority().is_none() {
+        return true;
+    }
+    if this.get_host().is_some() {
+        // Server-based
+        if !uri_equal(this.get_raw_user_info(), that.get_raw_user_info()) {
+            return false;
+        }
+        if !uri_equal_ignoring_case(this.get_host(), that.get_host()) {
+            return false;
+        }
+        if this.get_port() != that.get_port() {
+            return false;
+        }
+    } else if this.get_raw_authority().is_some() {
+        // Registry-based
+        if !uri_equal(this.get_raw_authority(), that.get_raw_authority()) {
+            return false;
+        }
+    } else if that.get_raw_authority().is_some() {
+        return false;
+    }
+    true
 }
 
 impl blaze_events::EventBus for CacheHitReportingSubscriber {
@@ -796,8 +1020,14 @@ impl blaze_events::EventBus for CacheHitReportingSubscriber {
             self.cache_hits_by_context
                 .lock()
                 .entry(e.context.clone())
-                .or_default()
-                .insert((e.file_hash.clone(), e.uri.to_string()));
+                .or_insert_with(blaze_query_engine::java_concurrent_hash_map::JavaConcurrentHashMap::new)
+                .put_if_absent(
+                    CacheHit {
+                        file_hash: e.file_hash.clone(),
+                        uri: e.uri.clone(),
+                    },
+                    (),
+                );
         // Java: com/google/devtools/build/lib/bazel/CacheHitReportingModule.java:56 CacheHitReportingModule.failed
         } else if let Some(e) = any.downcast_ref::<
             blaze_repo_rules::repository::repository_fetch_function::RepositoryFailedEvent,
@@ -817,11 +1047,11 @@ impl blaze_events::EventBus for CacheHitReportingSubscriber {
                 info.push_str(
                     "' used the following cache hits instead of downloading the corresponding file.\n",
                 );
-                for (hash, uri) in cache_hits {
+                for hit in cache_hits.keys() {
                     info.push_str(" * Hash '");
-                    info.push_str(hash);
+                    info.push_str(&hit.file_hash);
                     info.push_str("' for ");
-                    info.push_str(uri);
+                    info.push_str(&hit.uri.to_string());
                     info.push('\n');
                 }
                 info.push_str("If the definition of '");
@@ -1682,5 +1912,75 @@ mod tests {
             .map(String::as_str)
             .collect();
         assert_eq!(names, ["command_log", "repository_cache", "peak-heap-size"]);
+    }
+
+    /// Not a Java test: `URI.hashCode`, `URI.equals` and the iteration order of
+    /// `ConcurrentHashMap.newKeySet()` of `Pair<String, URI>`, as the oracle's JDK (Zulu
+    /// 25.0.2, `embedded_tools/jdk`) computes them (program in the server-4 run record).
+    #[test]
+    fn cache_hits_are_listed_in_java_hash_order() {
+        use blaze_repo_fetch::uri::JavaUri;
+        let expected_hashes = [
+            (1209481793, "http://127.0.0.1:8080/a.txt"),
+            (703923168, "http://127.0.0.1:8080/b.txt"),
+            (1024985350, "HTTP://Example.COM/x%2fy?q=1#f"),
+            (1024985350, "http://example.com/x%2Fy?q=1#f"),
+            (1895463016, "https://user@host.example:443/p"),
+            (-623694275, "file:///tmp/x.tar.gz"),
+            (-1878061251, "mailto:someone@example.com"),
+            (-1638917912, "http://example.com"),
+            (
+                -587928042,
+                "https://mirror.bazel.build/github.com/x/y/archive/v1.tar.gz",
+            ),
+            (719096876, "http://[::1]:9000/z"),
+        ];
+        for (hash, uri) in expected_hashes {
+            assert_eq!(
+                java_uri_hash_code(&JavaUri::create(uri).unwrap()),
+                hash,
+                "{uri}"
+            );
+        }
+        let uri = |s: &str| JavaUri::create(s).unwrap();
+        assert!(java_uri_equals(
+            &uri("HTTP://Example.COM/x%2fy?q=1#f"),
+            &uri("http://example.com/x%2Fy?q=1#f")
+        ));
+        assert!(!java_uri_equals(&uri("http://a/%41"), &uri("http://a/%61")));
+
+        let hashes = ["aaaa", "bbbb", "0123456789abcdef", "deadbeef"];
+        let mut set = blaze_query_engine::java_concurrent_hash_map::JavaConcurrentHashMap::<
+            CacheHit,
+            (),
+        >::new();
+        for (i, (_, u)) in expected_hashes.iter().enumerate() {
+            set.put_if_absent(
+                CacheHit {
+                    file_hash: hashes[i % hashes.len()].to_owned(),
+                    uri: uri(u),
+                },
+                (),
+            );
+        }
+        let order: Vec<String> = set
+            .keys()
+            .map(|h| format!("{} {}", h.file_hash, h.uri))
+            .collect();
+        assert_eq!(
+            order,
+            [
+                "deadbeef http://example.com/x%2Fy?q=1#f",
+                "bbbb http://[::1]:9000/z",
+                "aaaa https://user@host.example:443/p",
+                "deadbeef http://example.com",
+                "bbbb http://127.0.0.1:8080/b.txt",
+                "0123456789abcdef mailto:someone@example.com",
+                "aaaa http://127.0.0.1:8080/a.txt",
+                "0123456789abcdef HTTP://Example.COM/x%2fy?q=1#f",
+                "bbbb file:///tmp/x.tar.gz",
+                "aaaa https://mirror.bazel.build/github.com/x/y/archive/v1.tar.gz",
+            ]
+        );
     }
 }

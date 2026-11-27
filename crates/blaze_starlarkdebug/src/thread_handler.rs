@@ -30,7 +30,7 @@ use crate::serialization::{DebugObject, ThreadObjectMap, get_children, get_value
 use crate::transport::DebugServerTransport;
 
 /// An error answering a client request (its message goes back in an `Error` event).
-// Java: com/google/devtools/build/lib/starlarkdebug/server/DebugRequestException.java:19 DebugRequestException
+// Java: com/google/devtools/build/lib/starlarkdebug/server/DebugRequestException.java:21 DebugRequestException
 #[derive(Debug, Clone)]
 pub struct DebugRequestException(pub String);
 
@@ -49,7 +49,7 @@ enum Command {
 }
 
 /// Information about a paused thread.
-// Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:52 ThreadHandler.PausedThreadState
+// Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:50 ThreadHandler.PausedThreadState
 struct PausedThreadState {
     /// Java `thread.getCallStackSize()` at the pause, for `Debug.stepControl`.
     depth: usize,
@@ -57,7 +57,7 @@ struct PausedThreadState {
 }
 
 /// The debugger's global state.
-// Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:107 ThreadHandler.DebuggerState
+// Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:86 ThreadHandler.DebuggerState
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DebuggerState {
@@ -74,9 +74,9 @@ type BreakpointKey = (String, u32);
 
 #[derive(Default)]
 struct Threads {
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:120 ThreadHandler.pausedThreads
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:97 ThreadHandler.pausedThreads
     paused_threads: HashMap<i64, PausedThreadState>,
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:127 ThreadHandler.steppingThreads
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:101 ThreadHandler.steppingThreads
     stepping_threads: HashMap<i64, ReadyToPause>,
 }
 
@@ -85,15 +85,15 @@ struct Threads {
 pub struct ThreadHandler {
     debugger_state: AtomicU8,
     threads: Mutex<Threads>,
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:131 ThreadHandler.breakpoints
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:106 ThreadHandler.breakpoints
     breakpoints: RwLock<Arc<HashMap<BreakpointKey, Breakpoint>>>,
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:149 ThreadHandler.threadsToPause
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:121 ThreadHandler.threadsToPause
     threads_to_pause: Mutex<HashSet<i64>>,
 }
 
 thread_local! {
     /// Threads which are currently servicing a client request: no pausing inside an evaluation.
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:146 ThreadHandler.servicingEvalRequest
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:112 ThreadHandler.servicingEvalRequest
     static SERVICING_EVAL_REQUEST: Cell<bool> = const { Cell::new(false) };
     static THREAD_ID: Cell<i64> = const { Cell::new(0) };
 }
@@ -139,12 +139,12 @@ impl ThreadHandler {
         self.debugger_state.store(state as u8, Ordering::SeqCst);
     }
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:151 ThreadHandler.pauseAllThreads
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:124 ThreadHandler.pauseAllThreads
     pub fn pause_all_threads(&self) {
         self.set_state(DebuggerState::AllThreadsPaused);
     }
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:156 ThreadHandler.pauseThread
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:129 ThreadHandler.pauseThread
     pub fn pause_thread(&self, thread_id: i64) -> Result<(), DebugRequestException> {
         let threads = self.threads.lock();
         if !threads.stepping_threads.contains_key(&thread_id) {
@@ -159,7 +159,7 @@ impl ThreadHandler {
         Ok(())
     }
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:170 ThreadHandler.setBreakpoints
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:142 ThreadHandler.setBreakpoints
     pub fn set_breakpoints(&self, breakpoints: &[Breakpoint]) {
         let mut map = HashMap::new();
         for breakpoint in breakpoints {
@@ -176,7 +176,7 @@ impl ThreadHandler {
     }
 
     /// Returns a set of paths of all the files that currently have breakpoints.
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:187 ThreadHandler.getBreakpointFilePaths
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:157 ThreadHandler.getBreakpointFilePaths
     pub fn get_breakpoint_file_paths(&self) -> Vec<String> {
         let mut paths: Vec<String> = Vec::new();
         for (path, _) in self.breakpoints.read().keys() {
@@ -189,7 +189,7 @@ impl ThreadHandler {
 
     /// Resumes all threads. Any currently stepping threads have their stepping behavior cleared,
     /// so will run unconditionally.
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:197 ThreadHandler.resumeAllThreads
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:167 ThreadHandler.resumeAllThreads
     pub fn resume_all_threads(&self) {
         self.threads_to_pause.lock().clear();
         self.set_state(DebuggerState::Running);
@@ -204,7 +204,7 @@ impl ThreadHandler {
 
     /// Unpauses the given thread if it is currently paused. Also unsets {@link
     /// #pauseAllThreads}.
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:213 ThreadHandler.resumeThread
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:184 ThreadHandler.resumeThread
     pub fn resume_thread(
         &self,
         thread_id: i64,
@@ -227,7 +227,7 @@ impl ThreadHandler {
     }
 
     /// Unpauses a currently-paused thread.
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:233 ThreadHandler.resumePausedThread
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:204 ThreadHandler.resumePausedThread
     fn resume_paused_thread(threads: &mut Threads, thread_id: i64, stepping: SteppingProto) {
         let Some(thread) = threads.paused_threads.remove(&thread_id) else {
             return;
@@ -269,7 +269,7 @@ impl ThreadHandler {
 
     /// Pauses the current thread if there's an unresolved pause request, or the thread hit a
     /// breakpoint or a stepping condition.
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:248 ThreadHandler.pauseIfNecessary
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:215 ThreadHandler.pauseIfNecessary
     pub fn pause_if_necessary(
         &self,
         eval: &mut Evaluator<'_, '_, '_>,
@@ -293,12 +293,12 @@ impl ThreadHandler {
         self.pause_current_thread(eval, location, transport, pause_reason, error);
     }
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:273 ThreadHandler.listFrames
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:239 ThreadHandler.listFrames
     pub fn list_frames(&self, thread_id: i64) -> Result<Vec<Frame>, DebugRequestException> {
         self.ask_paused(thread_id, Command::ListFrames)
     }
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:288 ThreadHandler.getChildrenForValue
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:254 ThreadHandler.getChildrenForValue
     pub fn get_children_for_value(
         &self,
         thread_id: i64,
@@ -307,7 +307,7 @@ impl ThreadHandler {
         self.ask_paused(thread_id, |reply| Command::GetChildren(value_id, reply))?
     }
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:306 ThreadHandler.evaluate
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:272 ThreadHandler.evaluate
     pub fn evaluate(
         &self,
         thread_id: i64,
@@ -318,7 +318,7 @@ impl ThreadHandler {
         })?
     }
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:357 ThreadHandler.pauseCurrentThread
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:327 ThreadHandler.pauseCurrentThread
     fn pause_current_thread<'v>(
         &self,
         eval: &mut Evaluator<'v, '_, '_>,
@@ -336,7 +336,7 @@ impl ThreadHandler {
                 commands,
             },
         );
-        // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:405 ThreadHandler.getPausedThreadProto
+        // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:411 ThreadHandler.getPausedThreadProto
         let thread_proto = PausedThread {
             id: thread_id,
             name: current_thread_name(),
@@ -379,7 +379,7 @@ impl ThreadHandler {
         transport.post_event(&event_helper::thread_continued_event(thread_id));
     }
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:377 ThreadHandler.shouldPauseCurrentThread
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:348 ThreadHandler.shouldPauseCurrentThread
     fn should_pause_current_thread(
         &self,
         eval: &mut Evaluator<'_, '_, '_>,
@@ -409,7 +409,7 @@ impl ThreadHandler {
 
     /// Returns true if there's a breakpoint at the current location, with a satisfied condition
     /// if relevant.
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:403 ThreadHandler.hasBreakpointMatchedAtLocation
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:380 ThreadHandler.hasBreakpointMatchedAtLocation
     fn has_breakpoint_matched_at_location(
         &self,
         eval: &mut Evaluator<'_, '_, '_>,
@@ -434,7 +434,7 @@ impl ThreadHandler {
 }
 
 /// The frames of the paused thread, innermost first.
-// Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:273 ThreadHandler.listFrames
+// Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:239 ThreadHandler.listFrames
 fn list_frames_of<'v>(
     eval: &mut Evaluator<'v, '_, '_>,
     current: &DebugLocation,
@@ -505,11 +505,14 @@ fn module_globals<'v>(
 /// Evaluates `content` in the module of the innermost Starlark function (its globals; the
 /// frame's locals are not visible, as `Starlark.execFile` of a new file in that module).
 ///
-/// PORT: starlark-rust evaluates debugger statements in the paused frame
-/// (`Evaluator::eval_statements`), where the frame's locals are visible too; a statement that
-/// reads a name bound only as a local of the frame fails with Java's resolver error instead. A
-/// local that shadows a global is read as the local (Java reads the global).
-// Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:338 ThreadHandler.doEvaluate
+/// The statement is first parsed and resolved by Java's front end against that module's
+/// globals and predeclared names, which gives Java's errors (`name 'x' is not defined` for a
+/// name that is only a local of the frame).
+///
+/// PORT: starlark-rust then evaluates the statement in the paused frame
+/// (`Evaluator::eval_statements`), where the frame's locals are visible too: a local that
+/// shadows a global is read as the local (Java reads the global).
+// Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadHandler.java:307 ThreadHandler.doEvaluate
 fn do_evaluate<'v>(
     eval: &mut Evaluator<'v, '_, '_>,
     current: &DebugLocation,
@@ -524,99 +527,22 @@ fn do_evaluate<'v>(
     SERVICING_EVAL_REQUEST.with(|s| s.set(true));
     let _servicing = Servicing;
     // TODO(adonovan): opt: don't parse and resolve the expression every time we hit a breakpoint
+    // (!).
+    let frames = debug::frames(eval, current);
+    let live_file = frames
+        .last()
+        .and_then(|f| f.location.as_ref())
+        .map(|l| l.file.clone());
+    // TODO(adonovan): the module or call frame should be a parameter to doEvaluate.
+    // Module.ofInnermostEnclosingStarlarkFunction(thread): the module of the paused statement.
+    let globals: Vec<String> = module_globals(eval, Some(&current.file), live_file.as_deref())
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    let predeclared = debug::predeclared_of_file(&current.file);
+    debug::check_statement(content, &globals, predeclared.as_ref())?;
     let ast = AstModule::parse("<debug eval>", content.to_owned(), &FileKind::Bzl.dialect())
         .map_err(|e| blaze_starlark::error::EvalError::from_starlark(&e).message)?;
-    if eval.call_stack_count() > 0 {
-        let frames = debug::frames(eval, current);
-        let live_file = frames
-            .last()
-            .and_then(|f| f.location.as_ref())
-            .map(|l| l.file.clone());
-        let globals: HashSet<String> =
-            module_globals(eval, Some(&current.file), live_file.as_deref())
-                .into_iter()
-                .map(|(n, _)| n)
-                .collect();
-        let locals: HashSet<String> = eval.local_variables().keys().cloned().collect();
-        for name in free_identifiers(content) {
-            if locals.contains(&name) && !globals.contains(&name) {
-                return Err(format!("name '{name}' is not defined"));
-            }
-        }
-    }
     eval.eval_statements(ast)
         .map_err(|e| blaze_starlark::error::EvalError::from_starlark(&e).message_with_stack())
-}
-
-/// The identifiers of a statement that are references (not attribute names after `.`, not
-/// keyword-argument names, not inside strings or comments).
-fn free_identifiers(content: &str) -> Vec<String> {
-    let chars: Vec<char> = content.chars().collect();
-    let mut result = Vec::new();
-    let mut i = 0;
-    while i < chars.len() {
-        let c = chars[i];
-        if c == '#' {
-            while i < chars.len() && chars[i] != '\n' {
-                i += 1;
-            }
-        } else if c == '"' || c == '\'' {
-            let triple = i + 2 < chars.len() && chars[i + 1] == c && chars[i + 2] == c;
-            let quote_len = if triple { 3 } else { 1 };
-            i += quote_len;
-            while i < chars.len() {
-                if chars[i] == '\\' {
-                    i += 2;
-                    continue;
-                }
-                if chars[i] == c
-                    && (!triple || (i + 2 < chars.len() && chars[i + 1] == c && chars[i + 2] == c))
-                {
-                    i += quote_len;
-                    break;
-                }
-                i += 1;
-            }
-        } else if c.is_alphabetic() || c == '_' {
-            let start = i;
-            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {
-                i += 1;
-            }
-            let word: String = chars[start..i].iter().collect();
-            let prev = chars[..start].iter().rev().find(|c| !c.is_whitespace());
-            let next = chars[i..]
-                .iter()
-                .position(|c| !c.is_whitespace())
-                .map(|p| i + p);
-            let is_attribute = prev == Some(&'.');
-            let is_kwarg = next.is_some_and(|n| chars[n] == '=' && chars.get(n + 1) != Some(&'='))
-                && prev.is_some_and(|p| *p == '(' || *p == ',');
-            // A string prefix (r"...", b'...').
-            let is_prefix = matches!(word.as_str(), "r" | "b" | "rb" | "br")
-                && chars.get(i).is_some_and(|c| *c == '"' || *c == '\'');
-            if !is_attribute && !is_kwarg && !is_prefix {
-                result.push(word);
-            }
-            continue;
-        } else {
-            i += 1;
-            continue;
-        }
-    }
-    result
-}
-
-#[cfg(test)]
-mod tests {
-    use super::free_identifiers;
-
-    #[test]
-    fn free_identifiers_skip_strings_attributes_and_keywords() {
-        assert_eq!(
-            free_identifiers("f(x.y, 'z', k = w) # c"),
-            vec!["f", "x", "w"]
-        );
-        assert_eq!(free_identifiers("my_arg[1]"), vec!["my_arg"]);
-        assert_eq!(free_identifiers("a == b"), vec!["a", "b"]);
-    }
 }

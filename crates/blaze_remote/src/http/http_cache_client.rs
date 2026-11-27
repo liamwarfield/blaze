@@ -69,7 +69,7 @@ use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use blaze_repo_fetch::downloader::socket_transport::{
@@ -1227,32 +1227,58 @@ fn poll_fd(fd: std::os::fd::RawFd, events: i16, timeout: Option<Duration>) -> io
     }
 }
 
+/// The time left until `deadline` (`None`: no timeout).
+fn remaining(deadline: Option<Instant>) -> Option<Duration> {
+    deadline.map(|d| d.saturating_duration_since(Instant::now()))
+}
+
 /// Writes `data` on a plain socket while watching for the server's answer.
+///
+/// As Netty's `NioSocketChannel.doWrite`: the data is written as long as the socket takes it,
+/// and the channel waits for writability (`OP_WRITE`) only once a write takes nothing. (Waiting
+/// for `POLLOUT` before each write would stop at half the send buffer: Linux reports a TCP
+/// socket writable only while its free space is at least half of what is queued.) The
+/// `IdleTimeoutHandler` restarts its timer when a write completes (`IdleStateHandler`'s write
+/// listener), not on partial progress: `timeout` runs from the start of this piece.
+// Java: io/netty/channel/socket/nio/NioSocketChannel.java NioSocketChannel.doWrite
+// Java: io/netty/handler/timeout/IdleStateHandler.java IdleStateHandler.write
 fn write_watching_plain<S: Write + std::os::fd::AsRawFd>(
     sock: &mut S,
     set_nonblocking: &dyn Fn(&S, bool) -> io::Result<()>,
     data: &[u8],
     timeout: Option<Duration>,
 ) -> io::Result<Written> {
+    let deadline = timeout.map(|t| Instant::now() + t);
     set_nonblocking(sock, true)?;
     let result = (|| {
         let mut off = 0;
         while off < data.len() {
-            let revents = poll_fd(sock.as_raw_fd(), libc::POLLIN | libc::POLLOUT, timeout)?;
-            if revents == 0 {
-                return Err(io::Error::from(io::ErrorKind::TimedOut));
-            }
-            if revents & libc::POLLIN != 0 {
+            // The event loop reads whatever the server sends while it writes.
+            if poll_fd(sock.as_raw_fd(), libc::POLLIN, Some(Duration::ZERO))? & libc::POLLIN != 0 {
                 return Ok(Written::Answered);
             }
             match sock.write(&data[off..]) {
-                Ok(n) => off += n,
+                Ok(n) => {
+                    off += n;
+                    continue;
+                }
                 Err(e)
                     if matches!(
                         e.kind(),
                         io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
                     ) => {}
                 Err(e) => return Err(e),
+            }
+            let revents = poll_fd(
+                sock.as_raw_fd(),
+                libc::POLLIN | libc::POLLOUT,
+                remaining(deadline),
+            )?;
+            if revents == 0 {
+                return Err(io::Error::from(io::ErrorKind::TimedOut));
+            }
+            if revents & libc::POLLIN != 0 {
+                return Ok(Written::Answered);
             }
         }
         Ok(Written::All)
@@ -1264,13 +1290,15 @@ fn write_watching_plain<S: Write + std::os::fd::AsRawFd>(
 /// Writes `data` on a TLS connection while watching for the server's answer: received records
 /// count as an answer once they decrypt to application data or close the connection (a TLS 1.3
 /// session ticket is not an answer). Plaintext that arrives stays in the connection for the
-/// response reader.
+/// response reader. Writes go out as long as the socket takes them, and `timeout` runs from the
+/// start of the piece, as for [`write_watching_plain`].
 fn write_watching_tls<S: Read + Write + std::os::fd::AsRawFd>(
     tls: &mut StreamOwned<ClientConnection, S>,
     set_nonblocking: &dyn Fn(&S, bool) -> io::Result<()>,
     data: &[u8],
     timeout: Option<Duration>,
 ) -> io::Result<Written> {
+    let deadline = timeout.map(|t| Instant::now() + t);
     set_nonblocking(&tls.sock, true)?;
     let result = (|| {
         let mut off = 0;
@@ -1282,17 +1310,28 @@ fn write_watching_tls<S: Read + Write + std::os::fd::AsRawFd>(
                 }
                 off += n;
             }
-            let wants_write = tls.conn.wants_write();
-            if !wants_write && off == data.len() {
+            // Write the records while the socket takes them.
+            while tls.conn.wants_write() {
+                match tls.conn.write_tls(&mut tls.sock) {
+                    Ok(_) => {}
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                    Err(e) => return Err(e),
+                }
+            }
+            let blocked = tls.conn.wants_write();
+            if !blocked && off == data.len() {
                 return Ok(Written::All);
             }
-            let events = if wants_write {
-                libc::POLLIN | libc::POLLOUT
+            // Blocked on the socket: wait for writability or an answer until the deadline.
+            // Otherwise only look for an answer.
+            let (events, wait) = if blocked {
+                (libc::POLLIN | libc::POLLOUT, remaining(deadline))
             } else {
-                libc::POLLIN
+                (libc::POLLIN, Some(Duration::ZERO))
             };
-            let revents = poll_fd(tls.sock.as_raw_fd(), events, timeout)?;
-            if revents == 0 {
+            let revents = poll_fd(tls.sock.as_raw_fd(), events, wait)?;
+            if blocked && revents == 0 {
                 return Err(io::Error::from(io::ErrorKind::TimedOut));
             }
             if revents & libc::POLLIN != 0 {
@@ -1304,17 +1343,6 @@ fn write_watching_tls<S: Read + Write + std::os::fd::AsRawFd>(
                             return Ok(Written::Answered);
                         }
                     }
-                    Err(e)
-                        if matches!(
-                            e.kind(),
-                            io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
-                        ) => {}
-                    Err(e) => return Err(e),
-                }
-            }
-            if revents & libc::POLLOUT != 0 && tls.conn.wants_write() {
-                match tls.conn.write_tls(&mut tls.sock) {
-                    Ok(_) => {}
                     Err(e)
                         if matches!(
                             e.kind(),

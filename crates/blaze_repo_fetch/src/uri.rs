@@ -461,6 +461,11 @@ impl JavaUri {
         self.raw_fragment.as_deref().map(decode)
     }
 
+    /// `URI.getRawFragment()`.
+    pub fn get_raw_fragment(&self) -> Option<&str> {
+        self.raw_fragment.as_deref()
+    }
+
     /// `URI.toString()`: the original text.
     pub fn as_str(&self) -> &str {
         &self.string

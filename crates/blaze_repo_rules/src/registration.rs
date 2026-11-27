@@ -131,8 +131,8 @@ pub fn register_repo_rules_functions(
     let builder = builder.typed_function::<SingleExtensionEvalKey, _>(move |key, env| {
         eval_function.compute(key, env)
     });
-    let builder = builder
-        .typed_function::<SingleExtensionKey, _>(blaze_bzlmod::skyframe::compute_single_extension);
+    let builder =
+        builder.typed_function::<SingleExtensionKey, _>(crate::bzlmod::single_extension::compute);
     let builder = builder.typed_function::<ModuleExtensionRepoMappingEntriesKey, _>(|key, env| {
         crate::bzlmod::repo_mapping_entries::compute(key, env)
     });

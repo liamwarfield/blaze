@@ -14,11 +14,11 @@ use prost::Message;
 use crate::event_helper;
 
 /// Called with the listening port before the server waits for its client (tests).
-// Java: com/google/devtools/build/lib/starlarkdebug/server/DebugServerTransport.java:40 DebugServerTransport.onListenPortCallbackForTests
+// Java: com/google/devtools/build/lib/starlarkdebug/server/DebugServerTransport.java:38 DebugServerTransport.onListenPortCallbackForTests
 pub type ListenPortCallback = Box<dyn Fn(u16) + Send + Sync>;
 
 /// Manages the connection to and communication with the remote debug client.
-// Java: com/google/devtools/build/lib/starlarkdebug/server/DebugServerTransport.java:35 DebugServerTransport
+// Java: com/google/devtools/build/lib/starlarkdebug/server/DebugServerTransport.java:34 DebugServerTransport
 pub struct DebugServerTransport {
     event_handler: Arc<dyn EventHandler>,
     client_socket: TcpStream,
@@ -30,7 +30,7 @@ pub struct DebugServerTransport {
 
 impl DebugServerTransport {
     /// Sets up the server transport and blocks while waiting for an incoming connection.
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/DebugServerTransport.java:44 DebugServerTransport.createAndWaitForClient
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/DebugServerTransport.java:41 DebugServerTransport.createAndWaitForClient
     pub fn create_and_wait_for_client(
         event_handler: Arc<dyn EventHandler>,
         server_socket: TcpListener,
@@ -60,7 +60,7 @@ impl DebugServerTransport {
 
     /// Blocks waiting for a properly-formed client request. Returns `None` if the client
     /// connection is closed.
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/DebugServerTransport.java:82 DebugServerTransport.readClientRequest
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/DebugServerTransport.java:87 DebugServerTransport.readClientRequest
     pub fn read_client_request(&self) -> Option<DebugRequest> {
         let mut stream = self.request_stream.lock();
         match read_delimited(&mut *stream) {
@@ -82,7 +82,7 @@ impl DebugServerTransport {
         }
     }
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/DebugServerTransport.java:99 DebugServerTransport.handleParsingError
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/DebugServerTransport.java:96 DebugServerTransport.handleParsingError
     fn handle_parsing_error(&self, e: &io::Error) {
         if self.is_closed() {
             // an IOException is expected when the client disconnects -- no need to log an error
@@ -94,7 +94,7 @@ impl DebugServerTransport {
     }
 
     /// Posts a debug event.
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/DebugServerTransport.java:110 DebugServerTransport.postEvent
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/DebugServerTransport.java:108 DebugServerTransport.postEvent
     pub fn post_event(&self, event: &DebugEvent) {
         if self.verbose_logging {
             self.event_handler.handle(&Event::debug(format!(
@@ -111,13 +111,13 @@ impl DebugServerTransport {
         }
     }
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/DebugServerTransport.java:124 DebugServerTransport.close
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/DebugServerTransport.java:126 DebugServerTransport.close
     pub fn close(&self) -> io::Result<()> {
         self.closed.store(true, Ordering::SeqCst);
         self.client_socket.shutdown(std::net::Shutdown::Both)
     }
 
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/DebugServerTransport.java:129 DebugServerTransport.isClosed
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/DebugServerTransport.java:131 DebugServerTransport.isClosed
     pub fn is_closed(&self) -> bool {
         self.closed.load(Ordering::SeqCst)
     }

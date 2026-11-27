@@ -386,6 +386,7 @@ pub fn exec_module(
 ) -> Result<FrozenModule, EvalError> {
     let ast = compiled.ast;
     let debug_file_name = ast.file_span(Default::default()).filename().to_owned();
+    crate::debug::register_predeclared(&debug_file_name, globals);
     let run = AssertUnwindSafe(|| {
         Module::with_temp_heap(|module| {
             {
@@ -425,6 +426,7 @@ pub fn exec_module_with_extra_value(
 ) -> Result<FrozenModule, EvalError> {
     let ast = compiled.ast;
     let debug_file_name = ast.file_span(Default::default()).filename().to_owned();
+    crate::debug::register_predeclared(&debug_file_name, globals);
     let run = AssertUnwindSafe(|| {
         Module::with_temp_heap(|module| {
             let extra = extra_value(&module);

@@ -121,24 +121,28 @@ pub struct UnloadedToolchainContextImplBuilder {
 }
 
 impl UnloadedToolchainContextImplBuilder {
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/UnloadedToolchainContextImpl.java:47 UnloadedToolchainContextImpl.Builder.setKey
     /// Sets the key that identifies this context.
     pub fn set_key(&mut self, key: ToolchainContextKey) -> &mut Self {
         self.key = key;
         self
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/UnloadedToolchainContextImpl.java:50 UnloadedToolchainContextImpl.Builder.setExecutionPlatform
     /// Sets the selected execution platform that these toolchains use.
     pub fn set_execution_platform(&mut self, execution_platform: Arc<PlatformInfo>) -> &mut Self {
         self.execution_platform = Some(execution_platform);
         self
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/UnloadedToolchainContextImpl.java:53 UnloadedToolchainContextImpl.Builder.setTargetPlatform
     /// Sets the target platform that these toolchains generate output for.
     pub fn set_target_platform(&mut self, target_platform: Arc<PlatformInfo>) -> &mut Self {
         self.target_platform = Some(target_platform);
         self
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/UnloadedToolchainContextImpl.java:56 UnloadedToolchainContextImpl.Builder.setToolchainTypes
     /// Sets the toolchain types that were requested.
     pub fn set_toolchain_types(
         &mut self,
@@ -148,6 +152,7 @@ impl UnloadedToolchainContextImplBuilder {
         self
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/UnloadedToolchainContextImpl.java:62 UnloadedToolchainContextImpl.Builder.setToolchainTypeToResolved
     /// Maps from the actual toolchain type to the resolved toolchain implementation that should
     /// be used (Java `ImmutableSetMultimap.copyOf`: duplicate entries are dropped).
     pub fn set_toolchain_type_to_resolved(
@@ -164,6 +169,7 @@ impl UnloadedToolchainContextImplBuilder {
         self
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/UnloadedToolchainContextImpl.java:71 UnloadedToolchainContextImpl.Builder.setRequestedLabelToToolchainType
     /// Maps from the actual requested label to the discovered [`ToolchainTypeInfo`].
     pub fn set_requested_label_to_toolchain_type(
         &mut self,
@@ -173,6 +179,7 @@ impl UnloadedToolchainContextImplBuilder {
         self
     }
 
+    // Java: com/google/devtools/build/lib/skyframe/toolchains/UnloadedToolchainContextImpl.java:75 UnloadedToolchainContextImpl.Builder.setErrorData
     /// Stores an exception that occurred during resolution of this toolchain.
     pub fn set_error_data(&mut self, error_data: Option<NoMatchingPlatformData>) -> &mut Self {
         self.error_data = error_data;

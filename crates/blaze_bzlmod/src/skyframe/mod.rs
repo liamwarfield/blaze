@@ -66,7 +66,7 @@ pub use config::{
     RepositoryDirectoryLookup, builtin_modules,
 };
 pub use extension_placeholder::{
-    compute_single_extension, register_lockfile_only_extension_functions,
+    check_single_extension, compute_single_extension, register_lockfile_only_extension_functions,
 };
 pub use keys::{
     BazelDepGraphKey, BazelLockFileKey, BazelModuleInspectorKey, BazelModuleResolutionKey,

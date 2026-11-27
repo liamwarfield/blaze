@@ -354,6 +354,8 @@ pub static OBJECT_FILETYPES: FileTypeSet = FileTypeSet(&[
     &BC_SOURCE,
 ]);
 
+// PORT: skipped, a module of constants and free functions has no instance: CppFileTypes.<init>
+
 /// Java `CppFileTypes.headerDiscoveryRequired(source)`.
 // Java: com/google/devtools/build/lib/rules/cpp/CppFileTypes.java:299 CppFileTypes.headerDiscoveryRequired
 pub fn header_discovery_required(source: &Artifact) -> bool {

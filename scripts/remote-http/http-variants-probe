@@ -11,7 +11,8 @@
 # coverage:  `coverage --remote_cache=http://...` of an sh_test (rules_shell from the pinned
 #            lockfile), twice with a clean between.
 # interrupt: a server that reads an upload's body at 64 KiB/s; the build of a 4 MiB output gets
-#            SIGINT 3 s after it starts; exit code, elapsed time and the end of the output.
+#            SIGINT 3 s after it starts (SIGINT_AFTER=<s>; 0: none); exit code, elapsed time and
+#            the end of the output; the server log says when the client closed the connection.
 # disk-blake3: startup --digest_function=blake3, build //:small //:big with --disk_cache (no
 #            server); the disk cache's entries (relative paths, sorted) are listed. (The pinned
 #            remote worker refuses BLAKE3, so a remote cache cannot be compared.)
@@ -44,7 +45,7 @@ if [[ "${HTTP_VARIANTS_IN_UNIT:-}" != "1" ]]; then
   exec systemd-run --user --collect --wait --quiet --pipe -p MemoryMax=12G -p MemorySwapMax=0 \
     --setenv=HOME="$HOME" --setenv=PATH=/usr/bin:/bin --setenv=HTTP_VARIANTS_IN_UNIT=1 \
     --setenv=BLAZE_SERVER_MODE=daemon --setenv=EXTRA_FLAGS="${EXTRA_FLAGS:-}" \
-    --setenv=WITH_TEST_TMPDIR="${WITH_TEST_TMPDIR:-}" "$(realpath "$0")" "$@"
+    --setenv=WITH_TEST_TMPDIR="${WITH_TEST_TMPDIR:-}" --setenv=SIGINT_AFTER="${SIGINT_AFTER:-3}" "$(realpath "$0")" "$@"
 fi
 WS="$BASE/ws"; UR="$BASE/ur"; LOG="$BASE/log"
 # WITH_TEST_TMPDIR=1 exports TEST_TMPDIR (as the test framework does: "some defaults will be
@@ -134,8 +135,7 @@ A
     start=$(date +%s.%N)
     bazel build "${common[@]}" //:big >> "$out" 2>&1 &
     client=$!
-    sleep 3
-    kill -INT "$client"
+    if [[ "${SIGINT_AFTER:-3}" != 0 ]]; then sleep "${SIGINT_AFTER:-3}"; kill -INT "$client"; fi
     wait "$client"; code=$?
     end=$(date +%s.%N)
     echo "exit $code after $(python3 -c "print(round($end - $start, 1))") s" >> "$out" ;;
@@ -143,4 +143,5 @@ esac
 bazel clean --expunge > /dev/null 2>&1
 bazel shutdown > /dev/null 2>&1
 [[ -n "$SERVER" ]] && { kill "$SERVER" 2>/dev/null; wait "$SERVER" 2>/dev/null; }
-grep -E "WARNING|ERROR|FATAL|exit|^output|^entry|^request|From |processes|PASSED|FAILED|interrupt" "$out" | grep -v "auth_enabled"
+[[ "$MODE" == interrupt ]] && sed 's/^/server /' "$LOG/$MODE.server.log" >> "$out"
+grep -E "WARNING|ERROR|FATAL|exit|^output|^entry|^request|^server|From |processes|PASSED|FAILED|interrupt" "$out" | grep -v "auth_enabled"

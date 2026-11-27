@@ -1366,6 +1366,13 @@ fn starlark_option_to_value<'v>(v: &StarlarkOptionValue, heap: Heap<'v>) -> Valu
              com.google.devtools.build.lib.rules.config.FeatureFlagValue${}",
             feature_flag_value_class(v)
         ),
+        // A transition's invalid value fails StarlarkTransition.validate before any
+        // configuration holds it.
+        StarlarkOptionValue::StarlarkObject { type_name, .. } => blaze_util::unported!(
+            "Starlark.fromJava",
+            "a {} kept as its repr (it never reaches a configuration)",
+            type_name
+        ),
         StarlarkOptionValue::List(items) => {
             let elems: Vec<Value<'v>> = items
                 .iter()

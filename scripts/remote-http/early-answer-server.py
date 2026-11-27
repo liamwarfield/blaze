@@ -13,7 +13,8 @@ MODE snappy: a store whose GET answers carry `Content-Encoding: snappy` (the fra
             the stream identifier, then uncompressed-data chunks of at most 65536 bytes with a
             zero checksum, then one compressed chunk of a literal and a copy for the last bytes).
 MODE snappy-bad: snappy, with a reserved unskippable chunk (type 0x02) after the identifier.
-MODE slow: a store that reads the body of a PUT at 64 KiB per second.
+MODE slow: a store that reads the body of a PUT at 64 KiB per second (logs when the client
+            closes the connection, or when the body is complete, in seconds after the head).
 With CERT_PEM and KEY_PEM the server speaks TLS. Every request is logged to LOG (method, path, length, authorization)."""
 import os, socket, ssl, sys, threading, time, struct
 if len(sys.argv) < 2 or sys.argv[1] in ("help", "-h", "--help"):
@@ -89,9 +90,15 @@ def serve(c):
             if method == "PUT":
                 if mode == "slow":
                     body = b""
+                    t0 = time.monotonic()
                     while len(body) < n:
-                        body += f.read(min(65536, n - len(body)))
+                        piece = f.read(min(65536, n - len(body)))
+                        if not piece:
+                            note("  client closed after %d bytes at %.1f s" % (len(body), time.monotonic() - t0))
+                            return
+                        body += piece
                         time.sleep(1)
+                    note("  body complete at %.1f s" % (time.monotonic() - t0))
                     store[path] = body
                 else:
                     store[path] = f.read(n)

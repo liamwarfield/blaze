@@ -190,7 +190,7 @@ fn type_conversion_exception(
 /// Java `type.convert(value, what)` (no label converter) for a value read from
 /// `BuildOptions.getStarlarkOptions()`. `what` is `what.toString()`: the setting's label, or
 /// `element <i> of <label>` for the elements of a collection.
-// Java: com/google/devtools/build/lib/packages/Type.java:84 Type.convert
+// Java: com/google/devtools/build/lib/packages/Type.java:110 Type.convert
 fn convert_starlark_option(
     type_: Type,
     value: &StarlarkOptionValue,
@@ -290,8 +290,11 @@ fn convert_starlark_option(
 
 /// Java `Starlark.type(value)`.
 // Java: net/starlark/java/eval/Starlark.java:337 Starlark.classType
-fn starlark_type_of(value: &StarlarkOptionValue) -> &'static str {
-    match value {
+fn starlark_type_of(value: &StarlarkOptionValue) -> std::borrow::Cow<'static, str> {
+    if let StarlarkOptionValue::StarlarkObject { type_name, .. } = value {
+        return std::borrow::Cow::Owned(type_name.clone());
+    }
+    std::borrow::Cow::Borrowed(match value {
         StarlarkOptionValue::Bool(_) => "bool",
         StarlarkOptionValue::Int(_) => "int",
         StarlarkOptionValue::Str(_) => "string",
@@ -313,14 +316,15 @@ fn starlark_type_of(value: &StarlarkOptionValue) -> &'static str {
                 blaze_util::unported!("Starlark.classType", "java.util.Set")
             }
         },
-    }
+        StarlarkOptionValue::StarlarkObject { .. } => unreachable!("returned above"),
+    })
 }
 
 // -------------------------------------------------------------------------------------------
 // StarlarkTransition statics.
 
 /// Given a transition, figures out if it composes any Starlark transitions.
-// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:367 StarlarkTransition.doesStarlarkTransition
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:374 StarlarkTransition.doesStarlarkTransition
 pub fn does_starlark_transition(root: &ConfigurationTransition) -> bool {
     let mut does_starlark_transition = false;
     root.visit_starlark(&mut |_| does_starlark_transition = true);
@@ -337,7 +341,7 @@ pub fn command_line_flag_aliases(options: &BuildOptions) -> IndexMap<String, Lab
         .collect()
 }
 
-// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:315 StarlarkTransition.getRelevantStarlarkSettingsFromTransition
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:317 StarlarkTransition.getRelevantStarlarkSettingsFromTransition
 pub fn get_relevant_starlark_settings_from_transition(
     transition: &StarlarkTransition,
     flags_aliases: &IndexMap<String, Label>,
@@ -367,7 +371,7 @@ pub fn get_relevant_starlark_settings_from_transition(
     result
 }
 
-// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:335 StarlarkTransition.addLabelIfRelevant
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:336 StarlarkTransition.addLabelIfRelevant
 fn add_label_if_relevant(
     builder: &mut IndexSet<Label>,
     flags_aliases: &IndexMap<String, Label>,
@@ -393,7 +397,7 @@ fn add_label_if_relevant(
 /// Remove build settings in `to_options` that have been set to their default value. This is how
 /// we ensure that an unset build setting and a set-to-default build settings represent the same
 /// configuration.
-// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:150 StarlarkTransition.validate
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:131 StarlarkTransition.validate
 pub fn validate(
     root: &ConfigurationTransition,
     details: &StarlarkBuildSettingsDetailsValue,
@@ -499,7 +503,7 @@ pub fn validate(
 
 /// Validate the value of a particular build setting after a transition has been applied.
 /// Returns true if and only if the setting is set to its default value after the transition.
-// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:238 StarlarkTransition.validateAndCheckIfAtDefault
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:225 StarlarkTransition.validateAndCheckIfAtDefault
 fn validate_and_check_if_at_default(
     details: &StarlarkBuildSettingsDetailsValue,
     options: &BuildOptions,
@@ -576,7 +580,7 @@ fn validate_and_check_if_at_default(
 
 /// Resolve aliased build setting issues: collapse `alias -> new value` and `actual -> old value`
 /// entries to `actual -> new value`.
-// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:285 StarlarkTransition.unalias
+// Java: com/google/devtools/build/lib/analysis/starlark/StarlarkTransition.java:288 StarlarkTransition.unalias
 fn unalias(options: BuildOptions, alias_to_actual: &IndexMap<Label, Label>) -> BuildOptions {
     if alias_to_actual.is_empty() {
         return options;
@@ -619,6 +623,12 @@ pub struct StarlarkTransitionCache {
     starlark_build_settings_cache: Mutex<HashMap<String, IndexSet<Label>>>,
 }
 
+// Java: com/google/devtools/build/lib/analysis/config/StarlarkTransitionCache.java:198 StarlarkTransitionCache.Key.<init>
+// Java: com/google/devtools/build/lib/analysis/config/StarlarkTransitionCache.java:213 StarlarkTransitionCache.Key.equals
+// Java: com/google/devtools/build/lib/analysis/config/StarlarkTransitionCache.java:226 StarlarkTransitionCache.Key.hashCode
+// PORT: Java's key holds the transition, the options and the details and compares them with
+// their equals; here each is its identity string (`cache_key`, the options checksum, the
+// details' identity).
 #[derive(Clone, PartialEq, Eq, Hash)]
 struct CacheKey {
     transition: String,
@@ -626,6 +636,7 @@ struct CacheKey {
     details: String,
 }
 
+// Java: com/google/devtools/build/lib/analysis/config/StarlarkTransitionCache.java:244 StarlarkTransitionCache.Value.<init>
 #[derive(Clone)]
 struct CacheValue {
     result: IndexMap<String, BuildOptions>,
@@ -649,7 +660,7 @@ impl StarlarkTransitionCache {
     /// Given a transition, decompose (if possible) and find all referenced Starlark build
     /// settings, exactly as referenced (aliases are not resolved). Flag aliases used in the
     /// transition contribute the Starlark flag they map to.
-    // Java: com/google/devtools/build/lib/analysis/config/StarlarkTransitionCache.java:72 StarlarkTransitionCache.getAllStarlarkBuildSettings
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkTransitionCache.java:76 StarlarkTransitionCache.getAllStarlarkBuildSettings
     pub fn get_all_starlark_build_settings(
         &self,
         root: &ConfigurationTransition,
@@ -677,7 +688,7 @@ impl StarlarkTransitionCache {
 
     /// Adds the default values for a transition's input build settings to its input build
     /// options.
-    // Java: com/google/devtools/build/lib/analysis/config/StarlarkTransitionCache.java:98 StarlarkTransitionCache.addDefaultStarlarkOptions
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkTransitionCache.java:101 StarlarkTransitionCache.addDefaultStarlarkOptions
     fn add_default_starlark_options(
         &self,
         from_options: &BuildOptions,
@@ -722,7 +733,7 @@ impl StarlarkTransitionCache {
     }
 
     /// Applies a Starlark transition, possibly returning a cached result.
-    // Java: com/google/devtools/build/lib/analysis/config/StarlarkTransitionCache.java:134 StarlarkTransitionCache.computeIfAbsent
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkTransitionCache.java:137 StarlarkTransitionCache.computeIfAbsent
     pub fn compute_if_absent(
         &self,
         from_options: &BuildOptions,
@@ -786,7 +797,7 @@ impl StarlarkTransitionCache {
         Ok(result)
     }
 
-    // Java: com/google/devtools/build/lib/analysis/config/StarlarkTransitionCache.java:185 StarlarkTransitionCache.clear
+    // Java: com/google/devtools/build/lib/analysis/config/StarlarkTransitionCache.java:187 StarlarkTransitionCache.clear
     pub fn clear(&self) {
         self.cache.lock().clear();
         self.starlark_build_settings_cache.lock().clear();

@@ -8,6 +8,7 @@ use crate::toolchains::toolchain_exception::{ToolchainException, ToolchainExcept
 
 /// Contains information related to missing execution platform.
 // Java: com/google/devtools/build/lib/skyframe/toolchains/NoMatchingPlatformData.java:27 NoMatchingPlatformData
+// PORT: skipped, the AutoValue builder is a struct literal at its callers: NoMatchingPlatformData.builder, NoMatchingPlatformData.Builder.setToolchainTypes, NoMatchingPlatformData.Builder.setAvailableExecutionPlatformKeys, NoMatchingPlatformData.Builder.setTargetPlatformKey, NoMatchingPlatformData.Builder.build
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NoMatchingPlatformData {
     pub toolchain_types: Vec<ToolchainTypeRequirement>,

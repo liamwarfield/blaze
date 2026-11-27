@@ -187,13 +187,17 @@ impl PrerequisiteParameters<'_> {
 #[derive(Clone, Debug)]
 enum AttributeConfiguration {
     /// This is a visibility dependency: null configuration, must be a `PackageGroup`.
+    // Java: com/google/devtools/build/lib/analysis/producers/AttributeConfiguration.java:70 AttributeConfiguration.ofVisibility
     Visibility,
     /// The configuration is null (the dependency is in the parent's package and not
     /// configurable); stores any transition keys.
+    // Java: com/google/devtools/build/lib/analysis/producers/AttributeConfiguration.java:74 AttributeConfiguration.ofNullTransitionKeys
     NullTransitionKeys(Vec<String>),
     /// There is a single configuration (a patch transition or no transition at all).
+    // Java: com/google/devtools/build/lib/analysis/producers/AttributeConfiguration.java:78 AttributeConfiguration.ofUnary
     Unary(BuildConfigurationKey),
     /// There is a split transition (possibly with only one entry).
+    // Java: com/google/devtools/build/lib/analysis/producers/AttributeConfiguration.java:82 AttributeConfiguration.ofSplit
     Split(IndexMap<String, BuildConfigurationKey>),
 }
 

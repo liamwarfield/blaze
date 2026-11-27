@@ -6,7 +6,9 @@
 //! Files: the corpus checkouts (brotli, re2), the external repositories of the oracle's
 //! recording of them (`~/.cache/blaze/oracle-out/rec-oracle-9.3.2/*/external`), the oracle's
 //! embedded `@bazel_tools`, and Bazel's own builtins (`src/main/starlark`). A root that does not
-//! exist on this machine is skipped and named in the output.
+//! exist on this machine is skipped and named in the output. A file that no longer exists (a
+//! symlink in an output base whose target was deleted) is not an input: it is skipped and
+//! counted. The test fails if no file at all could be read.
 
 use std::path::Path;
 use std::path::PathBuf;
@@ -79,6 +81,7 @@ fn java_and_starlark_rust_front_ends_agree_on_real_files() {
     let mut disagreements = Vec::new();
     let mut accepted = 0;
     let mut rejected = 0;
+    let mut missing = 0;
     for f in &files {
         let name = f.file_name().unwrap().to_str().unwrap();
         let kind = kind_of(name).unwrap();
@@ -86,7 +89,15 @@ fn java_and_starlark_rust_front_ends_agree_on_real_files() {
         // Bazel 9.3.2's default `--experimental_starlark_type_syntax` (BzlCompileFunction
         // .shouldUseTypeSyntax: .bzl files other than the prelude and .scl).
         options.allow_type_syntax = kind == FileKind::Bzl || kind == FileKind::BuiltinsBzl;
-        let bytes = std::fs::read(f).unwrap();
+        let bytes = match std::fs::read(f) {
+            Ok(bytes) => bytes,
+            // A dangling symlink: the file it named no longer exists.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                missing += 1;
+                continue;
+            }
+            Err(e) => panic!("{}: {e}", f.display()),
+        };
         let source = blaze_util::string_encoding::latin1_decode(&bytes).into_owned();
         let display = f.display().to_string();
         let (java, rust) = blaze_starlark::eval::front_ends(kind, options, &display, &source);
@@ -107,9 +118,15 @@ fn java_and_starlark_rust_front_ends_agree_on_real_files() {
         }
     }
     eprintln!(
-        "{} files: {accepted} accepted by both, {rejected} rejected by both, {} disagreements",
+        "{} files: {accepted} accepted by both, {rejected} rejected by both, {} disagreements, \
+         {missing} skipped (the file no longer exists)",
         files.len(),
         disagreements.len()
+    );
+    assert!(
+        accepted + rejected > 0,
+        "no file could be read ({} found, {missing} no longer exist)",
+        files.len()
     );
     assert!(
         disagreements.is_empty(),

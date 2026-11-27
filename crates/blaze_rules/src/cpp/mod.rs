@@ -22,6 +22,7 @@ pub mod header_info;
 pub mod include_scanner;
 pub mod link_command_line;
 pub mod lto_backend_action;
+pub mod lto_backend_action_template;
 pub mod starlark_values;
 pub mod util;
 pub mod variables;

@@ -562,6 +562,7 @@ impl ExecutableAction for LtoBackendAction {
     }
 }
 
+// PORT: skipped, a holder of static methods has no instance: LtoBackendArtifacts.<init>
 /// `LtoBackendArtifacts.createLtoBackendActionForStarlark`.
 // Java: com/google/devtools/build/lib/rules/cpp/LtoBackendArtifacts.java:177 LtoBackendArtifacts.createLtoBackendActionForStarlark
 #[allow(clippy::too_many_arguments)]
@@ -611,4 +612,161 @@ fn get_lto_backend_command_line(
     builder.add_single_path_fragment(compiler);
     builder.add_command_line(Arc::new(lto_command_line));
     builder.build()
+}
+
+// Java: com/google/devtools/build/lib/rules/cpp/LtoBackendArtifacts.java:42 LtoBackendArtifacts.addPathsToBuildVariablesBuilder
+fn add_paths_to_build_variables_builder(
+    build_variables_builder: &mut blaze_cc_features::cc_toolchain_variables::CcToolchainVariablesBuilder,
+    index_path: Option<&str>,
+    object_file_path: &str,
+    dwo_file_path: Option<&str>,
+    bitcode_file_path: &str,
+) {
+    use blaze_cc_features::cc_toolchain_variables::VariableObject;
+    use blaze_cc_features::compile_build_variables::CompileBuildVariables;
+    // Ideally, those strings would come directly from the execPath of the Artifacts of
+    // the LtoBackendAction.Builder; however, in order to support tree artifacts, we need
+    // the bitcodeFilePath to be different from the bitcodeTreeArtifact execPath.
+    // The former is a file path and the latter is the directory path.
+    // Therefore we accept strings as inputs rather than artifacts.
+    match index_path {
+        Some(index_path) => {
+            build_variables_builder
+                .add_variable("thinlto_index", VariableObject::string(index_path));
+        }
+        None => {
+            // An empty input indicates not to perform cross-module optimization.
+            build_variables_builder
+                .add_variable("thinlto_index", VariableObject::string("/dev/null"));
+        }
+    }
+    // The output from the LTO backend step is a native object file.
+    build_variables_builder.add_variable(
+        "thinlto_output_object_file",
+        VariableObject::string(object_file_path),
+    );
+    // The input to the LTO backend step is the bitcode file.
+    build_variables_builder.add_variable(
+        "thinlto_input_bitcode_file",
+        VariableObject::string(bitcode_file_path),
+    );
+    // Add the context sensitive instrument path to the backend.
+    if let Some(dwo_file_path) = dwo_file_path {
+        build_variables_builder.add_variable(
+            CompileBuildVariables::PER_OBJECT_DEBUG_INFO_FILE.get_variable_name(),
+            VariableObject::string(dwo_file_path),
+        );
+        build_variables_builder.add_variable(
+            CompileBuildVariables::IS_USING_FISSION.get_variable_name(),
+            VariableObject::string(""),
+        );
+    }
+}
+
+// Java: com/google/devtools/build/lib/rules/cpp/LtoBackendArtifacts.java:73 LtoBackendArtifacts.getLtoBackendActionInputs
+fn get_lto_backend_action_inputs(
+    index: Option<&Artifact>,
+    imports: Option<&Artifact>,
+    bitcode_file: &Artifact,
+    additional_inputs: &NestedSet<Artifact>,
+) -> NestedSet<Artifact> {
+    let mut inputs_builder = NestedSetBuilder::stable_order();
+    inputs_builder.add_transitive(additional_inputs);
+    inputs_builder.add(bitcode_file.clone());
+    if let Some(imports) = imports {
+        // Although the imports file is not used by the LTOBackendAction while the action is
+        // executing, it is needed during the input discovery phase, and we must list it as an
+        // input to the action in order for it to be preserved under
+        // --discard_orphaned_artifacts.
+        inputs_builder.add(imports.clone());
+    }
+    if let Some(index) = index {
+        inputs_builder.add(index.clone());
+    }
+    inputs_builder.build()
+}
+
+// Java: com/google/devtools/build/lib/rules/cpp/LtoBackendArtifacts.java:93 LtoBackendArtifacts.getLtoBackendActionOutputs
+fn get_lto_backend_action_outputs(
+    object_file: &Artifact,
+    dwo_file: Option<&Artifact>,
+) -> Vec<Artifact> {
+    // ImmutableSet.Builder
+    let mut builder = vec![object_file.clone()];
+    // Add the context sensitive instrument path to the backend.
+    if let Some(dwo_file) = dwo_file
+        && !builder.contains(dwo_file)
+    {
+        builder.push(dwo_file.clone());
+    }
+    builder
+}
+
+/// `LtoBackendArtifacts.createLtoBackendActionForTemplate`.
+// Java: com/google/devtools/build/lib/rules/cpp/LtoBackendArtifacts.java:191 LtoBackendArtifacts.createLtoBackendActionForTemplate
+#[allow(clippy::too_many_arguments)]
+pub fn create_lto_backend_action_for_template(
+    action_owner: ActionOwner,
+    additional_inputs: &NestedSet<Artifact>,
+    env: Arc<ActionEnvironment>,
+    build_variables: &CcToolchainVariablesRef,
+    feature_configuration: Arc<FeatureConfiguration>,
+    index: Option<&Artifact>,
+    imports: Option<&Artifact>,
+    bitcode_artifact: &Artifact,
+    object_file: &Artifact,
+    bitcode_files: Option<Arc<BitcodeFiles>>,
+    dwo_file: Option<&Artifact>,
+    use_pic: bool,
+    bitcode_file_path: Option<&str>,
+    is_dummy_action: bool,
+) -> LtoBackendAction {
+    check_state!(
+        is_dummy_action
+            || (index.is_none_or(|i| !i.is_tree_artifact())
+                && imports.is_none_or(|i| !i.is_tree_artifact())
+                && dwo_file.is_none_or(|d| !d.is_tree_artifact())
+                && !object_file.is_tree_artifact()),
+        "index, imports, object and dwo files cannot be TreeArtifacts. We need to know their exact \
+         path not just directory path."
+    );
+    check_state!(
+        is_dummy_action || (bitcode_artifact.is_tree_artifact() ^ bitcode_file_path.is_none()),
+        "If bitcode file is a tree artifact, the bitcode file path must contain the path. If it is \
+         not a tree artifact, then bitcode file path should be null to not override the path."
+    );
+    let mut build_variables_builder =
+        blaze_cc_features::cc_toolchain_variables::CcToolchainVariables::builder_with_parent(Some(
+            build_variables.clone(),
+        ));
+    let inputs = get_lto_backend_action_inputs(index, imports, bitcode_artifact, additional_inputs);
+    let outputs = get_lto_backend_action_outputs(object_file, dwo_file);
+
+    let index_path = index.map(|i| i.get_exec_path_string().to_owned());
+    let dwo_file_path = dwo_file.map(|d| d.get_exec_path_string().to_owned());
+    let bitcode_path = match bitcode_file_path {
+        Some(p) => p.to_owned(),
+        None => bitcode_artifact.get_exec_path_string().to_owned(),
+    };
+    add_paths_to_build_variables_builder(
+        &mut build_variables_builder,
+        index_path.as_deref(),
+        object_file.get_exec_path_string(),
+        dwo_file_path.as_deref(),
+        &bitcode_path,
+    );
+    let build_variables_with_files = build_variables_builder.build();
+
+    create_lto_backend_action_for_starlark(
+        action_owner,
+        /* configuration= */ None,
+        feature_configuration,
+        build_variables_with_files,
+        use_pic,
+        inputs,
+        bitcode_files,
+        imports.cloned(),
+        outputs,
+        env,
+    )
 }

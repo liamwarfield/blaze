@@ -18,7 +18,7 @@ pub enum DebugObject<'v> {
 
 /// A map of value IDs to their values, for the values a paused thread has shown the client.
 /// Lives as long as the pause.
-// Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadObjectMap.java:28 ThreadObjectMap
+// Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadObjectMap.java:32 ThreadObjectMap
 #[derive(Default)]
 pub struct ThreadObjectMap<'v> {
     objects: Vec<DebugObject<'v>>,
@@ -26,7 +26,7 @@ pub struct ThreadObjectMap<'v> {
 
 impl<'v> ThreadObjectMap<'v> {
     /// Registers a value and returns its ID (IDs start at 1).
-    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadObjectMap.java:39 ThreadObjectMap.registerValue
+    // Java: com/google/devtools/build/lib/starlarkdebug/server/ThreadObjectMap.java:43 ThreadObjectMap.registerValue
     pub fn register_value(&mut self, value: DebugObject<'v>) -> i64 {
         self.objects.push(value);
         self.objects.len() as i64
@@ -45,7 +45,7 @@ impl<'v> ThreadObjectMap<'v> {
 /// shows by its class.
 const MAP_ENTRY_CLASS: &str = "java.util.LinkedHashMap$Entry";
 
-// Java: com/google/devtools/build/lib/starlarkdebug/server/DebuggerSerialization.java:37 DebuggerSerialization.getValueProto
+// Java: com/google/devtools/build/lib/starlarkdebug/server/DebuggerSerialization.java:36 DebuggerSerialization.getValueProto
 pub fn get_value_proto<'v>(
     object_map: &mut ThreadObjectMap<'v>,
     label: &str,
@@ -77,7 +77,7 @@ fn type_of(value: DebugObject) -> String {
     }
 }
 
-// Java: com/google/devtools/build/lib/starlarkdebug/server/DebuggerSerialization.java:50 DebuggerSerialization.getDescription
+// Java: com/google/devtools/build/lib/starlarkdebug/server/DebuggerSerialization.java:49 DebuggerSerialization.getDescription
 fn get_description(value: DebugObject) -> String {
     match value {
         DebugObject::Value(v) => match v.unpack_str() {
@@ -117,7 +117,7 @@ fn is_empty_iterable(v: Value) -> Option<bool> {
     None
 }
 
-// Java: com/google/devtools/build/lib/starlarkdebug/server/DebuggerSerialization.java:57 DebuggerSerialization.hasChildren
+// Java: com/google/devtools/build/lib/starlarkdebug/server/DebuggerSerialization.java:56 DebuggerSerialization.hasChildren
 fn has_children(value: DebugObject) -> bool {
     let v = match value {
         DebugObject::MapEntry(..) => return true,
@@ -134,14 +134,14 @@ fn has_children(value: DebugObject) -> bool {
     !matches!(v.get_type(), "string" | "bool" | "int")
 }
 
-// Java: com/google/devtools/build/lib/starlarkdebug/server/DebuggerSerialization.java:83 DebuggerSerialization.getChildren
+// Java: com/google/devtools/build/lib/starlarkdebug/server/DebuggerSerialization.java:84 DebuggerSerialization.getChildren
 pub fn get_children<'v>(
     object_map: &mut ThreadObjectMap<'v>,
     value: DebugObject<'v>,
     heap: Heap<'v>,
 ) -> Vec<ValueProto> {
     let v = match value {
-        // Java: com/google/devtools/build/lib/starlarkdebug/server/DebuggerSerialization.java:158 DebuggerSerialization.getChildren
+        // Java: com/google/devtools/build/lib/starlarkdebug/server/DebuggerSerialization.java:152 DebuggerSerialization.getChildren
         DebugObject::MapEntry(key, value) => {
             return vec![
                 get_value_proto(object_map, "key", DebugObject::Value(key)),
@@ -163,7 +163,7 @@ pub fn get_children<'v>(
             .collect();
     }
     if let Some(elements) = iterable_elements(v, heap) {
-        // Java: com/google/devtools/build/lib/starlarkdebug/server/DebuggerSerialization.java:165 DebuggerSerialization.getChildren
+        // Java: com/google/devtools/build/lib/starlarkdebug/server/DebuggerSerialization.java:159 DebuggerSerialization.getChildren
         return elements
             .into_iter()
             .enumerate()
@@ -180,7 +180,7 @@ pub fn get_children<'v>(
 }
 
 /// The fields of a `Structure`, sorted, without its methods.
-// Java: com/google/devtools/build/lib/starlarkdebug/server/DebuggerSerialization.java:105 DebuggerSerialization.getChildren
+// Java: com/google/devtools/build/lib/starlarkdebug/server/DebuggerSerialization.java:111 DebuggerSerialization.getChildren
 fn get_structure_children<'v>(
     object_map: &mut ThreadObjectMap<'v>,
     v: Value<'v>,
@@ -207,7 +207,7 @@ fn get_structure_children<'v>(
 }
 
 /// `Starlark.dir(value)` and `Starlark.getattr` of each name (methods included).
-// Java: com/google/devtools/build/lib/starlarkdebug/server/DebuggerSerialization.java:122 DebuggerSerialization.getChildren
+// Java: com/google/devtools/build/lib/starlarkdebug/server/DebuggerSerialization.java:127 DebuggerSerialization.getChildren
 fn get_starlark_value_children<'v>(
     object_map: &mut ThreadObjectMap<'v>,
     v: Value<'v>,

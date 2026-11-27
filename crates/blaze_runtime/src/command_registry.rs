@@ -1,5 +1,5 @@
-//! The `@Command` annotations of every command a Bazel 9.3.2 server registers, stub
-//! [`BlazeCommand`]s for the commands that are not ported yet, and `BlazeCommandUtils.getOptions`.
+//! The `@Command` annotations of every command a Bazel 9.3.2 server registers (every command is
+//! ported) and `BlazeCommandUtils.getOptions`.
 //!
 //! Each `<NAME>_COMMAND` static transcribes the `@Command` annotation on the Java class of that
 //! command. The commands are registered by the modules in `crate::bazel_modules`
@@ -46,10 +46,8 @@ use blaze_optdefs::misc::build_event_protocol_options::BuildEventProtocolOptions
 use blaze_optdefs::misc::local_execution_options::LocalExecutionOptions;
 use blaze_optdefs::misc::mod_options::ModOptions;
 
-use crate::command::{BlazeCommand, BlazeCommandResult, BuildPhase, CommandAnnotation};
-use crate::command_environment::CommandEnvironment;
+use crate::command::{BuildPhase, CommandAnnotation};
 use crate::module::BlazeModule;
-use crate::options_result::OptionsParsingResult;
 
 // ---------------------------------------------------------------------------------------------
 // BlazeCommandUtils
@@ -763,32 +761,6 @@ pub static VENDOR_COMMAND: CommandAnnotation = CommandAnnotation {
     completion: "",
 };
 
-// ---------------------------------------------------------------------------------------------
-// Commands that are not ported yet: their annotation is complete (so rc parsing, `help` and
-// option inheritance see them) and `exec` fails loudly.
-// ---------------------------------------------------------------------------------------------
-
-macro_rules! unported_command {
-    ($(#[$meta:meta])* $name:ident, $annotation:ident, $exec:literal) => {
-        $(#[$meta])*
-        pub struct $name;
-
-        impl BlazeCommand for $name {
-            fn annotation(&self) -> &'static CommandAnnotation {
-                &$annotation
-            }
-
-            fn exec(
-                &self,
-                _env: &mut CommandEnvironment,
-                _options: &OptionsParsingResult,
-            ) -> BlazeCommandResult {
-                blaze_util::unported!($exec)
-            }
-        }
-    };
-}
-
 // Integration lead: implemented in crate::commands::build.
 pub use crate::commands::build::BuildCommand;
 // cmds implementer: implemented in crate::commands::canonicalize.
@@ -825,6 +797,7 @@ pub use crate::commands::vendor::VendorCommand;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::BlazeCommand;
     use blaze_options::OptionsParser;
 
     /// Every annotation in this file, in registration order.

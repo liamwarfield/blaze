@@ -8,6 +8,7 @@ use indexmap::IndexSet;
 /// `analysis/config/ToolchainTypeRequirement`).
 // PORT: move to the analysis crate (W4).
 // Java: com/google/devtools/build/lib/analysis/config/ToolchainTypeRequirement.java:35 ToolchainTypeRequirement
+// PORT: skipped, the AutoValue builder is a struct literal (or struct update) at its callers: ToolchainTypeRequirement.toBuilder, ToolchainTypeRequirement.Builder.toolchainType, ToolchainTypeRequirement.Builder.mandatory, ToolchainTypeRequirement.Builder.ignoreIfInvalid, ToolchainTypeRequirement.Builder.build
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ToolchainTypeRequirement {
     pub toolchain_type: Label,

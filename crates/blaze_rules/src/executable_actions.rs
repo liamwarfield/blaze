@@ -28,6 +28,9 @@ pub fn register_executable_actions() {
     register_executable_action::<crate::java::java_header_compile_action::JavaHeaderCompileAction>(
     );
     blaze_exec::actions::register_action_template::<CppCompileActionTemplate>();
+    blaze_exec::actions::register_action_template::<
+        crate::cpp::lto_backend_action_template::LtoBackendActionTemplate,
+    >();
 }
 
 /// The action contexts the C++ actions look up (`CppIncludeExtractionContext`,

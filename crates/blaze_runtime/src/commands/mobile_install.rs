@@ -208,7 +208,11 @@ fn do_mobile_install(
     }
 
     // Collect relevant adb options.
-    cmd_line.push(format!("--start={}", adb_options.start));
+    // StartType.toString() (not overridden): the enum constant's name.
+    cmd_line.push(format!(
+        "--start={}",
+        blaze_options::converters::JavaEnum::name(&adb_options.start)
+    ));
     if !adb_options.adb.is_empty() {
         cmd_line.push(format!("--adb={}", adb_options.adb));
     }

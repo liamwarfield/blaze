@@ -25,6 +25,8 @@ pub enum TransitionType {
 #[derive(Debug, Clone, PartialEq)]
 pub enum TransitionFactory {
     /// Java `NoTransition.getFactory()`.
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/NoTransition.java:37 NoTransition.getFactory
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/NoTransition.java:69 NoTransition.Factory.transitionType
     NoTransition,
     /// Java `ExecutionTransitionFactory.createFactory(execGroup)` (`cfg = "exec"`).
     Exec { exec_group: Option<String> },
@@ -37,6 +39,10 @@ pub enum TransitionFactory {
         is_split: bool,
     },
     /// Java `ComposingTransitionFactory`: `first`, then `second`.
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:118 ComposingTransitionFactory.transitionFactory1
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:120 ComposingTransitionFactory.transitionFactory2
+    // PORT: skipped, the factories' transition types are not modelled (loading composes rule transitions with rule transitions only; see compose): ComposingTransitionFactory.transitionType
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:103 ComposingTransitionFactory.create
     // Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:103 ComposingTransitionFactory.create
     Composing {
         first: Box<TransitionFactory>,
@@ -62,6 +68,8 @@ impl TransitionFactory {
     /// Java `NoConfigTransition.getFactory()` (`cfg = config.none()`): a tool transition
     /// (`Factory.isTool()` is true), not a split.
     // Java: com/google/devtools/build/lib/analysis/config/transitions/NoConfigTransition.java:97 NoConfigTransition.Factory.isTool
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/NoConfigTransition.java:77 NoConfigTransition.getFactory
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/NoConfigTransition.java:92 NoConfigTransition.Factory.transitionType
     pub fn no_config_transition() -> TransitionFactory {
         TransitionFactory::Native {
             name: "NoConfigTransition".to_owned(),
@@ -71,6 +79,7 @@ impl TransitionFactory {
     }
 
     /// Java `factory instanceof NoConfigTransition.Factory`.
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/NoConfigTransition.java:59 NoConfigTransition.isInstance
     pub fn is_no_config_transition(&self) -> bool {
         matches!(self, TransitionFactory::Native { name, .. } if name == "NoConfigTransition")
     }
@@ -85,6 +94,7 @@ impl TransitionFactory {
         transition_factory2: TransitionFactory,
     ) -> Result<TransitionFactory, String> {
         if transition_factory1.is_tool() && transition_factory2.is_tool() {
+            // Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:92 ComposingTransitionFactory.IncompatibleTransitionsException.<init>
             return Err("can't compose two exec transitions".to_owned());
         }
         if transition_factory1.is_no_transition() {
@@ -116,6 +126,7 @@ impl TransitionFactory {
     }
 
     /// Java `NoTransition.isInstance(factory)`.
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/NoTransition.java:47 NoTransition.isInstance
     pub fn is_no_transition(&self) -> bool {
         matches!(self, TransitionFactory::NoTransition)
     }

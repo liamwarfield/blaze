@@ -39,7 +39,7 @@ pub fn event_location(location: Option<&Location>) -> Option<blaze_events::Locat
 }
 
 /// Java `DetailedExitCode.of(FailureDetail{message, Analysis.CONFIGURED_VALUE_CREATION_FAILED})`.
-// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:341 TargetAndConfigurationProducer.createDetailedExitCode
+// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:345 TargetAndConfigurationProducer.createDetailedExitCode
 // Java: com/google/devtools/build/lib/skyframe/ConfiguredValueCreationException.java:109 ConfiguredValueCreationException.createDetailedExitCode
 pub fn create_detailed_exit_code(message: &str) -> DetailedExitCode {
     DetailedExitCode {
@@ -50,7 +50,7 @@ pub fn create_detailed_exit_code(message: &str) -> DetailedExitCode {
 
 /// Java `ConfigurationId` of a configuration (`configurationIdMessage`): its checksum, or
 /// `"none"` for the null configuration.
-// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:333 TargetAndConfigurationProducer.configurationIdMessage
+// Java: com/google/devtools/build/lib/analysis/producers/TargetAndConfigurationProducer.java:338 TargetAndConfigurationProducer.configurationIdMessage
 pub fn configuration_id_message(options_checksum: Option<&str>) -> String {
     match options_checksum {
         None => "none".to_owned(),
@@ -78,9 +78,9 @@ pub fn configuration_id_of_key(key: Option<&BuildConfigurationKey>) -> Option<St
 /// `equals` and `hashCode` compare the fields, as the derives do; `toString` (a
 /// `MoreObjects.toStringHelper` for debugging) is the `Debug` derive.
 // Java: com/google/devtools/build/lib/causes/Cause.java:24 Cause
-// Java: com/google/devtools/build/lib/causes/AnalysisFailedCause.java:70 AnalysisFailedCause.equals
-// Java: com/google/devtools/build/lib/causes/AnalysisFailedCause.java:83 AnalysisFailedCause.hashCode
-// Java: com/google/devtools/build/lib/causes/LabelCause.java:64 LabelCause.equals
+// Java: com/google/devtools/build/lib/causes/AnalysisFailedCause.java:71 AnalysisFailedCause.equals
+// Java: com/google/devtools/build/lib/causes/AnalysisFailedCause.java:84 AnalysisFailedCause.hashCode
+// Java: com/google/devtools/build/lib/causes/LabelCause.java:65 LabelCause.equals
 // PORT: skipped, debugging text (the Debug derive stands for it): AnalysisFailedCause.toString, LabelCause.toString
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Cause {
@@ -104,8 +104,8 @@ pub enum Cause {
 }
 
 impl Cause {
-    // Java: com/google/devtools/build/lib/causes/AnalysisFailedCause.java:54 AnalysisFailedCause.getLabel
-    // Java: com/google/devtools/build/lib/causes/LabelCause.java:40 LabelCause.getLabel
+    // Java: com/google/devtools/build/lib/causes/AnalysisFailedCause.java:55 AnalysisFailedCause.getLabel
+    // Java: com/google/devtools/build/lib/causes/LabelCause.java:41 LabelCause.getLabel
     pub fn get_label(&self) -> &Label {
         match self {
             Cause::AnalysisFailed { label, .. }
@@ -114,8 +114,8 @@ impl Cause {
         }
     }
 
-    // Java: com/google/devtools/build/lib/causes/AnalysisFailedCause.java:65 AnalysisFailedCause.getDetailedExitCode
-    // Java: com/google/devtools/build/lib/causes/LabelCause.java:45 LabelCause.getDetailedExitCode
+    // Java: com/google/devtools/build/lib/causes/AnalysisFailedCause.java:66 AnalysisFailedCause.getDetailedExitCode
+    // Java: com/google/devtools/build/lib/causes/LabelCause.java:46 LabelCause.getDetailedExitCode
     pub fn get_detailed_exit_code(&self) -> &DetailedExitCode {
         match self {
             Cause::AnalysisFailed {
@@ -163,7 +163,7 @@ pub struct ConfiguredValueCreationException {
 }
 
 impl ConfiguredValueCreationException {
-    // Java: com/google/devtools/build/lib/skyframe/ConfiguredValueCreationException.java:44 ConfiguredValueCreationException.<init>
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredValueCreationException.java:46 ConfiguredValueCreationException.<init>
     pub fn new(
         location: Option<Location>,
         message: impl Into<String>,
@@ -234,7 +234,7 @@ impl ConfiguredValueCreationException {
         }
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ConfiguredValueCreationException.java:90 ConfiguredValueCreationException.getLocation
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredValueCreationException.java:91 ConfiguredValueCreationException.getLocation
     pub fn get_location(&self) -> Option<&Location> {
         self.location.as_ref()
     }
@@ -244,12 +244,12 @@ impl ConfiguredValueCreationException {
         &self.root_causes
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ConfiguredValueCreationException.java:99 ConfiguredValueCreationException.getConfiguration
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredValueCreationException.java:100 ConfiguredValueCreationException.getConfiguration
     pub fn get_configuration(&self) -> Option<&String> {
         self.configuration.as_ref()
     }
 
-    // Java: com/google/devtools/build/lib/skyframe/ConfiguredValueCreationException.java:104 ConfiguredValueCreationException.getDetailedExitCode
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredValueCreationException.java:105 ConfiguredValueCreationException.getDetailedExitCode
     pub fn get_detailed_exit_code(&self) -> &DetailedExitCode {
         &self.detailed_exit_code
     }
@@ -279,7 +279,7 @@ pub struct DependencyEvaluationException {
 }
 
 impl DependencyEvaluationException {
-    // Java: com/google/devtools/build/lib/analysis/config/DependencyEvaluationException.java:54 DependencyEvaluationException.<init>
+    // Java: com/google/devtools/build/lib/analysis/config/DependencyEvaluationException.java:55 DependencyEvaluationException.<init>
     pub fn of_creation(
         cause: ConfiguredValueCreationException,
         dep_reported_own_error: bool,
@@ -326,19 +326,23 @@ impl DependencyEvaluationException {
         &self.message
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/DependencyEvaluationException.java:74 DependencyEvaluationException.getDetailedExitCode
     /// Returns the cause's `DetailedExitCode`. If `None`, the caller should choose a default.
     pub fn get_detailed_exit_code(&self) -> Option<&DetailedExitCode> {
         self.detailed_exit_code.as_ref()
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/DependencyEvaluationException.java:79 DependencyEvaluationException.getLocation
     pub fn get_location(&self) -> Option<&Location> {
         self.location.as_ref()
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/DependencyEvaluationException.java:83 DependencyEvaluationException.depReportedOwnError
     pub fn dep_reported_own_error(&self) -> bool {
         self.dep_reported_own_error
     }
 
+    // Java: com/google/devtools/build/lib/analysis/config/DependencyEvaluationException.java:88 DependencyEvaluationException.getCause
     /// Java `getCause()`.
     pub fn get_cause(&self) -> &DependencyEvaluationCause {
         &self.cause
@@ -484,7 +488,7 @@ pub enum ConfiguredTargetFunctionException {
     #[error("{0}")]
     Unreported(ConfiguredValueCreationException),
     /// `UnreportedException(ActionConflictException)`.
-    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetFunction.java:405 ConfiguredTargetFunction.compute
+    // Java: com/google/devtools/build/lib/skyframe/ConfiguredTargetFunction.java:255 ConfiguredTargetFunction.compute
     #[error("{0}")]
     ActionConflict(ActionConflictException),
     /// `DependencyException(NoSuchThingException)`.
@@ -709,7 +713,7 @@ impl PackageCollector {
 }
 
 impl TransitiveDependencyState {
-    // Java: com/google/devtools/build/lib/analysis/TransitiveDependencyState.java:78 TransitiveDependencyState.<init>
+    // Java: com/google/devtools/build/lib/analysis/TransitiveDependencyState.java:76 TransitiveDependencyState.<init>
     pub fn new(store_transitive_packages: bool) -> Self {
         TransitiveDependencyState {
             transitive_root_causes: NestedSetBuilder::stable_order(),
@@ -787,7 +791,7 @@ impl TransitiveDependencyState {
     }
 
     /// Adds to the set of transitive package metadata if `store_transitive_packages` is true.
-    // Java: com/google/devtools/build/lib/analysis/TransitiveDependencyState.java:136 TransitiveDependencyState.updateTransitivePackages
+    // Java: com/google/devtools/build/lib/analysis/TransitiveDependencyState.java:137 TransitiveDependencyState.updateTransitivePackages
     pub fn update_transitive_packages_of_aspect(
         &mut self,
         key: &AspectKey,
@@ -884,7 +888,7 @@ impl DependencyError {
         }
     }
 
-    // Java: com/google/devtools/build/lib/analysis/producers/DependencyError.java:75 DependencyError.isSecondErrorMoreImportant
+    // Java: com/google/devtools/build/lib/analysis/producers/DependencyError.java:78 DependencyError.isSecondErrorMoreImportant
     pub fn is_second_error_more_important(
         first: &DependencyError,
         second: &DependencyError,
@@ -923,7 +927,7 @@ impl MissingEdgeError {
         MissingEdgeError { kind, label, cause }
     }
 
-    // Java: com/google/devtools/build/lib/analysis/producers/MissingEdgeError.java:48 MissingEdgeError.emitCausesAndEvents
+    // Java: com/google/devtools/build/lib/analysis/producers/MissingEdgeError.java:59 MissingEdgeError.emitCausesAndEvents
     pub fn emit_causes_and_events(
         &self,
         from_node: &TargetAndConfiguration,
@@ -1013,7 +1017,7 @@ impl MissingEdgeError {
 }
 
 impl fmt::Display for MissingEdgeError {
-    // Java: com/google/devtools/build/lib/analysis/producers/MissingEdgeError.java:113 MissingEdgeError.toString
+    // Java: com/google/devtools/build/lib/analysis/producers/MissingEdgeError.java:116 MissingEdgeError.toString
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             f,

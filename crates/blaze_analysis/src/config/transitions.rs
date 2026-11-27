@@ -344,10 +344,14 @@ impl fmt::Debug for StarlarkTransition {
 #[derive(Clone, Debug)]
 pub enum ConfigurationTransition {
     /// Java `NoTransition.INSTANCE`.
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/NoTransition.java:29 NoTransition.<init>
     NoTransition,
     /// Java `NoConfigTransition.INSTANCE`.
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/NoConfigTransition.java:64 NoConfigTransition.<init>
     NoConfigTransition,
     /// Java `ComposingTransitionFactory.ComposingTransition`.
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:147 ComposingTransitionFactory.ComposingTransition.<init>
+    // PORT: skipped, only ComparingTransition reads it (not used at the pin): ComposingTransitionFactory.ComposingTransition.reasonForOverride
     Composing(Box<ConfigurationTransition>, Box<ConfigurationTransition>),
     /// Java `ExecutionTransitionFactory.ExecTransitionFinalizer`.
     ExecTransitionFinalizer {
@@ -402,6 +406,7 @@ impl ConfigurationTransition {
     }
 
     /// Java `NoTransition.isInstance(transition)`.
+    // Java: com/google/devtools/build/lib/analysis/config/transitions/NoTransition.java:56 NoTransition.isInstance
     pub fn is_no_transition(&self) -> bool {
         matches!(self, ConfigurationTransition::NoTransition)
     }
@@ -461,6 +466,8 @@ impl ConfigurationTransition {
         match self {
             ConfigurationTransition::NoTransition => "NoTransition".to_owned(),
             ConfigurationTransition::NoConfigTransition => "NoConfigTransition".to_owned(),
+            // Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:204 ComposingTransitionFactory.ComposingTransition.hashCode
+            // Java: com/google/devtools/build/lib/analysis/config/transitions/ComposingTransitionFactory.java:209 ComposingTransitionFactory.ComposingTransition.equals
             ConfigurationTransition::Composing(t1, t2) => {
                 format!("({} + {})", t1.cache_key(), t2.cache_key())
             }
